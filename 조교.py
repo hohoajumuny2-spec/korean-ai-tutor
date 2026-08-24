@@ -21,7 +21,7 @@ if not os.path.exists(log_file_path):
 
 st.set_page_config(page_title="24시간 국최", page_icon="🦉", layout="centered")
 
-# ⭐️ 출석부 데이터 읽어오기 (엑셀 파일)
+# ⭐️ 출석부 데이터 읽어오기
 try:
     attendance_df = pd.read_excel(attendance_file_path)
     registered_students = attendance_df['학생명'].astype(str).tolist()
@@ -30,13 +30,12 @@ except Exception as e:
     registered_students = []
 
 # ==========================================
-# 👈 왼쪽 사이드바 메뉴 설정 (학생 인증 & 관리자)
+# 👈 왼쪽 사이드바 메뉴 설정
 # ==========================================
 with st.sidebar:
     st.title("👤 학생 인증")
     student_name = st.text_input("본인의 이름을 정확히 입력하세요.", placeholder="예: 이연서")
     
-    # ⭐️ 출석부 명단에 있는 학생만 통과시키는 철통 보안 시스템
     if student_name:
         if attendance_df is not None and student_name not in registered_students:
             st.error("🚫 로지에듀 출석부에 등록된 이름이 아닙니다. 원장님께 문의하세요.")
@@ -49,7 +48,6 @@ with st.sidebar:
     
     st.divider()
     
-    # SOS 카카오톡 연결 버튼
     st.title("🚨 SOS 원장님 호출")
     st.markdown("AI 튜터의 설명이 부족하다면 언제든 '찐' 국최 원장님을 호출하세요!")
     st.link_button("🚨 찐 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
@@ -62,7 +60,6 @@ with st.sidebar:
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
         
-        # ⭐️ 스마트폰으로 언제든 확인 가능한 출석부 명단
         st.subheader("📋 로지에듀 출석부 명단")
         if attendance_df is not None:
             st.dataframe(attendance_df)
@@ -71,7 +68,6 @@ with st.sidebar:
             
         st.divider()
         
-        # 관리자 다중 파일 업로드 (해설지)
         ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
         if ref_files:
@@ -93,7 +89,6 @@ with st.sidebar:
                     
                     st.success("✅ 해설지 누적 학습 완료! 이제 모든 학생의 챗봇에 즉시 적용됩니다.")
         
-        # 해설지 초기화 버튼
         if os.path.exists(reference_file_path):
             if st.button("🗑️ 누적된 해설지 전체 삭제 (초기화)"):
                 os.remove(reference_file_path)
@@ -108,7 +103,6 @@ st.markdown("모르는 문제나 지문은 타이핑하거나 **사진/PDF를 �
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 이전 대화 내용 화면에 출력
 for msg in st.session_state.messages:
     if msg["role"] != "system":
         with st.chat_message("user" if msg["role"] == "user" else "assistant"):
@@ -120,7 +114,6 @@ for msg in st.session_state.messages:
                         st.markdown(f"📄 **{f_data['name']}** (PDF 파일)")
             st.markdown(msg["parts"][0]["text"])
 
-# 학생용 다중 파일 업로드 창
 uploaded_files = st.file_uploader("📷 질문할 사진이나 PDF를 올려주세요. (여러 개 동시 업로드 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
@@ -150,7 +143,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={MY_API_KEY}"
             list_resp = requests.get(list_url)
             
-            # ⭐️ 구글 최신 모델(3.6-flash)로 변경 완료
             target_model = "gemini-3.6-flash" 
             if list_resp.status_code == 200:
                 models_data = list_resp.json().get('models', [])
@@ -165,19 +157,24 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
-            # 원장님 정체성 부여
-            base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. 추가적인 활동을 시키지 말고 궁금증을 완벽히 해결해 주어야 합니다."
+            # ⭐️ 명령어를 훨씬 똑똑하고 융통성 있게 수정했습니다!
+            base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. "
             
-            # 공용 해설지 적용
             if os.path.exists(reference_file_path):
                 with open(reference_file_path, mode='r', encoding='utf-8') as f:
                     accumulated_doc = f.read()
                 if accumulated_doc.strip():
-                    base_instruction += f"\n\n[학원 자체 누적 해설지 자료]\n아래 자료를 최우선으로 참고하여 답하세요. 자료와 무관한 질문이면 '해당 내용은 오늘 수업 범위가 아니니 원장님께 직접 질문하렴'이라고 대답하세요.\n\n{accumulated_doc}"
+                    base_instruction += f"\n\n[학원 자체 누적 해설지 자료]\n아래 자료를 우선적으로 참고하여 답하세요.\n\n{accumulated_doc}\n\n"
+                    
+            # 해설지에 없더라도 국어 질문은 답변하고, 사적인 잡담만 차단하도록 강력 지시
+            base_instruction += """
+            [매우 중요한 지시사항]
+            1. 학생의 질문이 '국어 학습(개념, 문법, 독해, 문학 등)'과 관련된 정당한 질문이라면, 위 자료에 없더라도 당신의 국어 지식을 총동원하여 원장님처럼 친절하고 정확하게 설명해 주어야 합니다. (절대 거절하지 마세요)
+            2. 단, 학생의 질문이 국어 공부와 전혀 무관한 사적인 잡담이나 장난(예: 친구 이야기, 게임 이야기 등)이라면 절대로 답변하지 말고 반드시 "해당 내용은 오늘 수업 범위가 아니니 원장님께 직접 질문하렴"이라고 단호하게 대답하세요.
+            """
                 
             parts_list = [{"text": f"{base_instruction}\n\n학생 질문: {prompt}"}]
             
-            # 구글 AI에 파일 전송
             if uploaded_files:
                 for uf in uploaded_files:
                     file_bytes = uf.getvalue()
@@ -198,7 +195,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 message_placeholder.markdown(ai_response)
                 st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
                 
-                # 기록용 엑셀(CSV) 저장
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 file_count = str(len(uploaded_files)) if uploaded_files else "0"
                 
