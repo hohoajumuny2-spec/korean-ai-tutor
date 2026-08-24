@@ -7,7 +7,7 @@ import pymupdf as fitz
 from datetime import datetime
 
 # 원장님의 전용 API 키
-MY_API_KEY = "MY_API_KEY = st.secrets["MY_API_KEY"]"
+MY_API_KEY = st.secrets["MY_API_KEY"]
 
 # [수정된 부분] 클라우드 서버에는 '바탕화면'이 없으므로 앱과 같은 공간에 저장하도록 변경!
 log_file_path = "학생질문_모니터링_기록.csv"
