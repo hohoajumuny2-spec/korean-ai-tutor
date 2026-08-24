@@ -150,14 +150,15 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={MY_API_KEY}"
             list_resp = requests.get(list_url)
             
-            target_model = "gemini-1.5-flash" 
+            # ⭐️ 구글 최신 모델(3.6-flash)로 변경 완료
+            target_model = "gemini-3.6-flash" 
             if list_resp.status_code == 200:
                 models_data = list_resp.json().get('models', [])
                 valid_models = [m['name'].replace('models/', '') for m in models_data if 'generateContent' in m.get('supportedGenerationMethods', [])]
                 if valid_models:
                     target_model = valid_models[0]
                     for m in valid_models:
-                        if '1.5-flash' in m:
+                        if '3.6-flash' in m:
                             target_model = m
                             break
 
