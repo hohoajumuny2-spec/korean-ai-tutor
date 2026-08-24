@@ -5,12 +5,15 @@ import os
 import csv
 import pymupdf as fitz
 from datetime import datetime
+import pandas as pd
 
 # API 키 및 저장 파일 설정 
 MY_API_KEY = st.secrets["MY_API_KEY"]
 log_file_path = "학생질문_모니터링_기록.csv"
 reference_file_path = "공용해설지_누적본.txt" 
+attendance_file_path = "출석부.xlsx"
 
+# 기록 파일 초기화
 if not os.path.exists(log_file_path):
     with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
@@ -18,16 +21,35 @@ if not os.path.exists(log_file_path):
 
 st.set_page_config(page_title="24시간 국최", page_icon="🦉", layout="centered")
 
+# ⭐️ 출석부 데이터 읽어오기 (엑셀 파일)
+try:
+    attendance_df = pd.read_excel(attendance_file_path)
+    registered_students = attendance_df['학생명'].astype(str).tolist()
+except Exception as e:
+    attendance_df = None
+    registered_students = []
+
 # ==========================================
-# 👈 왼쪽 사이드바 메뉴 설정
+# 👈 왼쪽 사이드바 메뉴 설정 (학생 인증 & 관리자)
 # ==========================================
 with st.sidebar:
     st.title("👤 학생 인증")
-    student_name = st.text_input("본인의 이름을 정확히 입력하세요.", placeholder="예: 홍길동")
-    st.info("이름을 입력해야 질문 창이 활성화됩니다.")
+    student_name = st.text_input("본인의 이름을 정확히 입력하세요.", placeholder="예: 이연서")
+    
+    # ⭐️ 출석부 명단에 있는 학생만 통과시키는 철통 보안 시스템
+    if student_name:
+        if attendance_df is not None and student_name not in registered_students:
+            st.error("🚫 로지에듀 출석부에 등록된 이름이 아닙니다. 원장님께 문의하세요.")
+            st.stop()
+        else:
+            st.success("✅ 로지에듀 원생 인증 완료!")
+    else:
+        st.info("이름을 입력해야 질문 창이 활성화됩니다.")
+        st.stop()
     
     st.divider()
     
+    # SOS 카카오톡 연결 버튼
     st.title("🚨 SOS 원장님 호출")
     st.markdown("AI 튜터의 설명이 부족하다면 언제든 '찐' 국최 원장님을 호출하세요!")
     st.link_button("🚨 찐 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
@@ -39,7 +61,17 @@ with st.sidebar:
     
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
-        # ⭐️ 원장님도 여러 개를 동시에 올릴 수 있도록 수정
+        
+        # ⭐️ 스마트폰으로 언제든 확인 가능한 출석부 명단
+        st.subheader("📋 로지에듀 출석부 명단")
+        if attendance_df is not None:
+            st.dataframe(attendance_df)
+        else:
+            st.warning("깃허브에 '출석부.xlsx' 파일을 업로드해 주세요.")
+            
+        st.divider()
+        
+        # 관리자 다중 파일 업로드 (해설지)
         ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
         if ref_files:
@@ -61,14 +93,11 @@ with st.sidebar:
                     
                     st.success("✅ 해설지 누적 학습 완료! 이제 모든 학생의 챗봇에 즉시 적용됩니다.")
         
+        # 해설지 초기화 버튼
         if os.path.exists(reference_file_path):
             if st.button("🗑️ 누적된 해설지 전체 삭제 (초기화)"):
                 os.remove(reference_file_path)
                 st.warning("해설지 기억이 모두 깨끗하게 삭제되었습니다.")
-
-if not student_name:
-    st.warning("👈 화면 왼쪽 메뉴에 이름을 먼저 입력해 주세요.")
-    st.stop()
 
 # ==========================================
 # 💬 메인 챗봇 화면 설정
@@ -79,6 +108,7 @@ st.markdown("모르는 문제나 지문은 타이핑하거나 **사진/PDF를 �
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# 이전 대화 내용 화면에 출력
 for msg in st.session_state.messages:
     if msg["role"] != "system":
         with st.chat_message("user" if msg["role"] == "user" else "assistant"):
@@ -90,7 +120,7 @@ for msg in st.session_state.messages:
                         st.markdown(f"📄 **{f_data['name']}** (PDF 파일)")
             st.markdown(msg["parts"][0]["text"])
 
-# ⭐️ 학생도 여러 개의 파일, 그리고 PDF를 올릴 수 있도록 강력하게 수정
+# 학생용 다중 파일 업로드 창
 uploaded_files = st.file_uploader("📷 질문할 사진이나 PDF를 올려주세요. (여러 개 동시 업로드 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
@@ -120,22 +150,24 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={MY_API_KEY}"
             list_resp = requests.get(list_url)
             
-            target_model = "gemini-3.6-flash" 
+            target_model = "gemini-1.5-flash" 
             if list_resp.status_code == 200:
                 models_data = list_resp.json().get('models', [])
                 valid_models = [m['name'].replace('models/', '') for m in models_data if 'generateContent' in m.get('supportedGenerationMethods', [])]
                 if valid_models:
                     target_model = valid_models[0]
                     for m in valid_models:
-                        if '3.6-flash' in m:
+                        if '1.5-flash' in m:
                             target_model = m
                             break
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
+            # 원장님 정체성 부여
             base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. 추가적인 활동을 시키지 말고 궁금증을 완벽히 해결해 주어야 합니다."
             
+            # 공용 해설지 적용
             if os.path.exists(reference_file_path):
                 with open(reference_file_path, mode='r', encoding='utf-8') as f:
                     accumulated_doc = f.read()
@@ -144,7 +176,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 
             parts_list = [{"text": f"{base_instruction}\n\n학생 질문: {prompt}"}]
             
-            # ⭐️ 여러 개의 사진 및 PDF 파일을 모두 구글 AI에게 동시에 전송하도록 수정
+            # 구글 AI에 파일 전송
             if uploaded_files:
                 for uf in uploaded_files:
                     file_bytes = uf.getvalue()
@@ -165,7 +197,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 message_placeholder.markdown(ai_response)
                 st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
                 
-                # 엑셀 기록 파일에 '몇 개의 파일'을 첨부했는지도 기록되도록 변경
+                # 기록용 엑셀(CSV) 저장
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 file_count = str(len(uploaded_files)) if uploaded_files else "0"
                 
