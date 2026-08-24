@@ -6,13 +6,6 @@ import csv
 import pymupdf as fitz
 from datetime import datetime
 
-# ==========================================
-# ⭐️ 원장님이 직접 AI 모델 이름을 지정하는 곳 ⭐️
-# ==========================================
-# 원장님의 구독 모델인 강력한 최신 두뇌 '3.1 PRO'로 완벽 세팅!
-TARGET_MODEL = "gemini-3.1-pro" 
-# ==========================================
-
 # API 키 및 저장 파일 설정 
 MY_API_KEY = st.secrets["MY_API_KEY"]
 log_file_path = "학생질문_모니터링_기록.csv"
@@ -25,6 +18,25 @@ if not os.path.exists(log_file_path):
         writer.writerow(["질문 일시", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
 
 st.set_page_config(page_title="24시간 국최", page_icon="🦉", layout="centered")
+
+# ==========================================
+# 🔍 사용 가능한 구글 AI 모델 자동 검색
+# ==========================================
+@st.cache_data(ttl=3600) # 한 번 찾은 모델 목록은 1시간 동안 기억하여 속도 향상
+def get_available_models(api_key):
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        resp = requests.get(list_url)
+        if resp.status_code == 200:
+            models_data = resp.json().get('models', [])
+            # 텍스트 답변(generateContent)을 지원하는 진짜 모델 이름들만 쏙쏙 뽑아냅니다.
+            valid_models = [m['name'].replace('models/', '') for m in models_data if 'generateContent' in m.get('supportedGenerationMethods', [])]
+            return valid_models
+        return ["gemini-1.5-flash"] # 통신 실패 시 비상용 기본값
+    except:
+        return ["gemini-1.5-flash"]
+
+available_models = get_available_models(MY_API_KEY)
 
 # ==========================================
 # 👈 왼쪽 사이드바 메뉴 설정
@@ -52,6 +64,13 @@ with st.sidebar:
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
         
+        # ⭐️ 원장님이 직접 눈으로 보고 고르는 인공지능 두뇌 선택기!
+        st.subheader("🧠 챗봇 두뇌(모델) 선택")
+        selected_model = st.selectbox("원장님 API 키로 사용 가능한 모델 목록:", available_models)
+        st.info(f"현재 챗봇은 **{selected_model}** 두뇌로 똑똑하게 작동합니다.")
+        
+        st.divider()
+        
         ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
         if ref_files:
@@ -77,6 +96,9 @@ with st.sidebar:
             if st.button("🗑️ 누적된 해설지 전체 삭제 (초기화)"):
                 os.remove(reference_file_path)
                 st.warning("해설지 기억이 모두 깨끗하게 삭제되었습니다.")
+    else:
+        # 학생이 사용할 때(관리자 미접속 시)는 목록의 첫 번째 모델을 자동으로 사용합니다.
+        selected_model = available_models[0] if available_models else "gemini-1.5-flash"
 
 # 이름이 없으면 여기서 화면을 멈춤
 if not student_name:
@@ -128,7 +150,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
             base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. "
@@ -176,7 +198,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                     
             else:
                 error_msg = response.json().get('error', {}).get('message', '알 수 없는 서버 오류')
-                message_placeholder.error(f"분석 중 오류가 발생했습니다 (현재 적용된 모델: {TARGET_MODEL}):\n{error_msg}")
+                message_placeholder.error(f"분석 중 오류가 발생했습니다 (현재 적용된 모델: {selected_model}):\n{error_msg}")
         
         except Exception as e:
             message_placeholder.error(f"통신 오류가 발생했습니다: {e}")
