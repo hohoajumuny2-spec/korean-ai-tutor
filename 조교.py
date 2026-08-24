@@ -121,8 +121,20 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            # ⭐️ 이번엔 진짜로 하루 1,500번 넉넉하게 쓸 수 있는 모델로 100% 수정했습니다!
-            target_model = "gemini-1.5-flash" 
+            # ⭐️ 구글 서버에 '정확한 모델 이름'을 먼저 물어보고 가져오도록 가장 안전하게 수정했습니다!
+            list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={MY_API_KEY}"
+            list_resp = requests.get(list_url)
+            
+            target_model = "gemini-1.5-flash-latest" # 만약을 대비한 기본값
+            if list_resp.status_code == 200:
+                models_data = list_resp.json().get('models', [])
+                valid_models = [m['name'].replace('models/', '') for m in models_data if 'generateContent' in m.get('supportedGenerationMethods', [])]
+                if valid_models:
+                    for m in valid_models:
+                        if '1.5-flash' in m:
+                            target_model = m
+                            break
+
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
