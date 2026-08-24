@@ -9,12 +9,12 @@ from datetime import datetime
 # API 키 및 저장 파일 설정 
 MY_API_KEY = st.secrets["MY_API_KEY"]
 log_file_path = "학생질문_모니터링_기록.csv"
-reference_file_path = "공용해설지_누적본.txt" # ⭐️ 학생 공용 해설지 서버 파일
+reference_file_path = "공용해설지_누적본.txt" 
 
 if not os.path.exists(log_file_path):
     with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
-        writer.writerow(["질문 일시", "학생 이름", "질문 내용", "사진 첨부 여부", "AI 답변 요약"])
+        writer.writerow(["질문 일시", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
 
 st.set_page_config(page_title="24시간 국최", page_icon="🦉", layout="centered")
 
@@ -34,34 +34,33 @@ with st.sidebar:
     
     st.divider()
     
-    # 🔒 관리자 전용 메뉴 (공용 서버 저장 방식으로 완벽 수정)
     st.title("🔒 관리자 메뉴")
     admin_pw = st.text_input("관리자 비밀번호를 입력하세요.", type="password")
     
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
-        ref_file = st.file_uploader("새로운 해설지 파일 업로드 (PDF/TXT)", type=["pdf", "txt"])
+        # ⭐️ 원장님도 여러 개를 동시에 올릴 수 있도록 수정
+        ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
-        if ref_file:
+        if ref_files:
             if st.button("해설지 누적 학습시키기"):
-                with st.spinner("파일을 읽어 들이고 공용 서버에 누적하는 중입니다..."):
+                with st.spinner("파일들을 읽어 들이고 공용 서버에 누적하는 중입니다..."):
                     extracted_text = ""
-                    if ref_file.name.lower().endswith('.pdf'):
-                        doc = fitz.open(stream=ref_file.read(), filetype="pdf")
-                        for page in doc:
-                            extracted_text += page.get_text()
-                        doc.close()
-                    else:
-                        extracted_text = ref_file.getvalue().decode("utf-8")
+                    for ref_file in ref_files:
+                        if ref_file.name.lower().endswith('.pdf'):
+                            doc = fitz.open(stream=ref_file.read(), filetype="pdf")
+                            for page in doc:
+                                extracted_text += page.get_text()
+                            doc.close()
+                        else:
+                            extracted_text += ref_file.getvalue().decode("utf-8") + "\n"
                     
-                    # ⭐️ 텍스트 파일에 차곡차곡 누적해서 저장 (Append 모드)
                     with open(reference_file_path, mode='a', encoding='utf-8') as f:
                         f.write(f"\n\n--- [업로드 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ---\n")
                         f.write(extracted_text)
                     
                     st.success("✅ 해설지 누적 학습 완료! 이제 모든 학생의 챗봇에 즉시 적용됩니다.")
         
-        # ⭐️ 누적된 해설지가 너무 많아지면 언제든 깔끔하게 초기화할 수 있는 버튼
         if os.path.exists(reference_file_path):
             if st.button("🗑️ 누적된 해설지 전체 삭제 (초기화)"):
                 os.remove(reference_file_path)
@@ -75,7 +74,7 @@ if not student_name:
 # 💬 메인 챗봇 화면 설정
 # ==========================================
 st.title(f"🦉 24시간 국최 ({student_name} 학생)")
-st.markdown("모르는 문제나 지문은 타이핑하거나 **사진을 찍어서** 올려주세요. 국최가 24시간 언제든 명쾌하게 답변해 드립니다!")
+st.markdown("모르는 문제나 지문은 타이핑하거나 **사진/PDF를 첨부**해서 올려주세요. 국최가 24시간 언제든 명쾌하게 답변해 드립니다!")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -83,22 +82,34 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     if msg["role"] != "system":
         with st.chat_message("user" if msg["role"] == "user" else "assistant"):
-            if "image" in msg:
-                st.image(msg["image"], width=350)
+            if "files" in msg:
+                for f_data in msg["files"]:
+                    if f_data["type"].startswith("image"):
+                        st.image(f_data["bytes"], width=350)
+                    else:
+                        st.markdown(f"📄 **{f_data['name']}** (PDF 파일)")
             st.markdown(msg["parts"][0]["text"])
 
-uploaded_file = st.file_uploader("📷 질문할 교재나 시험지 사진을 올려주세요.", type=["jpg", "jpeg", "png"])
+# ⭐️ 학생도 여러 개의 파일, 그리고 PDF를 올릴 수 있도록 강력하게 수정
+uploaded_files = st.file_uploader("📷 질문할 사진이나 PDF를 올려주세요. (여러 개 동시 업로드 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
 if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
     
     with st.chat_message("user"):
-        if uploaded_file:
-            st.image(uploaded_file, width=350)
+        if uploaded_files:
+            for uf in uploaded_files:
+                if uf.type.startswith("image"):
+                    st.image(uf, width=350)
+                else:
+                    st.markdown(f"📄 **{uf.name}** (PDF 파일)")
         st.markdown(prompt)
         
     user_msg_data = {"role": "user", "parts": [{"text": prompt}]}
-    if uploaded_file:
-        user_msg_data["image"] = uploaded_file.getvalue()
+    if uploaded_files:
+        file_list = []
+        for uf in uploaded_files:
+            file_list.append({"name": uf.name, "type": uf.type, "bytes": uf.getvalue()})
+        user_msg_data["files"] = file_list
     st.session_state.messages.append(user_msg_data)
     
     with st.chat_message("assistant"):
@@ -125,7 +136,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             
             base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. 추가적인 활동을 시키지 말고 궁금증을 완벽히 해결해 주어야 합니다."
             
-            # ⭐️ 공용 파일에서 누적된 해설지를 읽어와서 모든 학생에게 동일하게 적용
             if os.path.exists(reference_file_path):
                 with open(reference_file_path, mode='r', encoding='utf-8') as f:
                     accumulated_doc = f.read()
@@ -134,15 +144,17 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 
             parts_list = [{"text": f"{base_instruction}\n\n학생 질문: {prompt}"}]
             
-            if uploaded_file:
-                image_bytes = uploaded_file.getvalue()
-                encoded_image = base64.b64encode(image_bytes).decode('utf-8')
-                parts_list.append({
-                    "inlineData": {
-                        "mimeType": uploaded_file.type,
-                        "data": encoded_image
-                    }
-                })
+            # ⭐️ 여러 개의 사진 및 PDF 파일을 모두 구글 AI에게 동시에 전송하도록 수정
+            if uploaded_files:
+                for uf in uploaded_files:
+                    file_bytes = uf.getvalue()
+                    encoded_file = base64.b64encode(file_bytes).decode('utf-8')
+                    parts_list.append({
+                        "inlineData": {
+                            "mimeType": uf.type,
+                            "data": encoded_file
+                        }
+                    })
                 
             data = {"contents": [{"parts": parts_list}]}
             
@@ -153,12 +165,13 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 message_placeholder.markdown(ai_response)
                 st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
                 
+                # 엑셀 기록 파일에 '몇 개의 파일'을 첨부했는지도 기록되도록 변경
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                has_photo = "O" if uploaded_file else "X"
+                file_count = str(len(uploaded_files)) if uploaded_files else "0"
                 
                 with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
-                    writer.writerow([now_str, student_name, prompt, has_photo, ai_response[:50] + "..."])
+                    writer.writerow([now_str, student_name, prompt, f"{file_count}개", ai_response[:50] + "..."])
                     
             else:
                 error_msg = response.json().get('error', {}).get('message', '알 수 없는 서버 오류')
