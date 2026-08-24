@@ -121,8 +121,8 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            # ⭐️ 구글의 가장 강력한 최신 모델로 원상복구 했습니다!
-            target_model = "gemini-3.6-flash" 
+            # ⭐️ 이번엔 진짜로 하루 1,500번 넉넉하게 쓸 수 있는 모델로 100% 수정했습니다!
+            target_model = "gemini-1.5-flash" 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
