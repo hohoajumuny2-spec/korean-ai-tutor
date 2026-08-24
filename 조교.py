@@ -121,8 +121,8 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            # ⭐️ 무조건 작동하는 최신 공식 두뇌로 완벽하게 고정했습니다!
-            target_model = "gemini-3.6-flash" 
+            # ⭐️ 하루 1,500번 쓸 수 있는 가장 안정적인 정식 모델(gemini-1.5-flash)로 확실하게 고정했습니다.
+            target_model = "gemini-1.5-flash" 
             
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
@@ -172,8 +172,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                     
             else:
                 error_msg = response.json().get('error', {}).get('message', '알 수 없는 서버 오류')
-                # 친절한 에러 안내 추가
-                message_placeholder.error(f"분석 중 오류가 발생했습니다 ({target_model}):\n{error_msg}\n\n※ 만약 에러 내용에 'quota'가 포함되어 있다면, 1분 과속 방지턱에 걸린 것이니 약 15초 뒤에 다시 시도해 주세요.")
+                message_placeholder.error(f"분석 중 오류가 발생했습니다 ({target_model}):\n{error_msg}")
         
         except Exception as e:
             message_placeholder.error(f"통신 오류가 발생했습니다: {e}")
