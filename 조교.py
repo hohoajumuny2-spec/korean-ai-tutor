@@ -9,9 +9,8 @@ from datetime import datetime
 # ==========================================
 # ⭐️ 원장님이 직접 AI 모델 이름을 지정하는 곳 ⭐️
 # ==========================================
-# 원장님께서 원하시는 최고 성능의 '프로' 모델로 세팅했습니다!
-# (하루 50번 한도 내에서 가장 똑똑하고 정교한 답변을 제공합니다.)
-TARGET_MODEL = "gemini-1.5-pro" 
+# 원장님의 구독 모델인 강력한 최신 두뇌 '3.1 PRO'로 완벽 세팅!
+TARGET_MODEL = "gemini-3.1-pro" 
 # ==========================================
 
 # API 키 및 저장 파일 설정 
@@ -129,7 +128,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            # 원장님이 맨 위에서 지정한 모델 이름(TARGET_MODEL)을 그대로 가져다 씁니다!
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
