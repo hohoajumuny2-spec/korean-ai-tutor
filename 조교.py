@@ -5,13 +5,11 @@ import os
 import csv
 import pymupdf as fitz
 from datetime import datetime
-import pandas as pd
 
 # API 키 및 저장 파일 설정 
 MY_API_KEY = st.secrets["MY_API_KEY"]
 log_file_path = "학생질문_모니터링_기록.csv"
 reference_file_path = "공용해설지_누적본.txt" 
-attendance_file_path = "출석부.xlsx"
 
 # 기록 파일 초기화
 if not os.path.exists(log_file_path):
@@ -21,14 +19,6 @@ if not os.path.exists(log_file_path):
 
 st.set_page_config(page_title="24시간 국최", page_icon="🦉", layout="centered")
 
-# ⭐️ 출석부 데이터 읽어오기
-try:
-    attendance_df = pd.read_excel(attendance_file_path)
-    registered_students = attendance_df['학생명'].astype(str).tolist()
-except Exception as e:
-    attendance_df = None
-    registered_students = []
-
 # ==========================================
 # 👈 왼쪽 사이드바 메뉴 설정
 # ==========================================
@@ -37,14 +27,9 @@ with st.sidebar:
     student_name = st.text_input("본인의 이름을 정확히 입력하세요.", placeholder="예: 이연서")
     
     if student_name:
-        if attendance_df is not None and student_name not in registered_students:
-            st.error("🚫 로지에듀 출석부에 등록된 이름이 아닙니다. 원장님께 문의하세요.")
-            st.stop()
-        else:
-            st.success("✅ 로지에듀 원생 인증 완료!")
+        st.success(f"✅ {student_name} 학생, 환영합니다!")
     else:
         st.info("이름을 입력해야 질문 창이 활성화됩니다.")
-        st.stop()
     
     st.divider()
     
@@ -59,14 +44,6 @@ with st.sidebar:
     
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
-        
-        st.subheader("📋 로지에듀 출석부 명단")
-        if attendance_df is not None:
-            st.dataframe(attendance_df)
-        else:
-            st.warning("깃허브에 '출석부.xlsx' 파일을 업로드해 주세요.")
-            
-        st.divider()
         
         ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
@@ -93,6 +70,10 @@ with st.sidebar:
             if st.button("🗑️ 누적된 해설지 전체 삭제 (초기화)"):
                 os.remove(reference_file_path)
                 st.warning("해설지 기억이 모두 깨끗하게 삭제되었습니다.")
+
+# 이름이 없으면 여기서 화면을 멈춤
+if not student_name:
+    st.stop()
 
 # ==========================================
 # 💬 메인 챗봇 화면 설정
@@ -157,7 +138,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
-            # ⭐️ 명령어를 훨씬 똑똑하고 융통성 있게 수정했습니다!
             base_instruction = f"당신은 로지에듀 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 학생이 질문하면 빙빙 돌리지 말고 가장 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. "
             
             if os.path.exists(reference_file_path):
@@ -166,7 +146,6 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                 if accumulated_doc.strip():
                     base_instruction += f"\n\n[학원 자체 누적 해설지 자료]\n아래 자료를 우선적으로 참고하여 답하세요.\n\n{accumulated_doc}\n\n"
                     
-            # 해설지에 없더라도 국어 질문은 답변하고, 사적인 잡담만 차단하도록 강력 지시
             base_instruction += """
             [매우 중요한 지시사항]
             1. 학생의 질문이 '국어 학습(개념, 문법, 독해, 문학 등)'과 관련된 정당한 질문이라면, 위 자료에 없더라도 당신의 국어 지식을 총동원하여 원장님처럼 친절하고 정확하게 설명해 주어야 합니다. (절대 거절하지 마세요)
