@@ -121,20 +121,8 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         message_placeholder.markdown("분석 중입니다...")
         
         try:
-            list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={MY_API_KEY}"
-            list_resp = requests.get(list_url)
-            
-            target_model = "gemini-3.6-flash" 
-            if list_resp.status_code == 200:
-                models_data = list_resp.json().get('models', [])
-                valid_models = [m['name'].replace('models/', '') for m in models_data if 'generateContent' in m.get('supportedGenerationMethods', [])]
-                if valid_models:
-                    target_model = valid_models[0]
-                    for m in valid_models:
-                        if '3.6-flash' in m:
-                            target_model = m
-                            break
-
+            # ⭐️ 불필요한 모델 검색 과정을 빼고, 가장 빠르고 안정적인 최신 공식 모델로 꽉 고정했습니다.
+            target_model = "gemini-1.5-flash" 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={MY_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             
