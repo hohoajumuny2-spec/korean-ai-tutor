@@ -7,9 +7,9 @@ import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# ⭐️ 하루 1,500번 넉넉하게 돌아가는 가장 안정적인 공식 모델 ⭐️
+# ⭐️ 2026년 최강의 공식 모델 (결제 연동 완료!) ⭐️
 # ==========================================
-TARGET_MODEL = "gemini-1.5-pro" 
+TARGET_MODEL = "gemini-3.6-pro" 
 # ==========================================
 
 # API 키 및 저장 파일 설정 
@@ -51,6 +51,31 @@ with st.sidebar:
     if admin_pw == "1234":
         st.success("관리자 인증 성공")
         
+        # 📊 학생 질문 모니터링 기능 
+        st.subheader("📊 학생 질문 모니터링")
+        if os.path.exists(log_file_path):
+            with open(log_file_path, "r", encoding='utf-8-sig') as f:
+                csv_data = f.read()
+                
+            st.download_button(
+                label="📥 학생 질문 기록 엑셀 다운로드",
+                data=csv_data.encode('utf-8-sig'),
+                file_name=f"학생질문_기록_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            
+            with open(log_file_path, "r", encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                data = list(reader)
+                if len(data) > 1:
+                    with st.expander("👀 최근 질문 내역 미리보기"):
+                        st.dataframe(data[1:])
+        else:
+            st.info("아직 기록된 학생 질문이 없습니다.")
+            
+        st.divider()
+        
+        st.subheader("📚 공용 해설지 학습")
         ref_files = st.file_uploader("새로운 해설지 파일 업로드 (여러 개 가능)", type=["pdf", "txt"], accept_multiple_files=True)
         
         if ref_files:
@@ -175,7 +200,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                     
             else:
                 error_msg = response.json().get('error', {}).get('message', '알 수 없는 서버 오류')
-                message_placeholder.error(f"분석 중 오류가 발생했습니다:\n{error_msg}")
+                message_placeholder.error(f"분석 중 오류가 발생했습니다: {error_msg}")
         
         except Exception as e:
             message_placeholder.error(f"통신 오류가 발생했습니다: {e}")
