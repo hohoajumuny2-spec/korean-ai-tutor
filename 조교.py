@@ -7,9 +7,9 @@ import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# ⭐️ 2026년 구글 공식 정답 모델 (절대 수정하지 마세요!) ⭐️
+# ⭐️ 하루 1,500번 넉넉하게 돌아가는 가장 안정적인 공식 모델 ⭐️
 # ==========================================
-TARGET_MODEL = "gemini-3.6-flash" 
+TARGET_MODEL = "gemini-1.5-flash" 
 # ==========================================
 
 # API 키 및 저장 파일 설정 
@@ -175,7 +175,7 @@ if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
                     
             else:
                 error_msg = response.json().get('error', {}).get('message', '알 수 없는 서버 오류')
-                message_placeholder.error(f"분석 중 오류가 발생했습니다 (현재 적용된 모델: {TARGET_MODEL}):\n{error_msg}")
+                message_placeholder.error(f"분석 중 오류가 발생했습니다:\n{error_msg}")
         
         except Exception as e:
             message_placeholder.error(f"통신 오류가 발생했습니다: {e}")
