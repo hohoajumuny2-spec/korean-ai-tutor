@@ -39,12 +39,12 @@ st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered
 st.markdown("<h1 style='text-align: center;'>🦉 LogyEDU 24시 국최</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터</p>", unsafe_allow_html=True)
 
-# 📸 원장님 사진 자동 인식 및 출력 (최신 명령어 반영 완료)
+# 📸 원장님 사진 자동 인식 및 출력
 image_names = ["photo.png", "제목을 입력해주세요..png", "photo.jpg"]
 for img_name in image_names:
     if os.path.exists(img_name):
         st.image(img_name, use_container_width=True)
-        break # 사진을 찾으면 띄우고 반복 종료
+        break 
 
 st.divider()
 
@@ -63,7 +63,6 @@ if not student_name:
 
 st.success(f"✅ {student_name} 학생, 환영합니다!")
 
-# 모바일에서도 보기 편한 가로형 라디오 버튼 메뉴
 menu = st.radio("🧭 원하는 메뉴를 선택하세요.", 
                 ["💬 24시간 AI 튜터", "📝 과제 제출 및 정답 확인", "🔒 원장님 전용 관리실"], 
                 horizontal=True)
@@ -121,6 +120,14 @@ if menu == "💬 24시간 AI 튜터":
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'입니다. 정확하고 올바른 정답과 명쾌한 해설을 즉시 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
+                # 원장님이 올린 오늘 과제 정답지 학습
+                if os.path.exists(answer_key_path):
+                    with open(answer_key_path, mode='r', encoding='utf-8') as f:
+                        today_ans = f.read()
+                    if today_ans.strip():
+                        base_instruction += f"\n\n[오늘의 과제 정답지 (최우선 참고)]\n{today_ans}\n\n"
+                        
+                # 누적 해설지 학습
                 if os.path.exists(reference_file_path):
                     with open(reference_file_path, mode='r', encoding='utf-8') as f:
                         accumulated_doc = f.read()
@@ -186,13 +193,25 @@ elif menu == "📝 과제 제출 및 정답 확인":
     
     if st.session_state.hw_submitted:
         st.subheader("🔓 [열림] 오늘의 정답 및 핵심 해설")
+        st.success("과제 제출이 확인되어 정답지 열람 권한이 부여되었습니다.")
+        
+        # 1. 원장님이 올리신 원본 파일 보여주기 (PDF 다운로드 또는 이미지 출력)
+        if os.path.exists("answer_key_filename.txt"):
+            with open("answer_key_filename.txt", "r", encoding="utf-8") as f:
+                ans_filename = f.read().strip()
+            if os.path.exists(ans_filename):
+                if ans_filename.lower().endswith('.pdf'):
+                    with open(ans_filename, "rb") as f:
+                        st.download_button("📄 원장님 정답지 원본 다운로드 (PDF)", f, file_name="오늘의정답.pdf", mime="application/pdf")
+                else:
+                    st.image(ans_filename, caption="원장님 공식 정답지 원본", use_container_width=True)
+        
+        # 2. 텍스트 해설 보여주기
         if os.path.exists(answer_key_path):
             with open(answer_key_path, "r", encoding="utf-8") as f:
                 ans_text = f.read()
-            st.success("과제 제출이 확인되어 정답지 열람 권한이 부여되었습니다.")
-            st.markdown(f"**[원장님 공식 정답지]**\n\n{ans_text}")
-        else:
-            st.warning("⚠️ 아직 원장님께서 등록하신 오늘의 정답지가 없습니다.")
+            if ans_text.strip():
+                st.markdown(f"**[원장님 공식 정답 텍스트]**\n\n{ans_text}")
     else:
         st.subheader("🔒 [잠김] 정답 및 해설")
         st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
@@ -209,22 +228,64 @@ elif menu == "🔒 원장님 전용 관리실":
         
         tab1, tab2, tab3, tab4 = st.tabs(["🔑 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
         
-        # 탭 1: 정답지 등록
+        # 탭 1: 정답지 등록 (파일 업로드 및 AI 인식 기능 추가)
         with tab1:
-            st.markdown("#### 오늘의 과제 정답 등록")
-            st.caption("여기에 입력하신 정답은 과제를 제출한 학생들에게만 자동으로 공개됩니다.")
+            st.markdown("#### 오늘의 과제 정답 파일 등록")
+            st.caption("PDF 및 이미지 파일(JPG, PNG)을 올리면 챗봇이 글자를 완벽하게 스캔합니다.")
             
-            saved_answer = ""
-            if os.path.exists(answer_key_path):
+            ans_file = st.file_uploader("📸 정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"])
+            
+            if "extracted_ans" not in st.session_state:
+                st.session_state.extracted_ans = ""
+                
+            if ans_file:
+                if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
+                    with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
+                        try:
+                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
+                            headers = {'Content-Type': 'application/json'}
+                            encoded_file = base64.b64encode(ans_file.getvalue()).decode('utf-8')
+                            
+                            data = {
+                                "contents": [{
+                                    "parts": [
+                                        {"text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."},
+                                        {"inlineData": {"mimeType": ans_file.type, "data": encoded_file}}
+                                    ]
+                                }]
+                            }
+                            response = requests.post(url, headers=headers, json=data)
+                            if response.status_code == 200:
+                                extracted_text = response.json()['candidates'][0]['content']['parts'][0]['text']
+                                st.session_state.extracted_ans = extracted_text
+                                st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
+                            else:
+                                st.error("추출 중 오류가 발생했습니다.")
+                        except Exception as e:
+                            st.error(f"통신 오류: {e}")
+            
+            saved_answer = st.session_state.extracted_ans
+            if not saved_answer and os.path.exists(answer_key_path):
                 with open(answer_key_path, "r", encoding="utf-8") as f:
                     saved_answer = f.read()
             
-            new_answer = st.text_area("정답 및 간단한 코멘트를 입력하세요.", value=saved_answer, height=200)
+            new_answer = st.text_area("📝 정답 텍스트 (위에서 자동 추출된 내용 수정 및 코멘트 추가 가능)", value=saved_answer, height=200)
             
-            if st.button("정답지 저장 / 업데이트"):
+            if st.button("정답지 최종 배포하기"):
+                # 텍스트 저장 (챗봇 인식용)
                 with open(answer_key_path, "w", encoding="utf-8") as f:
                     f.write(new_answer)
-                st.success("✅ 정답지가 성공적으로 학생들에게 배포 준비되었습니다!")
+                
+                # 파일 원본 저장 (학생 열람용)
+                if ans_file:
+                    ext = ans_file.name.split('.')[-1]
+                    save_path = f"오늘의정답_원본.{ext}"
+                    with open(save_path, "wb") as f:
+                        f.write(ans_file.getbuffer())
+                    with open("answer_key_filename.txt", "w", encoding="utf-8") as f:
+                        f.write(save_path)
+                        
+                st.success("✅ 정답지 파일과 텍스트가 성공적으로 학생들에게 배포 준비되었습니다!")
 
         # 탭 2: 과제 제출 현황
         with tab2:
@@ -238,7 +299,6 @@ elif menu == "🔒 원장님 전용 관리실":
                         st.dataframe(hw_data[1:])
             else:
                 st.info("제출된 과제가 없습니다.")
-            st.caption("※ 학생이 업로드한 원본 사진은 서버의 `hw_uploads` 폴더에 안전하게 자동 저장됩니다.")
 
         # 탭 3: 질문 모니터링
         with tab3:
