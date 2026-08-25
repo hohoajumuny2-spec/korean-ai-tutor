@@ -14,26 +14,37 @@ TARGET_MODEL = "gemini-3.6-flash"
 
 # API 키 및 설정
 MY_API_KEY = st.secrets["MY_API_KEY"]
+
+# 📱 텔레그램 실시간 알림 설정
+TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+def send_telegram_alert(message):
+    """원장님 텔레그램으로 실시간 알림을 보내는 함수"""
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        try:
+            requests.post(url, json=payload, timeout=3)
+        except Exception as e:
+            pass 
+
+# 파일 및 폴더 설정
 log_file_path = "학생질문_모니터링_기록.csv"
 reference_file_path = "공용해설지_누적본.txt" 
 hw_log_path = "과제제출_기록.csv"
-
-# 폴더 설정 (정답지 전용 폴더 추가)
 HW_FOLDER = "hw_uploads"
 ANS_FOLDER = "answers"
 
-# 원장님의 학원 반 목록
 CLASS_LIST = [
     "중등부 문해력", "고1 미강고", "고1 미사고", "고1 하남고", "고1 풍산고",
     "고2 미강고 토요일", "고2 미강고 일요일", "고2 하남고", "고2 미사고", "고2 풍산고",
     "고3 / N수", "모의고사", "논술"
 ]
 
-# 반 이름에 특수문자(/)가 있으면 파일 저장 시 오류가 날 수 있어 안전하게 변환하는 함수
 def get_safe_name(name):
     return name.replace("/", "_").replace(" ", "")
 
-# 기록 파일 및 폴더 초기화 (반(Class) 항목 추가)
 for folder in [HW_FOLDER, ANS_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -62,7 +73,7 @@ for img_name in image_names:
 st.divider()
 
 # ==========================================
-# 👤 학생 인증 및 반 선택 (신규)
+# 👤 학생 인증 및 반 선택
 # ==========================================
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -138,7 +149,6 @@ if menu == "💬 24시간 AI 튜터":
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
-                # 학생의 소속 반에 맞는 정답지를 최우선으로 학습
                 if os.path.exists(class_ans_txt):
                     with open(class_ans_txt, mode='r', encoding='utf-8') as f:
                         today_ans = f.read()
@@ -165,9 +175,17 @@ if menu == "💬 24시간 AI 튜터":
                     message_placeholder.markdown(ai_response)
                     st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
                     
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    file_count = f"{len(uploaded_files)}개" if uploaded_files else "0개"
+                    
                     with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
                         writer = csv.writer(f)
-                        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), student_class, student_name, prompt, f"{len(uploaded_files) if uploaded_files else 0}개", ai_response[:50] + "..."])
+                        writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
+                        
+                    # 📱 1. 학생 질문 시 원장님 텔레그램 실시간 알림 전송 (신규 추가!)
+                    alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
+                    send_telegram_alert(alert_msg)
+
                 else:
                     message_placeholder.error(f"오류 발생: {response.json().get('error', {}).get('message', '')}")
             except Exception as e:
@@ -185,7 +203,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
     
     hw_files = st.file_uploader("📸 과제 사진 또는 📄 PDF 파일을 업로드하세요 (여러 개 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     
-    # 세션 상태 키를 반별로 독립적으로 생성 (다른 반 선택 시 락이 초기화됨)
     hw_session_key = f"hw_submitted_{safe_class}"
     if hw_session_key not in st.session_state:
         st.session_state[hw_session_key] = False
@@ -206,7 +223,13 @@ elif menu == "📝 과제 제출 및 정답 확인":
                     writer.writerow([now_str, student_class, student_name, ", ".join(file_names)])
                 
                 st.session_state[hw_session_key] = True
-            st.success("✅ 과제 제출이 완료되었습니다! 아래에서 정답을 확인하세요.")
+            
+            st.balloons() 
+            st.success("✅ 과제 제출이 완벽하게 완료되었습니다! 아래에서 정답을 확인하세요.")
+            
+            # 📱 2. 과제 제출 시 원장님 텔레그램 실시간 알림 전송 (유지)
+            alert_msg = f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개\n- 시간: {now_str}"
+            send_telegram_alert(alert_msg)
 
     st.divider()
     
@@ -214,7 +237,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
         st.subheader(f"🔓 [열림] {student_class} 정답 및 해설")
         st.success("과제 제출이 확인되어 해당 반의 정답지 열람 권한이 부여되었습니다.")
         
-        # 원장님이 올리신 해당 반 원본 파일 보여주기
         if os.path.exists(class_ans_file_info):
             with open(class_ans_file_info, "r", encoding="utf-8") as f:
                 ans_filename = f.read().strip()
@@ -225,7 +247,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
                 else:
                     st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
         
-        # 추출된 텍스트 해설 보여주기
         if os.path.exists(class_ans_txt):
             with open(class_ans_txt, "r", encoding="utf-8") as f:
                 ans_text = f.read()
@@ -247,7 +268,7 @@ elif menu == "🔒 원장님 전용 관리실":
         
         tab1, tab2, tab3, tab4 = st.tabs(["🔑 반별 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
         
-        # 탭 1: 정답지 등록 (반 선택 기능 추가)
+        # 탭 1: 정답지 등록
         with tab1:
             st.markdown("#### 반별 과제 정답 파일 등록")
             
@@ -309,7 +330,6 @@ elif menu == "🔒 원장님 전용 관리실":
                         f.write(save_path)
                         
                 st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
-                # 상태 초기화
                 st.session_state.extracted_ans = ""
 
         # 탭 2: 과제 제출 현황
