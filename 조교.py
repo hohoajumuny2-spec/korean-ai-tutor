@@ -212,7 +212,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 file_names = []
                 for hw in hw_files:
-                    # 파일명에 반 이름과 학생 이름을 붙여서 저장
                     save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
                     with open(save_path, "wb") as f:
                         f.write(hw.getbuffer())
@@ -331,7 +330,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
                 st.session_state.extracted_ans = ""
 
-        # 탭 2: 과제 제출 현황 (업그레이드: 원본 파일 다운로드 추가)
+        # 탭 2: 과제 제출 현황 (업그레이드: 삭제 기능 추가)
         with tab2:
             st.markdown("#### 📊 실시간 과제 제출 기록")
             if os.path.exists(hw_log_path):
@@ -347,9 +346,9 @@ elif menu == "🔒 원장님 전용 관리실":
             st.divider()
             
             st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
-            st.caption("학생들이 찍어 올린 사진이나 PDF를 직접 다운로드하여 꼼수 제출을 검수할 수 있습니다.")
+            st.caption("학생들이 찍어 올린 사진이나 PDF를 직접 다운로드하여 검수할 수 있습니다.")
             if os.path.exists(HW_FOLDER):
-                submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True) # 최신 파일이 위로 오도록 정렬
+                submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True)
                 if submitted_files:
                     for f_name in submitted_files:
                         file_path = os.path.join(HW_FOLDER, f_name)
@@ -363,8 +362,26 @@ elif menu == "🔒 원장님 전용 관리실":
                             st.download_button("📥 열기", data=file_bytes, file_name=f_name, key=f_name)
                 else:
                     st.caption("아직 업로드된 과제 파일이 없습니다.")
+                    
+            # --- 🚨 기록 및 파일 초기화 기능 추가 ---
+            st.divider()
+            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
+            if st.button("🚨 과제 제출 기록 및 원본 파일 전체 삭제"):
+                # 1. 엑셀 파일 초기화
+                with open(hw_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
+                
+                # 2. 업로드된 원본 파일(이미지/PDF) 모두 삭제
+                if os.path.exists(HW_FOLDER):
+                    for f_name in os.listdir(HW_FOLDER):
+                        file_path = os.path.join(HW_FOLDER, f_name)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            
+                st.success("✅ 과제 기록과 학생들이 제출한 원본 파일이 모두 삭제되었습니다. (새로고침을 해주세요)")
 
-        # 탭 3: 질문 모니터링
+        # 탭 3: 질문 모니터링 (업그레이드: 삭제 기능 추가)
         with tab3:
             st.markdown("#### 학생들이 챗봇에 질문한 내역")
             if os.path.exists(log_file_path):
@@ -376,6 +393,15 @@ elif menu == "🔒 원장님 전용 관리실":
                         st.dataframe(data[1:])
             else:
                 st.info("질문 기록이 없습니다.")
+                
+            # --- 🚨 질문 내역 초기화 기능 추가 ---
+            st.divider()
+            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
+            if st.button("🚨 학생 질문 기록 전체 삭제"):
+                with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
+                st.success("✅ 학생들의 질문 기록이 모두 삭제되었습니다. (새로고침을 해주세요)")
 
         # 탭 4: 해설지 누적
         with tab4:
