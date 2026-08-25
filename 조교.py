@@ -182,7 +182,6 @@ if menu == "💬 24시간 AI 튜터":
                         writer = csv.writer(f)
                         writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
                         
-                    # 📱 1. 학생 질문 시 원장님 텔레그램 실시간 알림 전송 (신규 추가!)
                     alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
                     send_telegram_alert(alert_msg)
 
@@ -213,7 +212,8 @@ elif menu == "📝 과제 제출 및 정답 확인":
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 file_names = []
                 for hw in hw_files:
-                    save_path = os.path.join(HW_FOLDER, f"{safe_class}_{student_name}_{hw.name}")
+                    # 파일명에 반 이름과 학생 이름을 붙여서 저장
+                    save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
                     with open(save_path, "wb") as f:
                         f.write(hw.getbuffer())
                     file_names.append(hw.name)
@@ -227,7 +227,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
             st.balloons() 
             st.success("✅ 과제 제출이 완벽하게 완료되었습니다! 아래에서 정답을 확인하세요.")
             
-            # 📱 2. 과제 제출 시 원장님 텔레그램 실시간 알림 전송 (유지)
             alert_msg = f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개\n- 시간: {now_str}"
             send_telegram_alert(alert_msg)
 
@@ -332,12 +331,12 @@ elif menu == "🔒 원장님 전용 관리실":
                 st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
                 st.session_state.extracted_ans = ""
 
-        # 탭 2: 과제 제출 현황
+        # 탭 2: 과제 제출 현황 (업그레이드: 원본 파일 다운로드 추가)
         with tab2:
-            st.markdown("#### 실시간 과제 제출 현황")
+            st.markdown("#### 📊 실시간 과제 제출 기록")
             if os.path.exists(hw_log_path):
                 with open(hw_log_path, "r", encoding='utf-8-sig') as f:
-                    st.download_button("📥 과제 제출 기록 다운로드", data=f.read().encode('utf-8-sig'), file_name="과제제출기록.csv", mime="text/csv")
+                    st.download_button("📥 전체 제출 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="과제제출기록.csv", mime="text/csv")
                 with open(hw_log_path, "r", encoding='utf-8-sig') as f:
                     hw_data = list(csv.reader(f))
                     if len(hw_data) > 1:
@@ -345,12 +344,32 @@ elif menu == "🔒 원장님 전용 관리실":
             else:
                 st.info("제출된 과제가 없습니다.")
 
+            st.divider()
+            
+            st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
+            st.caption("학생들이 찍어 올린 사진이나 PDF를 직접 다운로드하여 꼼수 제출을 검수할 수 있습니다.")
+            if os.path.exists(HW_FOLDER):
+                submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True) # 최신 파일이 위로 오도록 정렬
+                if submitted_files:
+                    for f_name in submitted_files:
+                        file_path = os.path.join(HW_FOLDER, f_name)
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                        
+                        col_a, col_b = st.columns([4, 1])
+                        with col_a:
+                            st.write(f"📄 {f_name}")
+                        with col_b:
+                            st.download_button("📥 열기", data=file_bytes, file_name=f_name, key=f_name)
+                else:
+                    st.caption("아직 업로드된 과제 파일이 없습니다.")
+
         # 탭 3: 질문 모니터링
         with tab3:
             st.markdown("#### 학생들이 챗봇에 질문한 내역")
             if os.path.exists(log_file_path):
                 with open(log_file_path, "r", encoding='utf-8-sig') as f:
-                    st.download_button("📥 질문 기록 다운로드", data=f.read().encode('utf-8-sig'), file_name="질문기록.csv", mime="text/csv")
+                    st.download_button("📥 질문 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="질문기록.csv", mime="text/csv")
                 with open(log_file_path, "r", encoding='utf-8-sig') as f:
                     data = list(csv.reader(f))
                     if len(data) > 1:
