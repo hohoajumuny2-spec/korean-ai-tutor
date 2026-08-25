@@ -39,11 +39,11 @@ st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered
 st.markdown("<h1 style='text-align: center;'>🦉 LogyEDU 24시 국최</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터</p>", unsafe_allow_html=True)
 
-# 📸 원장님 사진 자동 인식 및 출력
+# 📸 원장님 사진 자동 인식 및 출력 (최신 명령어 반영 완료)
 image_names = ["photo.png", "제목을 입력해주세요..png", "photo.jpg"]
 for img_name in image_names:
     if os.path.exists(img_name):
-        st.image(img_name, use_column_width=True)
+        st.image(img_name, use_container_width=True)
         break # 사진을 찾으면 띄우고 반복 종료
 
 st.divider()
