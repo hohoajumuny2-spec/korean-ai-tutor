@@ -9,6 +9,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # ==========================================
+# ⭐️ 구글 서버 공식 안내 최신 모델 고정
+# ==========================================
+TARGET_MODEL = "gemini-3.6-flash" 
+
+# ==========================================
 # 🔒 비밀 금고 안전장치 (열쇠 확인)
 # ==========================================
 if "MY_API_KEY" not in st.secrets:
@@ -130,9 +135,8 @@ if menu == "💬 24시간 AI 튜터":
             message_placeholder.markdown("AI 튜터가 분석 중입니다...")
             
             try:
-                # 🛠️ 사진 유무에 따라 가장 안정적인 범용 모델로 자동 전환 (404 에러 원천 차단)
-                safe_model = "gemini-pro-vision" if uploaded_files else "gemini-pro"
-                llm = ChatGoogleGenerativeAI(model=safe_model, google_api_key=MY_API_KEY)
+                # 🛠️ 과거 폐기 모델을 버리고, 최신 공식 모델(TARGET_MODEL)로만 100% 직결
+                llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
@@ -148,7 +152,7 @@ if menu == "💬 24시간 AI 튜터":
                     if accumulated_doc.strip():
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
-                # 🛠️ 데이터 누수 방지를 위한 안전한 메시지 조합 구조
+                # 🛠️ 데이터 누수 방지를 위한 안전한 메시지 조합 구조 유지
                 if uploaded_files:
                     user_content = [{"type": "text", "text": f"{base_instruction}\n\n[학생 질문]\n{prompt}"}]
                     for uf in uploaded_files:
@@ -278,8 +282,8 @@ elif menu == "🔒 원장님 전용 관리실":
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
                     with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
                         try:
-                            scan_model = "gemini-pro-vision" if ans_file.type.startswith("image") else "gemini-pro"
-                            llm = ChatGoogleGenerativeAI(model=scan_model, google_api_key=MY_API_KEY)
+                            # 🛠️ 스캔 기능도 최신 모델로 고정
+                            llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
                             scan_content = [{"type": "text", "text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."}]
                             
                             if ans_file.type.startswith("image"):
