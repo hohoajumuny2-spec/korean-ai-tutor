@@ -29,9 +29,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # ==========================================
-# ⭐️ 2026년 최강의 공식 모델 (Pro 버전으로 업그레이드 완료)
+# ⭐️ 2026년 최강의 공식 모델 (Pro 최신 버전 명칭 완벽 수정)
 # ==========================================
-TARGET_MODEL = "gemini-1.5-pro" 
+TARGET_MODEL = "gemini-1.5-pro-latest" 
 
 # ==========================================
 # 🔒 비밀 금고 안전장치 (에러 방지)
