@@ -1,17 +1,31 @@
 import streamlit as st
 import os
+import sys
+import subprocess
 import csv
-import base64
 import requests
 import pymupdf as fitz
 from datetime import datetime
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
 
 # ==========================================
-# ⭐️ 구글 서버 공식 안내 최신 모델 고정
+# 🚨 서버 필수 부품 강제 설치 (랭체인 폐기, 구글 공식 엔진 탑재)
 # ==========================================
-TARGET_MODEL = "gemini-3.6-flash" 
+@st.cache_resource
+def ensure_dependencies():
+    try:
+        import google.generativeai
+        import pymupdf
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf", "requests", "google-generativeai"])
+
+ensure_dependencies()
+
+import google.generativeai as genai
+
+# ==========================================
+# ⭐️ 구글 공식 네이티브 최신 다이렉트 모델
+# ==========================================
+TARGET_MODEL = "gemini-1.5-flash" 
 
 # ==========================================
 # 🔒 비밀 금고 안전장치 (열쇠 확인)
@@ -23,6 +37,9 @@ if "MY_API_KEY" not in st.secrets:
 MY_API_KEY = st.secrets["MY_API_KEY"]
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+# 구글 다이렉트 엔진에 원장님 열쇠 꽂기
+genai.configure(api_key=MY_API_KEY)
 
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -132,11 +149,11 @@ if menu == "💬 24시간 AI 튜터":
         
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("AI 튜터가 분석 중입니다...")
+            message_placeholder.markdown("구글 AI 엔진이 분석 중입니다...")
             
             try:
-                # 🛠️ 과거 폐기 모델을 버리고, 최신 공식 모델(TARGET_MODEL)로만 100% 직결
-                llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
+                # 🛠️ 랭체인 완전 제거! 구글 네이티브 엔진 직결 호출
+                model = genai.GenerativeModel(TARGET_MODEL)
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
@@ -152,27 +169,24 @@ if menu == "💬 24시간 AI 튜터":
                     if accumulated_doc.strip():
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
-                # 🛠️ 데이터 누수 방지를 위한 안전한 메시지 조합 구조 유지
+                # 오류 0% 구조: 지시사항과 질문을 하나의 텍스트로 깔끔하게 통합
+                contents = [f"{base_instruction}\n\n[학생 질문]\n{prompt}"]
+                
+                # 사진이 있으면 부드럽게 추가 첨부
                 if uploaded_files:
-                    user_content = [{"type": "text", "text": f"{base_instruction}\n\n[학생 질문]\n{prompt}"}]
                     for uf in uploaded_files:
                         if uf.type.startswith("image"):
-                            img_b64 = base64.b64encode(uf.getvalue()).decode("utf-8")
-                            user_content.append({"type": "image_url", "image_url": f"data:{uf.type};base64,{img_b64}"})
+                            contents.append({"mime_type": uf.type, "data": uf.getvalue()})
                         elif uf.type == "application/pdf":
                             doc = fitz.open(stream=uf.read(), filetype="pdf")
                             pdf_text = ""
                             for page in doc:
                                 pdf_text += page.get_text()
                             doc.close()
-                            user_content[0]["text"] += f"\n\n[첨부된 PDF 내용]\n{pdf_text}"
-                    messages = [HumanMessage(content=user_content)]
-                else:
-                    combined_text = f"{base_instruction}\n\n[학생 질문]\n{prompt}"
-                    messages = [HumanMessage(content=combined_text)]
+                            contents.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
                 
-                response = llm.invoke(messages)
-                ai_response = response.content
+                response = model.generate_content(contents)
+                ai_response = response.text
                 
                 message_placeholder.markdown(ai_response)
                 st.session_state.messages.append({"role": "model", "content": ai_response})
@@ -188,7 +202,7 @@ if menu == "💬 24시간 AI 튜터":
                 send_telegram_alert(alert_msg)
 
             except Exception as e:
-                message_placeholder.error(f"통신 오류: {e}")
+                message_placeholder.error(f"구글 통신 오류: {e}")
                 
     st.divider()
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
@@ -280,27 +294,25 @@ elif menu == "🔒 원장님 전용 관리실":
                 
             if ans_file:
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
-                    with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
+                    with st.spinner("구글 네이티브 엔진이 스캔 중입니다... (약 10초 소요)"):
                         try:
-                            # 🛠️ 스캔 기능도 최신 모델로 고정
-                            llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
-                            scan_content = [{"type": "text", "text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."}]
+                            # 🛠️ 스캔 기능도 랭체인 제거 후 다이렉트 직결
+                            scan_model = genai.GenerativeModel(TARGET_MODEL)
+                            scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
                             
                             if ans_file.type.startswith("image"):
-                                img_b64 = base64.b64encode(ans_file.getvalue()).decode('utf-8')
-                                scan_content.append({"type": "image_url", "image_url": f"data:{ans_file.type};base64,{img_b64}"})
+                                scan_content.append({"mime_type": ans_file.type, "data": ans_file.getvalue()})
                             elif ans_file.type == "application/pdf":
                                 doc = fitz.open(stream=ans_file.read(), filetype="pdf")
                                 pdf_text = ""
                                 for page in doc:
                                     pdf_text += page.get_text()
                                 doc.close()
-                                scan_content[0]["text"] += f"\n\n{pdf_text}"
+                                scan_content.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
                                 
-                            scan_msg = [HumanMessage(content=scan_content)]
-                            scan_res = llm.invoke(scan_msg)
+                            response = scan_model.generate_content(scan_content)
                             
-                            st.session_state.extracted_ans = scan_res.content
+                            st.session_state.extracted_ans = response.text
                             st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
                         except Exception as e:
                             st.error(f"추출 중 오류가 발생했습니다: {e}")
