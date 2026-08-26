@@ -3,4 +3,4 @@ langchain
 langchain-community
 langchain-google-genai
 requests
-pymupdㄹ
+pymupdf
