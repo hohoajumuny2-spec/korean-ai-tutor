@@ -9,7 +9,7 @@ import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# 🚨 서버 필수 부품 확인 및 설치
+# 🚨 서버 필수 부품 최신 버전 강제 설치
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
@@ -23,22 +23,22 @@ ensure_dependencies()
 import google.generativeai as genai
 
 # ==========================================
-# ⭐️ 확인된 공식 지원 모델 적용
+# ⭐️ 구글 서버가 직접 지시한 최신 모델명 완벽 고정
 # ==========================================
-TARGET_MODEL = "gemini-2.5-flash" 
+TARGET_MODEL = "gemini-3.6-flash" 
 
 # ==========================================
-# 🔒 Secrets 확인 및 API 설정
+# 🔒 비밀 금고 안전장치 (열쇠 확인)
 # ==========================================
 if "MY_API_KEY" not in st.secrets:
-    st.warning("🔑 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets`에 구글 API 키를 먼저 입력해 주세요.")
+    st.warning("🔑 아직 열쇠가 없습니다! 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets` 에 구글 API 키를 먼저 넣어주세요.")
     st.stop()
 
 MY_API_KEY = st.secrets["MY_API_KEY"]
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-# 구글 API 키 설정
+# 구글 다이렉트 엔진에 API 키 꽂기
 genai.configure(api_key=MY_API_KEY)
 
 def send_telegram_alert(message):
@@ -123,7 +123,7 @@ class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
-    st.markdown("모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
+    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -149,7 +149,7 @@ if menu == "💬 24시간 AI 튜터":
         
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("AI 튜터가 분석 중입니다...")
+            message_placeholder.markdown("구글 AI 엔진이 분석 중입니다...")
             
             try:
                 model = genai.GenerativeModel(TARGET_MODEL)
