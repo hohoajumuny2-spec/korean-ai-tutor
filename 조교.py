@@ -149,18 +149,18 @@ if menu == "💬 24시간 AI 튜터":
         
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("구글 AI 엔진이 분석 중입니다...")
+            message_placeholder.markdown("🤖 **'AI 국최'**가 질문을 분석 중입니다...")
             
             try:
                 model = genai.GenerativeModel(TARGET_MODEL)
                 
-                base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
+                base_instruction = f"당신은 LogyEDU 최준용 국어 원장님의 지식과 관리 방식을 완벽하게 물려받은 'AI 국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 대답을 시작할 때 항상 '안녕하세요! AI 국최입니다.' 와 같이 자신의 정체성을 밝히세요. 학생의 질문에 조금의 오류도 없이 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
                 if os.path.exists(class_ans_txt):
                     with open(class_ans_txt, mode='r', encoding='utf-8') as f:
                         today_ans = f.read()
                     if today_ans.strip():
-                        base_instruction += f"\n\n[해당 반({student_class}) 과제 정답지]\n{today_ans}"
+                        base_instruction += f"\n\n[해당 반({student_class}) 누적 과제 정답지]\n{today_ans}"
                         
                 if os.path.exists(reference_file_path):
                     with open(reference_file_path, mode='r', encoding='utf-8') as f:
@@ -244,17 +244,19 @@ elif menu == "📝 과제 제출 및 정답 확인":
     
     if st.session_state[hw_session_key]:
         st.subheader(f"🔓 [열림] {student_class} 정답 및 해설")
-        st.success("과제 제출이 확인되어 해당 반의 정답지 열람 권한이 부여되었습니다.")
+        st.success("과제 제출이 확인되어 해당 반의 누적된 정답지 열람 권한이 부여되었습니다.")
         
+        # 🛠️ 누적된 여러 개의 파일을 모두 화면에 출력
         if os.path.exists(class_ans_file_info):
             with open(class_ans_file_info, "r", encoding="utf-8") as f:
-                ans_filename = f.read().strip()
-            if os.path.exists(ans_filename):
-                if ans_filename.lower().endswith('.pdf'):
-                    with open(ans_filename, "rb") as f:
-                        st.download_button(f"📄 {student_class} 정답지 원본 다운로드 (PDF)", f, file_name=f"{student_class}_정답.pdf", mime="application/pdf")
-                else:
-                    st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
+                ans_filenames = f.read().splitlines()
+            for idx, ans_filename in enumerate(ans_filenames):
+                if os.path.exists(ans_filename):
+                    if ans_filename.lower().endswith('.pdf'):
+                        with open(ans_filename, "rb") as f:
+                            st.download_button(f"📄 {os.path.basename(ans_filename)} 다운로드", f, file_name=os.path.basename(ans_filename), mime="application/pdf", key=f"dl_{idx}")
+                    else:
+                        st.image(ans_filename, caption=f"[{student_class}] 정답지: {os.path.basename(ans_filename)}", use_container_width=True)
         
         if os.path.exists(class_ans_txt):
             with open(class_ans_txt, "r", encoding="utf-8") as f:
@@ -278,61 +280,98 @@ elif menu == "🔒 원장님 전용 관리실":
         tab1, tab2, tab3, tab4 = st.tabs(["🔑 반별 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
         
         with tab1:
-            st.markdown("#### 반별 과제 정답 파일 등록")
+            st.markdown("#### 반별 과제 정답 파일 등록 (누적)")
             target_class = st.selectbox("📌 정답지를 배포할 반을 선택하세요.", CLASS_LIST)
             safe_target_class = get_safe_name(target_class)
             target_ans_txt_path = os.path.join(ANS_FOLDER, f"ans_txt_{safe_target_class}.txt")
             target_ans_file_path = os.path.join(ANS_FOLDER, f"ans_file_{safe_target_class}.txt")
 
-            ans_file = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"])
+            col_a, col_b = st.columns([3, 1])
+            with col_a:
+                # 🛠️ 여러 개의 파일을 한 번에 업로드할 수 있도록 속성 변경
+                ans_files = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드 (여러 개 동시 가능)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
+            with col_b:
+                st.write("")
+                st.write("")
+                # 🛠️ 자료가 너무 쌓였을 때 한 번에 비우는 기능
+                if st.button("🗑️ 이 반의 정답지 전체 초기화"):
+                    if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
+                    if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
+                    st.session_state.extracted_ans = ""
+                    st.success("✅ 초기화 완료!")
+                    st.rerun()
             
             if "extracted_ans" not in st.session_state:
                 st.session_state.extracted_ans = ""
                 
-            if ans_file:
+            if ans_files:
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기"):
                     with st.spinner("AI 엔진이 스캔 중입니다... (약 10초 소요)"):
                         try:
                             scan_model = genai.GenerativeModel(TARGET_MODEL)
-                            scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
+                            all_extracted_text = ""
                             
-                            if ans_file.type.startswith("image"):
-                                scan_content.append({"mime_type": ans_file.type, "data": ans_file.getvalue()})
-                            elif ans_file.type == "application/pdf":
-                                doc = fitz.open(stream=ans_file.read(), filetype="pdf")
-                                pdf_text = ""
-                                for page in doc:
-                                    pdf_text += page.get_text()
-                                doc.close()
-                                scan_content.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
+                            # 🛠️ 여러 개의 파일을 순회하며 텍스트를 누적 추출
+                            for ans_file in ans_files:
+                                scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
                                 
-                            response = scan_model.generate_content(scan_content)
+                                if ans_file.type.startswith("image"):
+                                    scan_content.append({"mime_type": ans_file.type, "data": ans_file.getvalue()})
+                                elif ans_file.type == "application/pdf":
+                                    doc = fitz.open(stream=ans_file.read(), filetype="pdf")
+                                    pdf_text = ""
+                                    for page in doc:
+                                        pdf_text += page.get_text()
+                                    doc.close()
+                                    scan_content.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
+                                    
+                                response = scan_model.generate_content(scan_content)
+                                all_extracted_text += f"\n\n--- [{ans_file.name}] ---\n" + response.text
                             
-                            st.session_state.extracted_ans = response.text
+                            st.session_state.extracted_ans = all_extracted_text
                             st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
                         except Exception as e:
                             st.error(f"추출 중 오류가 발생했습니다: {e}")
             
-            saved_answer = st.session_state.extracted_ans
-            if not saved_answer and os.path.exists(target_ans_txt_path):
+            # 기존에 누적된 텍스트 불러오기
+            saved_answer = ""
+            if os.path.exists(target_ans_txt_path):
                 with open(target_ans_txt_path, "r", encoding="utf-8") as f:
                     saved_answer = f.read()
             
-            new_answer = st.text_area(f"📝 [{target_class}] 정답 텍스트 입력 및 수정", value=saved_answer, height=200)
+            # 🛠️ 기존 텍스트 + 새로 스캔된 텍스트 결합
+            display_text = saved_answer
+            if st.session_state.extracted_ans:
+                if display_text:
+                    display_text += "\n" + st.session_state.extracted_ans
+                else:
+                    display_text = st.session_state.extracted_ans
             
-            if st.button(f"🚀 [{target_class}] 정답지 최종 배포하기"):
+            new_answer = st.text_area(f"📝 [{target_class}] 정답 텍스트 누적 확인 및 수정", value=display_text, height=300)
+            
+            if st.button(f"🚀 [{target_class}] 정답지 최종 배포(누적)하기"):
+                # 텍스트 누적 저장
                 with open(target_ans_txt_path, "w", encoding="utf-8") as f:
                     f.write(new_answer)
                 
-                if ans_file:
-                    ext = ans_file.name.split('.')[-1]
-                    save_path = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}.{ext}")
-                    with open(save_path, "wb") as f:
-                        f.write(ans_file.getbuffer())
-                    with open(target_ans_file_path, "w", encoding="utf-8") as f:
-                        f.write(save_path)
+                # 🛠️ 원본 파일 경로 누적 저장
+                existing_paths = []
+                if os.path.exists(target_ans_file_path):
+                    with open(target_ans_file_path, "r", encoding="utf-8") as f:
+                        existing_paths = f.read().splitlines()
+                
+                if ans_files:
+                    for ans_file in ans_files:
+                        save_path = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}_{ans_file.name}")
+                        with open(save_path, "wb") as f:
+                            f.write(ans_file.getbuffer())
+                        if save_path not in existing_paths:
+                            existing_paths.append(save_path)
+                
+                with open(target_ans_file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(existing_paths))
                         
-                st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
+                st.success(f"✅ [{target_class}] 정답지가 성공적으로 누적 배포되었습니다!")
                 st.session_state.extracted_ans = ""
 
         with tab2:
