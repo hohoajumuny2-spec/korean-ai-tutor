@@ -47,7 +47,7 @@ if not api_key:
 
 os.environ["GOOGLE_API_KEY"] = api_key
 
-# 4. RAG 벡터 데이터베이스 구축 (자료 학습)
+# 4. RAG 벡터 데이터베이스 구축
 retriever = None
 if uploaded_pdfs:
     _files_hash = tuple((f.name, f.size) for f in uploaded_pdfs)
@@ -139,7 +139,7 @@ else:
                 st.markdown(response)
             
             elif retriever is None:
-                response = "🚫 아직 원장님께서 해설지 자료를 업로드하지 않으셨습니다. 사이드바를 확인해 주세요."
+                response = "🚫 아직 찐 국최 선생님께서 해설지 자료를 업로드하지 않으셨습니다. 사이드바를 확인해 주세요."
                 st.markdown(response)
             
             else:
@@ -162,7 +162,7 @@ else:
                 question_answer_chain = create_stuff_documents_chain(llm, prompt_template)
                 rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
-                with st.status("🔍 원장님의 해설지에서 정답을 찾는 중...", expanded=False):
+                with st.status("🔍 해설지에서 정확한 정답을 찾는 중...", expanded=False):
                     result = rag_chain.invoke({"input": prompt})
 
                 response = result["output"]
