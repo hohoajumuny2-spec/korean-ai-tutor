@@ -1,23 +1,5 @@
 import streamlit as st
 import os
-import sys
-import subprocess
-
-# ==========================================
-# 🚨 스트림릿 서버 버그 강제 돌파 및 필수 부품 설치
-# ==========================================
-@st.cache_resource
-def ensure_dependencies():
-    try:
-        import langchain
-        import pymupdf
-        import google.generativeai
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests", "google-generativeai"])
-
-ensure_dependencies()
-
 import csv
 import base64
 import requests
@@ -170,9 +152,10 @@ if menu == "💬 24시간 AI 튜터":
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
                 messages = [SystemMessage(content=base_instruction)]
-                user_content = [{"type": "text", "text": prompt}]
                 
+                # 🛠️ 에러 유발 코드 완벽 수정 (사진 유무에 따른 유연한 처리)
                 if uploaded_files:
+                    user_content = [{"type": "text", "text": prompt}]
                     for uf in uploaded_files:
                         if uf.type.startswith("image"):
                             img_b64 = base64.b64encode(uf.getvalue()).decode("utf-8")
@@ -184,8 +167,10 @@ if menu == "💬 24시간 AI 튜터":
                                 pdf_text += page.get_text()
                             doc.close()
                             user_content[0]["text"] += f"\n\n[첨부된 PDF 내용]\n{pdf_text}"
-
-                messages.append(HumanMessage(content=user_content))
+                    messages.append(HumanMessage(content=user_content))
+                else:
+                    # 사진이 없을 때는 순수 텍스트로만 전달하여 충돌 방지
+                    messages.append(HumanMessage(content=prompt))
                 
                 response = llm.invoke(messages)
                 ai_response = response.content
