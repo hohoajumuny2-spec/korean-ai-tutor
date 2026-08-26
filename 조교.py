@@ -27,7 +27,7 @@ from datetime import datetime
 # 랭체인(LangChain) 필수 모듈 임포트
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain.chains import create_retrieval_chain  # 원장님께서 추후 사용하실 모듈 보존
+# (에러를 유발하던 불필요한 코드 1줄 완벽히 삭제 완료)
 
 # ==========================================
 # ⭐️ 2026년 최강의 공식 모델
