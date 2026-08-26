@@ -5,19 +5,17 @@ import subprocess
 import csv
 import base64
 import requests
-import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# 🚨 서버 필수 부품 최신 버전 강제 설치
+# 🚨 서버 필수 부품 최신 버전 강제 설치 (불필요한 보조 프로그램 폐기)
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
     try:
         import google.generativeai
-        import pymupdf
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "pymupdf", "requests", "google-generativeai"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai"])
 
 ensure_dependencies()
 import google.generativeai as genai
@@ -41,13 +39,16 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 # 구글 다이렉트 엔진에 API 키 꽂기
 genai.configure(api_key=MY_API_KEY)
 
+# 🛠️ 텔레그램 에러 화면 출력 장치 추가 (무음 처리 해제)
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         try:
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=3)
-        except Exception:
-            pass 
+            res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
+            if res.status_code != 200:
+                st.error(f"🚨 텔레그램 발송 실패 (에러 {res.status_code}): {res.text}")
+        except Exception as e:
+            st.error(f"🚨 텔레그램 통신 오류: {e}")
 
 # 파일 및 폴더 설정
 log_file_path = "학생질문_모니터링_기록.csv"
@@ -170,17 +171,14 @@ if menu == "💬 24시간 AI 튜터":
                 
                 contents = [f"{base_instruction}\n\n[학생 질문]\n{prompt}"]
                 
+                # 🛠️ 구글 네이티브 OCR을 위한 완벽한 파일 처리 로직
                 if uploaded_files:
                     for uf in uploaded_files:
                         if uf.type.startswith("image"):
                             contents.append({"mime_type": uf.type, "data": uf.getvalue()})
                         elif uf.type == "application/pdf":
-                            doc = fitz.open(stream=uf.read(), filetype="pdf")
-                            pdf_text = ""
-                            for page in doc:
-                                pdf_text += page.get_text()
-                            doc.close()
-                            contents.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
+                            # PDF를 텍스트로 긁지 않고, 원본 자체를 넘겨서 완벽한 OCR 수행
+                            contents.append({"mime_type": "application/pdf", "data": uf.getvalue()})
                 
                 response = model.generate_content(contents)
                 ai_response = response.text
@@ -246,7 +244,6 @@ elif menu == "📝 과제 제출 및 정답 확인":
         st.subheader(f"🔓 [열림] {student_class} 정답 및 해설")
         st.success("과제 제출이 확인되어 해당 반의 누적된 정답지 열람 권한이 부여되었습니다.")
         
-        # 🛠️ 누적된 여러 개의 파일을 모두 화면에 출력
         if os.path.exists(class_ans_file_info):
             with open(class_ans_file_info, "r", encoding="utf-8") as f:
                 ans_filenames = f.read().splitlines()
@@ -288,12 +285,10 @@ elif menu == "🔒 원장님 전용 관리실":
 
             col_a, col_b = st.columns([3, 1])
             with col_a:
-                # 🛠️ 여러 개의 파일을 한 번에 업로드할 수 있도록 속성 변경
                 ans_files = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드 (여러 개 동시 가능)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
             with col_b:
                 st.write("")
                 st.write("")
-                # 🛠️ 자료가 너무 쌓였을 때 한 번에 비우는 기능
                 if st.button("🗑️ 이 반의 정답지 전체 초기화"):
                     if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
                     if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
@@ -306,24 +301,19 @@ elif menu == "🔒 원장님 전용 관리실":
                 
             if ans_files:
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기"):
-                    with st.spinner("AI 엔진이 스캔 중입니다... (약 10초 소요)"):
+                    with st.spinner("AI 엔진이 네이티브 스캔 중입니다... (약 10초 소요)"):
                         try:
                             scan_model = genai.GenerativeModel(TARGET_MODEL)
                             all_extracted_text = ""
                             
-                            # 🛠️ 여러 개의 파일을 순회하며 텍스트를 누적 추출
                             for ans_file in ans_files:
                                 scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
                                 
                                 if ans_file.type.startswith("image"):
                                     scan_content.append({"mime_type": ans_file.type, "data": ans_file.getvalue()})
                                 elif ans_file.type == "application/pdf":
-                                    doc = fitz.open(stream=ans_file.read(), filetype="pdf")
-                                    pdf_text = ""
-                                    for page in doc:
-                                        pdf_text += page.get_text()
-                                    doc.close()
-                                    scan_content.append(f"\n[첨부된 PDF 내용]\n{pdf_text}")
+                                    # 🛠️ 관리실 스캐너도 PDF 통째로 OCR 인식 적용
+                                    scan_content.append({"mime_type": "application/pdf", "data": ans_file.getvalue()})
                                     
                                 response = scan_model.generate_content(scan_content)
                                 all_extracted_text += f"\n\n--- [{ans_file.name}] ---\n" + response.text
@@ -333,13 +323,11 @@ elif menu == "🔒 원장님 전용 관리실":
                         except Exception as e:
                             st.error(f"추출 중 오류가 발생했습니다: {e}")
             
-            # 기존에 누적된 텍스트 불러오기
             saved_answer = ""
             if os.path.exists(target_ans_txt_path):
                 with open(target_ans_txt_path, "r", encoding="utf-8") as f:
                     saved_answer = f.read()
             
-            # 🛠️ 기존 텍스트 + 새로 스캔된 텍스트 결합
             display_text = saved_answer
             if st.session_state.extracted_ans:
                 if display_text:
@@ -350,11 +338,9 @@ elif menu == "🔒 원장님 전용 관리실":
             new_answer = st.text_area(f"📝 [{target_class}] 정답 텍스트 누적 확인 및 수정", value=display_text, height=300)
             
             if st.button(f"🚀 [{target_class}] 정답지 최종 배포(누적)하기"):
-                # 텍스트 누적 저장
                 with open(target_ans_txt_path, "w", encoding="utf-8") as f:
                     f.write(new_answer)
                 
-                # 🛠️ 원본 파일 경로 누적 저장
                 existing_paths = []
                 if os.path.exists(target_ans_file_path):
                     with open(target_ans_file_path, "r", encoding="utf-8") as f:
@@ -429,12 +415,19 @@ elif menu == "🔒 원장님 전용 관리실":
                     extracted_text = ""
                     for ref_file in ref_files:
                         if ref_file.name.lower().endswith('.pdf'):
-                            doc = fitz.open(stream=ref_file.read(), filetype="pdf")
-                            for page in doc:
-                                extracted_text += page.get_text()
-                            doc.close()
+                            # 🛠️ 두뇌 강화 탭도 PDF 통째로 OCR 인식 적용
+                            try:
+                                extract_model = genai.GenerativeModel(TARGET_MODEL)
+                                extract_res = extract_model.generate_content([
+                                    "이 PDF 파일의 모든 텍스트를 빠짐없이 추출해줘.",
+                                    {"mime_type": "application/pdf", "data": ref_file.getvalue()}
+                                ])
+                                extracted_text += extract_res.text + "\n"
+                            except Exception as e:
+                                st.error(f"PDF 추출 오류: {e}")
                         else:
                             extracted_text += ref_file.getvalue().decode("utf-8") + "\n"
+                    
                     with open(reference_file_path, mode='a', encoding='utf-8') as f:
                         f.write(f"\n\n--- [업로드: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ---\n{extracted_text}")
                     st.success("✅ 학습 완료!")
