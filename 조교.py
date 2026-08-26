@@ -9,11 +9,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # ==========================================
-# ⭐️ 구글 공식 안정화 모델 고정
-# ==========================================
-TARGET_MODEL = "gemini-1.5-flash" 
-
-# ==========================================
 # 🔒 비밀 금고 안전장치 (열쇠 확인)
 # ==========================================
 if "MY_API_KEY" not in st.secrets:
@@ -106,7 +101,7 @@ class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
-    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
+    st.markdown("모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -135,7 +130,9 @@ if menu == "💬 24시간 AI 튜터":
             message_placeholder.markdown("AI 튜터가 분석 중입니다...")
             
             try:
-                llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
+                # 🛠️ 사진 유무에 따라 가장 안정적인 범용 모델로 자동 전환 (404 에러 원천 차단)
+                safe_model = "gemini-pro-vision" if uploaded_files else "gemini-pro"
+                llm = ChatGoogleGenerativeAI(model=safe_model, google_api_key=MY_API_KEY)
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
@@ -151,11 +148,9 @@ if menu == "💬 24시간 AI 튜터":
                     if accumulated_doc.strip():
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
-                # 🛠️ 랭체인 충돌을 원천 차단하는 가장 정석적인 메시지 조합 구조
-                messages = [SystemMessage(content=base_instruction)]
-                
+                # 🛠️ 데이터 누수 방지를 위한 안전한 메시지 조합 구조
                 if uploaded_files:
-                    user_content = [{"type": "text", "text": prompt}]
+                    user_content = [{"type": "text", "text": f"{base_instruction}\n\n[학생 질문]\n{prompt}"}]
                     for uf in uploaded_files:
                         if uf.type.startswith("image"):
                             img_b64 = base64.b64encode(uf.getvalue()).decode("utf-8")
@@ -167,10 +162,10 @@ if menu == "💬 24시간 AI 튜터":
                                 pdf_text += page.get_text()
                             doc.close()
                             user_content[0]["text"] += f"\n\n[첨부된 PDF 내용]\n{pdf_text}"
-                    messages.append(HumanMessage(content=user_content))
+                    messages = [HumanMessage(content=user_content)]
                 else:
-                    # 사진이 없을 때는 완벽하게 텍스트만 전달 (충돌 에러 완전 해결)
-                    messages.append(HumanMessage(content=prompt))
+                    combined_text = f"{base_instruction}\n\n[학생 질문]\n{prompt}"
+                    messages = [HumanMessage(content=combined_text)]
                 
                 response = llm.invoke(messages)
                 ai_response = response.content
@@ -283,7 +278,8 @@ elif menu == "🔒 원장님 전용 관리실":
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
                     with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
                         try:
-                            llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
+                            scan_model = "gemini-pro-vision" if ans_file.type.startswith("image") else "gemini-pro"
+                            llm = ChatGoogleGenerativeAI(model=scan_model, google_api_key=MY_API_KEY)
                             scan_content = [{"type": "text", "text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."}]
                             
                             if ans_file.type.startswith("image"):
