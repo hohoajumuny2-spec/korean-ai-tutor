@@ -1,23 +1,5 @@
 import streamlit as st
 import os
-import sys
-import subprocess
-
-# ==========================================
-# 🚨 스트림릿 서버 버그 강제 돌파 및 필수 부품 설치
-# ==========================================
-@st.cache_resource
-def ensure_dependencies():
-    try:
-        import langchain
-        import pymupdf
-        import google.generativeai
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests", "google-generativeai"])
-
-ensure_dependencies()
-
 import csv
 import base64
 import requests
@@ -53,7 +35,6 @@ def send_telegram_alert(message):
 def get_best_available_model():
     try:
         genai.configure(api_key=MY_API_KEY)
-        # 원장님 계정에서 쓸 수 있는 모든 모델 목록 스캔
         available_models = [
             m.name.replace("models/", "") 
             for m in genai.list_models() 
@@ -61,16 +42,13 @@ def get_best_available_model():
         ]
         
         if available_models:
-            # 가장 성능이 뛰어난 Pro 모델부터 순서대로 탐색하여 장착
             for pref in ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-pro", "gemini-1.5-flash", "gemini-1.5-flash-latest"]:
                 if pref in available_models:
                     return pref
-            # 위 이름이 없으면 목록에 있는 첫 번째 모델 강제 장착
             return available_models[0]
     except Exception as e:
         pass
-    
-    return "gemini-1.5-flash" # 스캔 실패 시 비상용 기본값
+    return "gemini-1.5-flash" 
 
 TARGET_MODEL = get_best_available_model()
 
