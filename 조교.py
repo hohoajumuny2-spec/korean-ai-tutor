@@ -27,12 +27,11 @@ from datetime import datetime
 # 랭체인(LangChain) 필수 모듈 임포트
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
-# (에러를 유발하던 불필요한 코드 1줄 완벽히 삭제 완료)
 
 # ==========================================
-# ⭐️ 2026년 최강의 공식 모델
+# ⭐️ 2026년 최강의 공식 모델 (Pro 버전으로 업그레이드 완료)
 # ==========================================
-TARGET_MODEL = "gemini-1.5-flash" 
+TARGET_MODEL = "gemini-1.5-pro" 
 
 # ==========================================
 # 🔒 비밀 금고 안전장치 (에러 방지)
