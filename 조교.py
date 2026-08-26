@@ -1,13 +1,35 @@
 import streamlit as st
 import os
+import sys
+import subprocess
+
+# ==========================================
+# 🚨 스트림릿 서버 버그 강제 돌파 및 필수 부품 설치
+# ==========================================
+@st.cache_resource
+def ensure_dependencies():
+    try:
+        import langchain
+        import pymupdf
+        import google.generativeai
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests", "google-generativeai"])
+
+ensure_dependencies()
+
 import csv
 import base64
 import requests
 import pymupdf as fitz
 from datetime import datetime
-import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
+
+# ==========================================
+# ⭐️ 구글 서버 공식 안내 최신 모델 고정
+# ==========================================
+TARGET_MODEL = "gemini-3.6-flash" 
 
 # ==========================================
 # 🔒 비밀 금고 안전장치 (열쇠 확인)
@@ -27,30 +49,6 @@ def send_telegram_alert(message):
             requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=3)
         except Exception:
             pass 
-
-# ==========================================
-# 🤖 구글 서버 스캔 및 최강 모델 '자동 장착' 시스템
-# ==========================================
-@st.cache_resource
-def get_best_available_model():
-    try:
-        genai.configure(api_key=MY_API_KEY)
-        available_models = [
-            m.name.replace("models/", "") 
-            for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        if available_models:
-            for pref in ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-pro", "gemini-1.5-flash", "gemini-1.5-flash-latest"]:
-                if pref in available_models:
-                    return pref
-            return available_models[0]
-    except Exception as e:
-        pass
-    return "gemini-1.5-flash" 
-
-TARGET_MODEL = get_best_available_model()
 
 # 파일 및 폴더 설정
 log_file_path = "학생질문_모니터링_기록.csv"
