@@ -1,16 +1,23 @@
 import streamlit as st
-import requests
-import base64
 import os
 import csv
+import base64
+import requests
 import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# ⭐️ 2026년 최강의 공식 모델 (결제 연동 완료) ⭐️
+# 🔗 랭체인(LangChain) 필수 모듈 임포트
 # ==========================================
-TARGET_MODEL = "gemini-3.6-flash" 
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.chains import create_retrieval_chain  # 원장님께서 추후 사용하실 모듈 보존
+
 # ==========================================
+# ⭐️ 2026년 최강의 공식 모델 (결제 연동 완료)
+# ==========================================
+# 랭체인에서는 실제 API에 등록된 정확한 모델명을 사용해야 합니다.
+TARGET_MODEL = "gemini-1.5-flash" 
 
 # API 키 및 설정
 MY_API_KEY = st.secrets["MY_API_KEY"]
@@ -20,13 +27,12 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
 def send_telegram_alert(message):
-    """원장님 텔레그램으로 실시간 알림을 보내는 함수"""
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         try:
             requests.post(url, json=payload, timeout=3)
-        except Exception as e:
+        except Exception:
             pass 
 
 # 파일 및 폴더 설정
@@ -59,10 +65,10 @@ for file_path, headers in [(log_file_path, ["질문 일시", "반 이름", "학�
 st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered")
 
 # ==========================================
-# 🦉 메인 타이틀 및 원장님 사진
+# 🦉 메인 타이틀
 # ==========================================
 st.markdown("<h1 style='text-align: center;'>🦉 LogyEDU 24시 국최</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터 (LangChain 적용)</p>", unsafe_allow_html=True)
 
 image_names = ["photo.png", "제목을 입력해주세요..png", "photo.jpg"]
 for img_name in image_names:
@@ -99,7 +105,7 @@ class_ans_txt = os.path.join(ANS_FOLDER, f"ans_txt_{safe_class}.txt")
 class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 
 # ==========================================
-# 💬 메뉴 1: 24시간 AI 튜터
+# 💬 메뉴 1: 24시간 AI 튜터 (랭체인 적용)
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
@@ -111,84 +117,85 @@ if menu == "💬 24시간 AI 튜터":
     for msg in st.session_state.messages:
         if msg["role"] != "system":
             with st.chat_message("user" if msg["role"] == "user" else "assistant"):
-                if "files" in msg:
-                    for f_data in msg["files"]:
-                        if f_data["type"].startswith("image"):
-                            st.image(f_data["bytes"], width=350)
-                        else:
-                            st.markdown(f"📄 **{f_data['name']}**")
-                st.markdown(msg["parts"][0]["text"])
+                st.markdown(msg["content"])
 
     uploaded_files = st.file_uploader("📷 질문할 사진이나 PDF 파일 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
     if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         with st.chat_message("user"):
+            st.markdown(prompt)
             if uploaded_files:
                 for uf in uploaded_files:
                     if uf.type.startswith("image"):
                         st.image(uf, width=350)
                     else:
-                        st.markdown(f"📄 **{uf.name}**")
-            st.markdown(prompt)
+                        st.markdown(f"📄 **{uf.name}** 첨부됨")
             
-        user_msg_data = {"role": "user", "parts": [{"text": prompt}]}
-        if uploaded_files:
-            file_list = []
-            for uf in uploaded_files:
-                file_list.append({"name": uf.name, "type": uf.type, "bytes": uf.getvalue()})
-            user_msg_data["files"] = file_list
-        st.session_state.messages.append(user_msg_data)
+        st.session_state.messages.append({"role": "user", "content": prompt})
         
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("분석 중입니다...")
+            message_placeholder.markdown("랭체인(LangChain) AI가 분석 중입니다...")
             
             try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
-                headers = {'Content-Type': 'application/json'}
+                # 🚀 랭체인(LangChain) 모델 초기화
+                llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
                 
-                base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
+                # 프롬프트 컨텍스트 구성
+                base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
                 if os.path.exists(class_ans_txt):
                     with open(class_ans_txt, mode='r', encoding='utf-8') as f:
                         today_ans = f.read()
                     if today_ans.strip():
-                        base_instruction += f"\n\n[해당 반({student_class}) 과제 정답지 (최우선 참고)]\n{today_ans}\n\n"
+                        base_instruction += f"\n\n[해당 반({student_class}) 과제 정답지]\n{today_ans}"
                         
                 if os.path.exists(reference_file_path):
                     with open(reference_file_path, mode='r', encoding='utf-8') as f:
                         accumulated_doc = f.read()
                     if accumulated_doc.strip():
-                        base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}\n\n"
-                    
-                parts_list = [{"text": f"{base_instruction}\n\n학생 질문: {prompt}"}]
+                        base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
+                
+                # 랭체인 메시지 객체 생성
+                messages = [SystemMessage(content=base_instruction)]
+                
+                # 사용자 입력 및 멀티모달(사진/PDF) 처리
+                user_content = [{"type": "text", "text": prompt}]
                 
                 if uploaded_files:
                     for uf in uploaded_files:
-                        parts_list.append({"inlineData": {"mimeType": uf.type, "data": base64.b64encode(uf.getvalue()).decode('utf-8')}})
-                    
-                data = {"contents": [{"parts": parts_list}]}
-                response = requests.post(url, headers=headers, json=data)
-                
-                if response.status_code == 200:
-                    ai_response = response.json()['candidates'][0]['content']['parts'][0]['text']
-                    message_placeholder.markdown(ai_response)
-                    st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
-                    
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    file_count = f"{len(uploaded_files)}개" if uploaded_files else "0개"
-                    
-                    with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
-                        writer = csv.writer(f)
-                        writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
-                        
-                    alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
-                    send_telegram_alert(alert_msg)
+                        if uf.type.startswith("image"):
+                            img_b64 = base64.b64encode(uf.getvalue()).decode("utf-8")
+                            user_content.append({"type": "image_url", "image_url": f"data:{uf.type};base64,{img_b64}"})
+                        elif uf.type == "application/pdf":
+                            doc = fitz.open(stream=uf.read(), filetype="pdf")
+                            pdf_text = ""
+                            for page in doc:
+                                pdf_text += page.get_text()
+                            doc.close()
+                            user_content[0]["text"] += f"\n\n[첨부된 PDF 내용]\n{pdf_text}"
 
-                else:
-                    message_placeholder.error(f"오류 발생: {response.json().get('error', {}).get('message', '')}")
+                messages.append(HumanMessage(content=user_content))
+                
+                # 랭체인 실행
+                response = llm.invoke(messages)
+                ai_response = response.content
+                
+                message_placeholder.markdown(ai_response)
+                st.session_state.messages.append({"role": "model", "content": ai_response})
+                
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                file_count = f"{len(uploaded_files)}개" if uploaded_files else "0개"
+                
+                with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
+                    
+                alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
+                send_telegram_alert(alert_msg)
+
             except Exception as e:
-                message_placeholder.error(f"통신 오류: {e}")
+                message_placeholder.error(f"랭체인 통신 오류: {e}")
                 
     st.divider()
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
@@ -286,27 +293,28 @@ elif menu == "🔒 원장님 전용 관리실":
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
                     with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
                         try:
-                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
-                            headers = {'Content-Type': 'application/json'}
-                            encoded_file = base64.b64encode(ans_file.getvalue()).decode('utf-8')
+                            # 랭체인을 활용한 정답 스캔
+                            llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
+                            scan_content = [{"type": "text", "text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."}]
                             
-                            data = {
-                                "contents": [{
-                                    "parts": [
-                                        {"text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."},
-                                        {"inlineData": {"mimeType": ans_file.type, "data": encoded_file}}
-                                    ]
-                                }]
-                            }
-                            response = requests.post(url, headers=headers, json=data)
-                            if response.status_code == 200:
-                                extracted_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-                                st.session_state.extracted_ans = extracted_text
-                                st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
-                            else:
-                                st.error("추출 중 오류가 발생했습니다.")
+                            if ans_file.type.startswith("image"):
+                                img_b64 = base64.b64encode(ans_file.getvalue()).decode('utf-8')
+                                scan_content.append({"type": "image_url", "image_url": f"data:{ans_file.type};base64,{img_b64}"})
+                            elif ans_file.type == "application/pdf":
+                                doc = fitz.open(stream=ans_file.read(), filetype="pdf")
+                                pdf_text = ""
+                                for page in doc:
+                                    pdf_text += page.get_text()
+                                doc.close()
+                                scan_content[0]["text"] += f"\n\n{pdf_text}"
+                                
+                            scan_msg = [HumanMessage(content=scan_content)]
+                            scan_res = llm.invoke(scan_msg)
+                            
+                            st.session_state.extracted_ans = scan_res.content
+                            st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
                         except Exception as e:
-                            st.error(f"통신 오류: {e}")
+                            st.error(f"추출 중 오류가 발생했습니다: {e}")
             
             saved_answer = st.session_state.extracted_ans
             if not saved_answer and os.path.exists(target_ans_txt_path):
@@ -346,7 +354,6 @@ elif menu == "🔒 원장님 전용 관리실":
             st.divider()
             
             st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
-            st.caption("학생들이 찍어 올린 사진이나 PDF를 직접 다운로드하여 검수할 수 있습니다.")
             if os.path.exists(HW_FOLDER):
                 submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True)
                 if submitted_files:
