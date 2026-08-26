@@ -4,17 +4,17 @@ import sys
 import subprocess
 
 # ==========================================
-# 🚨 스트림릿 서버 버그 강제 돌파 (자가 복구 코드)
+# 🚨 스트림릿 서버 버그 강제 돌파 및 필수 부품 설치
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
     try:
         import langchain
         import pymupdf
+        import google.generativeai
         from langchain_google_genai import ChatGoogleGenerativeAI
     except ImportError:
-        # 서버가 패키지 설치를 누락하면, 코드가 직접 강제 설치합니다.
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests", "google-generativeai"])
 
 ensure_dependencies()
 
@@ -23,21 +23,15 @@ import base64
 import requests
 import pymupdf as fitz
 from datetime import datetime
-
-# 랭체인(LangChain) 필수 모듈 임포트
+import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # ==========================================
-# ⭐️ 2026년 최강의 공식 모델 (가장 확실하고 안정적인 범용 명칭 적용)
-# ==========================================
-TARGET_MODEL = "gemini-pro" 
-
-# ==========================================
-# 🔒 비밀 금고 안전장치 (에러 방지)
+# 🔒 비밀 금고 안전장치 (열쇠 확인)
 # ==========================================
 if "MY_API_KEY" not in st.secrets:
-    st.warning("🔑 아직 열쇠가 없습니다! 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets` 에 들어가서 구글 API 키와 텔레그램 정보를 먼저 붙여넣어 주세요.")
+    st.warning("🔑 아직 열쇠가 없습니다! 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets` 에 구글 API 키를 먼저 넣어주세요.")
     st.stop()
 
 MY_API_KEY = st.secrets["MY_API_KEY"]
@@ -47,11 +41,38 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         try:
-            requests.post(url, json=payload, timeout=3)
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=3)
         except Exception:
             pass 
+
+# ==========================================
+# 🤖 구글 서버 스캔 및 최강 모델 '자동 장착' 시스템
+# ==========================================
+@st.cache_resource
+def get_best_available_model():
+    try:
+        genai.configure(api_key=MY_API_KEY)
+        # 원장님 계정에서 쓸 수 있는 모든 모델 목록 스캔
+        available_models = [
+            m.name.replace("models/", "") 
+            for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        if available_models:
+            # 가장 성능이 뛰어난 Pro 모델부터 순서대로 탐색하여 장착
+            for pref in ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-pro", "gemini-1.5-flash", "gemini-1.5-flash-latest"]:
+                if pref in available_models:
+                    return pref
+            # 위 이름이 없으면 목록에 있는 첫 번째 모델 강제 장착
+            return available_models[0]
+    except Exception as e:
+        pass
+    
+    return "gemini-1.5-flash" # 스캔 실패 시 비상용 기본값
+
+TARGET_MODEL = get_best_available_model()
 
 # 파일 및 폴더 설정
 log_file_path = "학생질문_모니터링_기록.csv"
@@ -86,7 +107,7 @@ st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered
 # 🦉 메인 타이틀
 # ==========================================
 st.markdown("<h1 style='text-align: center;'>🦉 LogyEDU 24시 국최</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터 (LangChain 적용)</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터</p>", unsafe_allow_html=True)
 
 image_names = ["photo.png", "제목을 입력해주세요..png", "photo.jpg"]
 for img_name in image_names:
@@ -123,11 +144,11 @@ class_ans_txt = os.path.join(ANS_FOLDER, f"ans_txt_{safe_class}.txt")
 class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 
 # ==========================================
-# 💬 메뉴 1: 24시간 AI 튜터 (랭체인 적용)
+# 💬 메뉴 1: 24시간 AI 튜터
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
-    st.markdown("모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
+    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요. (현재 작동 모델: **{TARGET_MODEL}**)")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -153,7 +174,7 @@ if menu == "💬 24시간 AI 튜터":
         
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("랭체인(LangChain) AI가 분석 중입니다...")
+            message_placeholder.markdown("AI 튜터가 분석 중입니다...")
             
             try:
                 llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
@@ -207,7 +228,7 @@ if menu == "💬 24시간 AI 튜터":
                 send_telegram_alert(alert_msg)
 
             except Exception as e:
-                message_placeholder.error(f"랭체인 통신 오류: {e}")
+                message_placeholder.error(f"통신 오류: {e}")
                 
     st.divider()
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
