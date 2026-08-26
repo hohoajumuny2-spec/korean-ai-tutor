@@ -1,28 +1,47 @@
 import streamlit as st
 import os
+import sys
+import subprocess
+
+# ==========================================
+# 🚨 스트림릿 서버 버그 강제 돌파 (자가 복구 코드)
+# ==========================================
+@st.cache_resource
+def ensure_dependencies():
+    try:
+        import langchain
+        import pymupdf
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError:
+        # 서버가 패키지 설치를 누락하면, 코드가 직접 강제 설치합니다.
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "langchain", "langchain-community", "langchain-google-genai", "pymupdf", "requests"])
+
+ensure_dependencies()
+
 import csv
 import base64
 import requests
 import pymupdf as fitz
 from datetime import datetime
 
-# ==========================================
-# 🔗 랭체인(LangChain) 필수 모듈 임포트
-# ==========================================
+# 랭체인(LangChain) 필수 모듈 임포트
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.chains import create_retrieval_chain  # 원장님께서 추후 사용하실 모듈 보존
 
 # ==========================================
-# ⭐️ 2026년 최강의 공식 모델 (결제 연동 완료)
+# ⭐️ 2026년 최강의 공식 모델
 # ==========================================
-# 랭체인에서는 실제 API에 등록된 정확한 모델명을 사용해야 합니다.
 TARGET_MODEL = "gemini-1.5-flash" 
 
-# API 키 및 설정
-MY_API_KEY = st.secrets["MY_API_KEY"]
+# ==========================================
+# 🔒 비밀 금고 안전장치 (에러 방지)
+# ==========================================
+if "MY_API_KEY" not in st.secrets:
+    st.warning("🔑 아직 열쇠가 없습니다! 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets` 에 들어가서 구글 API 키와 텔레그램 정보를 먼저 붙여넣어 주세요.")
+    st.stop()
 
-# 📱 텔레그램 실시간 알림 설정
+MY_API_KEY = st.secrets["MY_API_KEY"]
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
@@ -138,10 +157,8 @@ if menu == "💬 24시간 AI 튜터":
             message_placeholder.markdown("랭체인(LangChain) AI가 분석 중입니다...")
             
             try:
-                # 🚀 랭체인(LangChain) 모델 초기화
                 llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
                 
-                # 프롬프트 컨텍스트 구성
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
                 if os.path.exists(class_ans_txt):
@@ -156,10 +173,7 @@ if menu == "💬 24시간 AI 튜터":
                     if accumulated_doc.strip():
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
-                # 랭체인 메시지 객체 생성
                 messages = [SystemMessage(content=base_instruction)]
-                
-                # 사용자 입력 및 멀티모달(사진/PDF) 처리
                 user_content = [{"type": "text", "text": prompt}]
                 
                 if uploaded_files:
@@ -177,7 +191,6 @@ if menu == "💬 24시간 AI 튜터":
 
                 messages.append(HumanMessage(content=user_content))
                 
-                # 랭체인 실행
                 response = llm.invoke(messages)
                 ai_response = response.content
                 
@@ -273,17 +286,13 @@ elif menu == "🔒 원장님 전용 관리실":
         
         tab1, tab2, tab3, tab4 = st.tabs(["🔑 반별 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
         
-        # 탭 1: 정답지 등록
         with tab1:
             st.markdown("#### 반별 과제 정답 파일 등록")
-            
             target_class = st.selectbox("📌 정답지를 배포할 반을 선택하세요.", CLASS_LIST)
             safe_target_class = get_safe_name(target_class)
             target_ans_txt_path = os.path.join(ANS_FOLDER, f"ans_txt_{safe_target_class}.txt")
             target_ans_file_path = os.path.join(ANS_FOLDER, f"ans_file_{safe_target_class}.txt")
 
-            st.caption(f"여기에 등록하신 내용은 오직 [{target_class}] 과제를 제출한 학생들에게만 공개됩니다.")
-            
             ans_file = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"])
             
             if "extracted_ans" not in st.session_state:
@@ -293,7 +302,6 @@ elif menu == "🔒 원장님 전용 관리실":
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
                     with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
                         try:
-                            # 랭체인을 활용한 정답 스캔
                             llm = ChatGoogleGenerativeAI(model=TARGET_MODEL, google_api_key=MY_API_KEY)
                             scan_content = [{"type": "text", "text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."}]
                             
@@ -338,7 +346,6 @@ elif menu == "🔒 원장님 전용 관리실":
                 st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
                 st.session_state.extracted_ans = ""
 
-        # 탭 2: 과제 제출 현황
         with tab2:
             st.markdown("#### 📊 실시간 과제 제출 기록")
             if os.path.exists(hw_log_path):
@@ -348,11 +355,8 @@ elif menu == "🔒 원장님 전용 관리실":
                     hw_data = list(csv.reader(f))
                     if len(hw_data) > 1:
                         st.dataframe(hw_data[1:])
-            else:
-                st.info("제출된 과제가 없습니다.")
-
-            st.divider()
             
+            st.divider()
             st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
             if os.path.exists(HW_FOLDER):
                 submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True)
@@ -361,31 +365,18 @@ elif menu == "🔒 원장님 전용 관리실":
                         file_path = os.path.join(HW_FOLDER, f_name)
                         with open(file_path, "rb") as f:
                             file_bytes = f.read()
-                        
                         col_a, col_b = st.columns([4, 1])
                         with col_a:
                             st.write(f"📄 {f_name}")
                         with col_b:
                             st.download_button("📥 열기", data=file_bytes, file_name=f_name, key=f_name)
-                else:
-                    st.caption("아직 업로드된 과제 파일이 없습니다.")
-                    
+            
             st.divider()
-            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
-            if st.button("🚨 과제 제출 기록 및 원본 파일 전체 삭제"):
+            if st.button("🚨 과제 제출 기록 전체 삭제"):
                 with open(hw_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
-                
-                if os.path.exists(HW_FOLDER):
-                    for f_name in os.listdir(HW_FOLDER):
-                        file_path = os.path.join(HW_FOLDER, f_name)
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            
-                st.success("✅ 과제 기록과 학생들이 제출한 원본 파일이 모두 삭제되었습니다. (새로고침을 해주세요)")
+                    csv.writer(f).writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
+                st.success("✅ 삭제 완료.")
 
-        # 탭 3: 질문 모니터링
         with tab3:
             st.markdown("#### 학생들이 챗봇에 질문한 내역")
             if os.path.exists(log_file_path):
@@ -395,18 +386,13 @@ elif menu == "🔒 원장님 전용 관리실":
                     data = list(csv.reader(f))
                     if len(data) > 1:
                         st.dataframe(data[1:])
-            else:
-                st.info("질문 기록이 없습니다.")
-                
+            
             st.divider()
-            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
             if st.button("🚨 학생 질문 기록 전체 삭제"):
                 with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
-                st.success("✅ 학생들의 질문 기록이 모두 삭제되었습니다. (새로고침을 해주세요)")
+                    csv.writer(f).writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
+                st.success("✅ 삭제 완료.")
 
-        # 탭 4: 해설지 누적
         with tab4:
             st.markdown("#### 챗봇 두뇌 강화 (해설지 업로드)")
             ref_files = st.file_uploader("새로운 해설지 파일 업로드", type=["pdf", "txt"], accept_multiple_files=True)
