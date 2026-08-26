@@ -1,173 +1,427 @@
-import os
-import tempfile
 import streamlit as st
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI,
-    GoogleGenerativeAIEmbeddings,
-)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import requests
+import base64
+import os
+import csv
+import pymupdf as fitz
+from datetime import datetime
 
-# 1. 페이지 기본 설정
-st.set_page_config(
-    page_title="24시 국최 (AI 국어 튜터)", layout="wide"
-)
+# ==========================================
+# ⭐️ 2026년 최강의 공식 모델 (결제 연동 완료) ⭐️
+# ==========================================
+TARGET_MODEL = "gemini-3.6-flash" 
+# ==========================================
 
-# 2. 세션 상태(Session State) 초기화
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "student_class" not in st.session_state:
-    st.session_state.student_class = ""
-if "student_name" not in st.session_state:
-    st.session_state.student_name = ""
-if "hw_submitted" not in st.session_state:
-    st.session_state.hw_submitted = False
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# API 키 및 설정
+MY_API_KEY = st.secrets["MY_API_KEY"]
 
-# 3. 사이드바: 원장님 전용 설정 영역
-with st.sidebar:
-    st.header("⚙️ 원장님 전용 설정 (자료실)")
-    api_key = st.text_input("Gemini API Key 입력", type="password")
-    
-    st.markdown("---")
-    uploaded_pdfs = st.file_uploader(
-        "국어 해설지/답안지 PDF 업로드",
-        type=["pdf"],
-        accept_multiple_files=True,
-    )
+# 📱 텔레그램 실시간 알림 설정
+TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-if not api_key:
-    st.warning("⚠️ 좌측 사이드바에 Gemini API Key를 먼저 입력해 주세요.")
+def send_telegram_alert(message):
+    """원장님 텔레그램으로 실시간 알림을 보내는 함수"""
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        try:
+            requests.post(url, json=payload, timeout=3)
+        except Exception as e:
+            pass 
+
+# 파일 및 폴더 설정
+log_file_path = "학생질문_모니터링_기록.csv"
+reference_file_path = "공용해설지_누적본.txt" 
+hw_log_path = "과제제출_기록.csv"
+HW_FOLDER = "hw_uploads"
+ANS_FOLDER = "answers"
+
+CLASS_LIST = [
+    "중등부 문해력", "고1 미강고", "고1 미사고", "고1 하남고", "고1 풍산고",
+    "고2 미강고 토요일", "고2 미강고 일요일", "고2 하남고", "고2 미사고", "고2 풍산고",
+    "고3 / N수", "모의고사", "논술"
+]
+
+def get_safe_name(name):
+    return name.replace("/", "_").replace(" ", "")
+
+for folder in [HW_FOLDER, ANS_FOLDER]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+for file_path, headers in [(log_file_path, ["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"]),
+                           (hw_log_path, ["제출 일시", "반 이름", "학생 이름", "제출 파일명"])]:
+    if not os.path.exists(file_path):
+        with open(file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+
+st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered")
+
+# ==========================================
+# 🦉 메인 타이틀 및 원장님 사진
+# ==========================================
+st.markdown("<h1 style='text-align: center;'>🦉 LogyEDU 24시 국최</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>최준용 원장님의 24시간 밀착 관리형 국어 AI 튜터</p>", unsafe_allow_html=True)
+
+image_names = ["photo.png", "제목을 입력해주세요..png", "photo.jpg"]
+for img_name in image_names:
+    if os.path.exists(img_name):
+        st.image(img_name, use_container_width=True)
+        break 
+
+st.divider()
+
+# ==========================================
+# 👤 학생 인증 및 반 선택
+# ==========================================
+col1, col2 = st.columns([1, 2])
+with col1:
+    st.markdown("### 👤 학생 인증")
+with col2:
+    student_class = st.selectbox("본인의 수강 반을 선택하세요.", ["반을 선택해 주세요."] + CLASS_LIST, label_visibility="collapsed")
+    student_name = st.text_input("본인의 이름을 정확히 입력하세요.", placeholder="예: 이연서", label_visibility="collapsed")
+
+if student_class == "반을 선택해 주세요." or not student_name:
+    st.warning("수강 반 선택과 이름 입력을 완료해야 시스템 메뉴가 활성화됩니다.")
     st.stop()
 
-os.environ["GOOGLE_API_KEY"] = api_key
+st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
 
-# 4. RAG 벡터 데이터베이스 구축
-retriever = None
-if uploaded_pdfs:
-    _files_hash = tuple((f.name, f.size) for f in uploaded_pdfs)
+menu = st.radio("🧭 원하는 메뉴를 선택하세요.", 
+                ["💬 24시간 AI 튜터", "📝 과제 제출 및 정답 확인", "🔒 원장님 전용 관리실"], 
+                horizontal=True)
 
-    @st.cache_resource
-    def load_and_vectorize(files_hash):
-        docs = []
-        for uploaded_file in uploaded_pdfs:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-            loader = PyPDFLoader(tmp_path)
-            docs.extend(loader.load())
-            os.unlink(tmp_path) 
+st.divider()
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        splits = text_splitter.split_documents(docs)
+safe_class = get_safe_name(student_class)
+class_ans_txt = os.path.join(ANS_FOLDER, f"ans_txt_{safe_class}.txt")
+class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
+# ==========================================
+# 💬 메뉴 1: 24시간 AI 튜터
+# ==========================================
+if menu == "💬 24시간 AI 튜터":
+    st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
+    st.markdown("모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
 
-        return vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    try:
-        with st.spinner("🔄 업로드된 자료의 본문 내용을 분석 중입니다..."):
-            retriever = load_and_vectorize(_files_hash)
-        st.sidebar.success(f"✅ 총 {len(uploaded_pdfs)}개 파일 학습 완료!")
-    except Exception as e:
-        st.sidebar.error(f"오류 발생: {e}")
+    for msg in st.session_state.messages:
+        if msg["role"] != "system":
+            with st.chat_message("user" if msg["role"] == "user" else "assistant"):
+                if "files" in msg:
+                    for f_data in msg["files"]:
+                        if f_data["type"].startswith("image"):
+                            st.image(f_data["bytes"], width=350)
+                        else:
+                            st.markdown(f"📄 **{f_data['name']}**")
+                st.markdown(msg["parts"][0]["text"])
 
-# =====================================================================
-# 5. 메인 화면 로직
-# =====================================================================
+    uploaded_files = st.file_uploader("📷 질문할 사진이나 PDF 파일 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
-# [A] 로그인 전 화면
-if not st.session_state.logged_in:
-    try:
-        st.image("제목을 입력해주세요. (42)_1.jpg", use_column_width=True)
-    except FileNotFoundError:
-        st.error("⚠️ '제목을 입력해주세요. (42)_1.jpg' 이미지 파일을 파이썬 코드와 같은 폴더에 넣어주세요.")
-
-    st.markdown("### 🔒 학생 로그인")
-    st.write("가이드라인 1번에 따라 자신의 반을 선택하고 이름을 입력하세요.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_class = st.selectbox("소속 반 선택", ["반을 선택하세요", "미강고 1학년", "하남고 1학년", "미사고 2학년", "중등부", "기타"])
-    with col2:
-        entered_name = st.text_input("학생 이름")
-    
-    if st.button("로그인 및 24시 국최 입장"):
-        if selected_class != "반을 선택하세요" and entered_name.strip():
-            st.session_state.logged_in = True
-            st.session_state.student_class = selected_class
-            st.session_state.student_name = entered_name
-            st.rerun()
-        else:
-            st.error("🚫 반을 선택하고 이름을 정확히 입력해야 로그인이 가능합니다.")
-
-# [B] 로그인 후 화면
-else:
-    st.title(f"📚 24시 국최 - {st.session_state.student_class} [{st.session_state.student_name}] 학생")
-    
-    if not st.session_state.hw_submitted:
-        st.info("💡 가이드라인 3번: 질문을 하려면 먼저 오늘 푼 숙제 사진을 제출해야 합니다.")
-        hw_file = st.file_uploader("📸 숙제 사진(이미지) 업로드", type=["jpg", "jpeg", "png"])
-        if hw_file is not None:
-            st.session_state.hw_submitted = True
-            st.success("✅ 숙제 제출이 확인되었습니다! 이제 숙제에 대한 질문이 가능합니다.")
-            st.rerun()
-    else:
-        st.success("✅ 숙제 제출 완료! 모르는 내용을 질문하세요.")
-
-    st.markdown("---")
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("숙제 중 모르는 내용을 질문하세요 (예: 15번 정답 근거가 뭐야?)"):
-        
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if prompt := st.chat_input("궁금한 점을 질문해 주세요."):
         with st.chat_message("user"):
+            if uploaded_files:
+                for uf in uploaded_files:
+                    if uf.type.startswith("image"):
+                        st.image(uf, width=350)
+                    else:
+                        st.markdown(f"📄 **{uf.name}**")
             st.markdown(prompt)
-
+            
+        user_msg_data = {"role": "user", "parts": [{"text": prompt}]}
+        if uploaded_files:
+            file_list = []
+            for uf in uploaded_files:
+                file_list.append({"name": uf.name, "type": uf.type, "bytes": uf.getvalue()})
+            user_msg_data["files"] = file_list
+        st.session_state.messages.append(user_msg_data)
+        
         with st.chat_message("assistant"):
-            if not st.session_state.hw_submitted:
-                response = "🚫 숙제 사진이 제출되지 않았습니다! 상단의 업로드 창에 숙제를 먼저 제출해야 답을 확인할 수 있습니다."
-                st.markdown(response)
+            message_placeholder = st.empty()
+            message_placeholder.markdown("분석 중입니다...")
             
-            elif retriever is None:
-                response = "🚫 아직 찐 국최 선생님께서 해설지 자료를 업로드하지 않으셨습니다. 사이드바를 확인해 주세요."
-                st.markdown(response)
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
+                headers = {'Content-Type': 'application/json'}
+                
+                base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
+                
+                if os.path.exists(class_ans_txt):
+                    with open(class_ans_txt, mode='r', encoding='utf-8') as f:
+                        today_ans = f.read()
+                    if today_ans.strip():
+                        base_instruction += f"\n\n[해당 반({student_class}) 과제 정답지 (최우선 참고)]\n{today_ans}\n\n"
+                        
+                if os.path.exists(reference_file_path):
+                    with open(reference_file_path, mode='r', encoding='utf-8') as f:
+                        accumulated_doc = f.read()
+                    if accumulated_doc.strip():
+                        base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}\n\n"
+                    
+                parts_list = [{"text": f"{base_instruction}\n\n학생 질문: {prompt}"}]
+                
+                if uploaded_files:
+                    for uf in uploaded_files:
+                        parts_list.append({"inlineData": {"mimeType": uf.type, "data": base64.b64encode(uf.getvalue()).decode('utf-8')}})
+                    
+                data = {"contents": [{"parts": parts_list}]}
+                response = requests.post(url, headers=headers, json=data)
+                
+                if response.status_code == 200:
+                    ai_response = response.json()['candidates'][0]['content']['parts'][0]['text']
+                    message_placeholder.markdown(ai_response)
+                    st.session_state.messages.append({"role": "model", "parts": [{"text": ai_response}]})
+                    
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    file_count = f"{len(uploaded_files)}개" if uploaded_files else "0개"
+                    
+                    with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                        writer = csv.writer(f)
+                        writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
+                        
+                    alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
+                    send_telegram_alert(alert_msg)
+
+                else:
+                    message_placeholder.error(f"오류 발생: {response.json().get('error', {}).get('message', '')}")
+            except Exception as e:
+                message_placeholder.error(f"통신 오류: {e}")
+                
+    st.divider()
+    st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
+
+# ==========================================
+# 📝 메뉴 2: 과제 제출 및 정답 확인
+# ==========================================
+elif menu == "📝 과제 제출 및 정답 확인":
+    st.subheader(f"📝 [{student_class}] 오늘의 과제 제출")
+    st.info("💡 푼 과제를 사진이나 PDF 파일로 제출해야만 해당 반의 정답을 확인할 수 있습니다.")
+    
+    hw_files = st.file_uploader("📸 과제 사진 또는 📄 PDF 파일을 업로드하세요 (여러 개 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    
+    hw_session_key = f"hw_submitted_{safe_class}"
+    if hw_session_key not in st.session_state:
+        st.session_state[hw_session_key] = False
+
+    if hw_files:
+        if st.button("🚀 과제 최종 제출하기"):
+            with st.spinner("원장님 서버로 전송 중입니다..."):
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                file_names = []
+                for hw in hw_files:
+                    save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
+                    with open(save_path, "wb") as f:
+                        f.write(hw.getbuffer())
+                    file_names.append(hw.name)
+                
+                with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([now_str, student_class, student_name, ", ".join(file_names)])
+                
+                st.session_state[hw_session_key] = True
             
+            st.balloons() 
+            st.success("✅ 과제 제출이 완벽하게 완료되었습니다! 아래에서 정답을 확인하세요.")
+            
+            alert_msg = f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개\n- 시간: {now_str}"
+            send_telegram_alert(alert_msg)
+
+    st.divider()
+    
+    if st.session_state[hw_session_key]:
+        st.subheader(f"🔓 [열림] {student_class} 정답 및 해설")
+        st.success("과제 제출이 확인되어 해당 반의 정답지 열람 권한이 부여되었습니다.")
+        
+        if os.path.exists(class_ans_file_info):
+            with open(class_ans_file_info, "r", encoding="utf-8") as f:
+                ans_filename = f.read().strip()
+            if os.path.exists(ans_filename):
+                if ans_filename.lower().endswith('.pdf'):
+                    with open(ans_filename, "rb") as f:
+                        st.download_button(f"📄 {student_class} 정답지 원본 다운로드 (PDF)", f, file_name=f"{student_class}_정답.pdf", mime="application/pdf")
+                else:
+                    st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
+        
+        if os.path.exists(class_ans_txt):
+            with open(class_ans_txt, "r", encoding="utf-8") as f:
+                ans_text = f.read()
+            if ans_text.strip():
+                st.markdown(f"**[원장님 공식 정답 텍스트]**\n\n{ans_text}")
+    else:
+        st.subheader("🔒 [잠김] 정답 및 해설")
+        st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
+
+# ==========================================
+# 🔒 메뉴 3: 원장님 전용 관리실
+# ==========================================
+elif menu == "🔒 원장님 전용 관리실":
+    st.subheader("🔒 원장님 전용 관리실")
+    admin_pw = st.text_input("관리자 비밀번호를 입력하세요.", type="password")
+    
+    if admin_pw == "20241":
+        st.success("✅ 원장님, 인증되었습니다.")
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["🔑 반별 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
+        
+        # 탭 1: 정답지 등록
+        with tab1:
+            st.markdown("#### 반별 과제 정답 파일 등록")
+            
+            target_class = st.selectbox("📌 정답지를 배포할 반을 선택하세요.", CLASS_LIST)
+            safe_target_class = get_safe_name(target_class)
+            target_ans_txt_path = os.path.join(ANS_FOLDER, f"ans_txt_{safe_target_class}.txt")
+            target_ans_file_path = os.path.join(ANS_FOLDER, f"ans_file_{safe_target_class}.txt")
+
+            st.caption(f"여기에 등록하신 내용은 오직 [{target_class}] 과제를 제출한 학생들에게만 공개됩니다.")
+            
+            ans_file = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"])
+            
+            if "extracted_ans" not in st.session_state:
+                st.session_state.extracted_ans = ""
+                
+            if ans_file:
+                if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
+                    with st.spinner("AI가 파일의 글자를 완벽하게 분석하고 있습니다... (약 10초 소요)"):
+                        try:
+                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={MY_API_KEY}"
+                            headers = {'Content-Type': 'application/json'}
+                            encoded_file = base64.b64encode(ans_file.getvalue()).decode('utf-8')
+                            
+                            data = {
+                                "contents": [{
+                                    "parts": [
+                                        {"text": "이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."},
+                                        {"inlineData": {"mimeType": ans_file.type, "data": encoded_file}}
+                                    ]
+                                }]
+                            }
+                            response = requests.post(url, headers=headers, json=data)
+                            if response.status_code == 200:
+                                extracted_text = response.json()['candidates'][0]['content']['parts'][0]['text']
+                                st.session_state.extracted_ans = extracted_text
+                                st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
+                            else:
+                                st.error("추출 중 오류가 발생했습니다.")
+                        except Exception as e:
+                            st.error(f"통신 오류: {e}")
+            
+            saved_answer = st.session_state.extracted_ans
+            if not saved_answer and os.path.exists(target_ans_txt_path):
+                with open(target_ans_txt_path, "r", encoding="utf-8") as f:
+                    saved_answer = f.read()
+            
+            new_answer = st.text_area(f"📝 [{target_class}] 정답 텍스트 입력 및 수정", value=saved_answer, height=200)
+            
+            if st.button(f"🚀 [{target_class}] 정답지 최종 배포하기"):
+                with open(target_ans_txt_path, "w", encoding="utf-8") as f:
+                    f.write(new_answer)
+                
+                if ans_file:
+                    ext = ans_file.name.split('.')[-1]
+                    save_path = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}.{ext}")
+                    with open(save_path, "wb") as f:
+                        f.write(ans_file.getbuffer())
+                    with open(target_ans_file_path, "w", encoding="utf-8") as f:
+                        f.write(save_path)
+                        
+                st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
+                st.session_state.extracted_ans = ""
+
+        # 탭 2: 과제 제출 현황
+        with tab2:
+            st.markdown("#### 📊 실시간 과제 제출 기록")
+            if os.path.exists(hw_log_path):
+                with open(hw_log_path, "r", encoding='utf-8-sig') as f:
+                    st.download_button("📥 전체 제출 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="과제제출기록.csv", mime="text/csv")
+                with open(hw_log_path, "r", encoding='utf-8-sig') as f:
+                    hw_data = list(csv.reader(f))
+                    if len(hw_data) > 1:
+                        st.dataframe(hw_data[1:])
             else:
-                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+                st.info("제출된 과제가 없습니다.")
 
-                system_prompt = (
-                    "당신은 오직 제공된 문서의 내용만을 근거로 완벽하게 정확한 답변을 제공하는 '24시 국최' AI 튜터입니다.\n"
-                    "아래의 규칙을 엄격하게 준수하세요.\n"
-                    "1. 학생의 질문에 답할 때, 반드시 검색된 문서 내용만을 기반으로 설명하세요.\n"
-                    "2. 문서에 정답이나 해설 근거가 없다면 절대 지어내지 말고, '해당 내용은 제공된 자료로 해결할 수 없습니다. 찐 국최 선생님에게 1:1 질문을 해주세요.'라고 답변하세요.\n"
-                    "3. 국어 학습과 무관한 질문이나 사담에는 '수업과 무관한 내용은 답하지 않습니다.'라고 단호하게 거절하세요.\n\n"
-                    "검색된 문서 본문 내용:\n{context}"
-                )
+            st.divider()
+            
+            st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
+            st.caption("학생들이 찍어 올린 사진이나 PDF를 직접 다운로드하여 검수할 수 있습니다.")
+            if os.path.exists(HW_FOLDER):
+                submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True)
+                if submitted_files:
+                    for f_name in submitted_files:
+                        file_path = os.path.join(HW_FOLDER, f_name)
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                        
+                        col_a, col_b = st.columns([4, 1])
+                        with col_a:
+                            st.write(f"📄 {f_name}")
+                        with col_b:
+                            st.download_button("📥 열기", data=file_bytes, file_name=f_name, key=f_name)
+                else:
+                    st.caption("아직 업로드된 과제 파일이 없습니다.")
+                    
+            st.divider()
+            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
+            if st.button("🚨 과제 제출 기록 및 원본 파일 전체 삭제"):
+                with open(hw_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
+                
+                if os.path.exists(HW_FOLDER):
+                    for f_name in os.listdir(HW_FOLDER):
+                        file_path = os.path.join(HW_FOLDER, f_name)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            
+                st.success("✅ 과제 기록과 학생들이 제출한 원본 파일이 모두 삭제되었습니다. (새로고침을 해주세요)")
 
-                prompt_template = ChatPromptTemplate.from_messages([
-                    ("system", system_prompt),
-                    ("human", "{input}"),
-                ])
+        # 탭 3: 질문 모니터링
+        with tab3:
+            st.markdown("#### 학생들이 챗봇에 질문한 내역")
+            if os.path.exists(log_file_path):
+                with open(log_file_path, "r", encoding='utf-8-sig') as f:
+                    st.download_button("📥 질문 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="질문기록.csv", mime="text/csv")
+                with open(log_file_path, "r", encoding='utf-8-sig') as f:
+                    data = list(csv.reader(f))
+                    if len(data) > 1:
+                        st.dataframe(data[1:])
+            else:
+                st.info("질문 기록이 없습니다.")
+                
+            st.divider()
+            st.markdown("#### 🗑️ 데이터 정리 (초기화)")
+            if st.button("🚨 학생 질문 기록 전체 삭제"):
+                with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
+                st.success("✅ 학생들의 질문 기록이 모두 삭제되었습니다. (새로고침을 해주세요)")
 
-                question_answer_chain = create_stuff_documents_chain(llm, prompt_template)
-                rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-
-                with st.status("🔍 해설지에서 정확한 정답을 찾는 중...", expanded=False):
-                    result = rag_chain.invoke({"input": prompt})
-
-                response = result["output"]
-                st.markdown(response)
-
-        st.session_state.messages.append(
-            {"role": "assistant", "content": response}
-        )
+        # 탭 4: 해설지 누적
+        with tab4:
+            st.markdown("#### 챗봇 두뇌 강화 (해설지 업로드)")
+            ref_files = st.file_uploader("새로운 해설지 파일 업로드", type=["pdf", "txt"], accept_multiple_files=True)
+            if ref_files and st.button("해설지 누적 학습시키기"):
+                with st.spinner("누적 중입니다..."):
+                    extracted_text = ""
+                    for ref_file in ref_files:
+                        if ref_file.name.lower().endswith('.pdf'):
+                            doc = fitz.open(stream=ref_file.read(), filetype="pdf")
+                            for page in doc:
+                                extracted_text += page.get_text()
+                            doc.close()
+                        else:
+                            extracted_text += ref_file.getvalue().decode("utf-8") + "\n"
+                    with open(reference_file_path, mode='a', encoding='utf-8') as f:
+                        f.write(f"\n\n--- [업로드: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ---\n{extracted_text}")
+                    st.success("✅ 학습 완료!")
+            
+            if os.path.exists(reference_file_path):
+                if st.button("🗑️ 해설지 기억 초기화"):
+                    os.remove(reference_file_path)
+                    st.warning("초기화 완료")
+    else:
+        if admin_pw:
+            st.error("비밀번호가 틀렸습니다.")
