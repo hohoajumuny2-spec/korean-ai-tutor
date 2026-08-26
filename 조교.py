@@ -9,7 +9,7 @@ import pymupdf as fitz
 from datetime import datetime
 
 # ==========================================
-# 🚨 서버 필수 부품 강제 설치
+# 🚨 서버 필수 부품 최신 버전 강제 설치
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
@@ -17,11 +17,15 @@ def ensure_dependencies():
         import google.generativeai
         import pymupdf
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf", "requests", "google-generativeai"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "pymupdf", "requests", "google-generativeai"])
 
 ensure_dependencies()
-
 import google.generativeai as genai
+
+# ==========================================
+# ⭐️ 구글 공식 최신 표준 모델명 고정 (꼼수 없음)
+# ==========================================
+TARGET_MODEL = "gemini-1.5-flash" 
 
 # ==========================================
 # 🔒 비밀 금고 안전장치 (열쇠 확인)
@@ -34,34 +38,8 @@ MY_API_KEY = st.secrets["MY_API_KEY"]
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-# 구글 다이렉트 엔진에 원장님 열쇠 꽂기
+# 구글 다이렉트 엔진에 API 키 꽂기
 genai.configure(api_key=MY_API_KEY)
-
-# ==========================================
-# 🤖 구글 서버 내 열쇠 스캔 및 호환 모델 자동 장착
-# ==========================================
-@st.cache_resource
-def get_compatible_models():
-    try:
-        # 원장님 키로 접근 가능한 모든 모델 목록을 스캔
-        available_models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 최신 1.5 모델이 사용 가능한 경우 (사진/텍스트 통합 처리)
-        if "gemini-1.5-flash" in available_models:
-            return "gemini-1.5-flash", "gemini-1.5-flash"
-        elif "gemini-1.5-pro" in available_models:
-            return "gemini-1.5-pro", "gemini-1.5-pro"
-        
-        # 구형 1.0 모델만 사용 가능한 특수 계정인 경우 (사진/텍스트 분리)
-        if "gemini-pro" in available_models:
-            return "gemini-pro", "gemini-pro-vision"
-            
-        # 만약 목록을 못 가져오면 가장 뼈대가 되는 기본값으로 강제 세팅
-        return "gemini-pro", "gemini-pro-vision"
-    except Exception:
-        return "gemini-pro", "gemini-pro-vision"
-
-TEXT_MODEL, VISION_MODEL = get_compatible_models()
 
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -145,7 +123,7 @@ class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
-    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요. *(현재 자동 연결된 모델: {TEXT_MODEL})*")
+    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요. *(현재 작동 모델: {TARGET_MODEL})*")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -174,9 +152,8 @@ if menu == "💬 24시간 AI 튜터":
             message_placeholder.markdown("구글 AI 엔진이 분석 중입니다...")
             
             try:
-                # 🛠️ 사진 유무에 따라 스캔된 맞춤형 모델 자동 적용 (404 원천 차단)
-                active_model = VISION_MODEL if uploaded_files else TEXT_MODEL
-                model = genai.GenerativeModel(active_model)
+                # 🛠️ 복잡한 조건 없이 지정된 모델로 즉시 연결
+                model = genai.GenerativeModel(TARGET_MODEL)
                 
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장 '국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 학생의 질문에 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
@@ -317,8 +294,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기 (인식률 100%)"):
                     with st.spinner("구글 네이티브 엔진이 스캔 중입니다... (약 10초 소요)"):
                         try:
-                            scan_model_name = VISION_MODEL if ans_file.type.startswith("image") else TEXT_MODEL
-                            scan_model = genai.GenerativeModel(scan_model_name)
+                            scan_model = genai.GenerativeModel(TARGET_MODEL)
                             scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
                             
                             if ans_file.type.startswith("image"):
@@ -354,8 +330,8 @@ elif menu == "🔒 원장님 전용 관리실":
                     save_path = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}.{ext}")
                     with open(save_path, "wb") as f:
                         f.write(ans_file.getbuffer())
-                with open(target_ans_file_path, "w", encoding="utf-8") as f:
-                    f.write(save_path)
+                    with open(target_ans_file_path, "w", encoding="utf-8") as f:
+                        f.write(save_path)
                         
                 st.success(f"✅ [{target_class}] 정답지 파일과 텍스트가 성공적으로 배포 준비되었습니다!")
                 st.session_state.extracted_ans = ""
