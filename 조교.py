@@ -287,11 +287,11 @@ elif menu == "📝 과제 파일 제출":
         st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
 
 # ==========================================
-# 💯 메뉴 3: OMR 자동 채점 전용 공간 (완벽한 1,2,3 순서 정렬)
+# 💯 메뉴 3: OMR 자동 채점
 # ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
-    st.info("💡 모의고사 답안을 OMR 형식으로 입력하면 즉시 채점되어 결과가 나옵니다. (파일 업로드는 필요 없습니다)")
+    st.info("💡 모의고사 답안을 OMR 형식으로 입력하면 즉시 채점되어 결과가 나옵니다.")
     
     all_omr_data = []
     if os.path.exists(OMR_ANS_DB):
@@ -314,7 +314,6 @@ elif menu == "💯 OMR 자동 채점":
             with st.form("omr_form"):
                 student_answers = []
                 
-                # 💡 핵심 수정: 1번, 2번, 3번... 순서대로 가로 정렬되도록 행 단위로 생성
                 for i in range(0, total_q, 5):
                     cols = st.columns(5)
                     for j in range(5):
@@ -325,7 +324,7 @@ elif menu == "💯 OMR 자동 채점":
                                 student_answers.append(ans)
                         else:
                             with cols[j]:
-                                st.write("") # 빈 칸 채우기
+                                st.write("")
                 
                 submit_btn = st.form_submit_button("🚀 답안 제출 및 자동 채점하기")
                 
@@ -401,12 +400,33 @@ elif menu == "🔒 원장님 전용 관리실":
     
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
     
+    # 💡 탭 1: OMR 정답 세팅 (AI 자동 추출 기능 추가)
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
         target_class_omr = st.selectbox("📌 정답을 세팅할 반을 선택하세요.", CLASS_LIST, key="omr_class_sel")
         test_name = st.text_input("📝 과제 또는 모의고사 이름 (예: 고1 3월 학평)")
-        st.info("정답을 쉼표(,)로 구분하여 한 줄로 쭈욱 입력해 주세요.\n\n예시: `1, 3, 5, 2, 이육사, 4`")
         
+        # --- 💡 AI 정답 추출기 ---
+        st.markdown("##### 🤖 AI 자동 정답 추출 (수작업 입력 방지)")
+        st.info("정답지(PDF 또는 사진)를 올리면 AI가 알아서 '1,4,3,2,5' 형태로 정답만 쏙쏙 뽑아줍니다!")
+        omr_extract_file = st.file_uploader("정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"], key="omr_extract_uploader")
+        
+        if "extracted_omr_ans" not in st.session_state:
+            st.session_state.extracted_omr_ans = ""
+            
+        if omr_extract_file and st.button("✨ AI로 정답 자동 추출하기"):
+            with st.spinner("AI가 정답을 판독 중입니다... (약 5초 소요)"):
+                try:
+                    extract_model = genai.GenerativeModel(TARGET_MODEL)
+                    prompt = "이 파일은 국어 시험 정답지입니다. 1번부터 마지막 번호까지의 정답만 순서대로 추출해서, 문항 번호나 다른 설명은 싹 다 빼고 오직 정답만 쉼표(,)로 연결해서 한 줄로 출력해 줘. 예시: 1,3,5,2,4,4,1,2,시적화자"
+                    contents = [prompt, {"mime_type": omr_extract_file.type if not omr_extract_file.type.endswith("pdf") else "application/pdf", "data": omr_extract_file.getvalue()}]
+                    res = extract_model.generate_content(contents)
+                    st.session_state.extracted_omr_ans = res.text.strip().replace("\n", "")
+                    st.success("✅ 정답 추출 성공! 아래 입력란에 자동 반영되었습니다.")
+                except Exception as e:
+                    st.error(f"추출 실패: {e}")
+        # ------------------------
+
         all_omr_data = []
         current_ans_str = ""
         if os.path.exists(OMR_ANS_DB):
@@ -415,8 +435,13 @@ elif menu == "🔒 원장님 전용 관리실":
                 if d["반 이름"] == target_class_omr and d["과제명"] == test_name:
                     current_ans_str = d["정답데이터"]
                     break
+        
+        # AI가 추출한 값이 있으면 우선 반영
+        if st.session_state.extracted_omr_ans:
+            current_ans_str = st.session_state.extracted_omr_ans
 
-        omr_input = st.text_area("🔑 정답 입력란", value=current_ans_str, height=150)
+        st.caption("※ 아래 칸에 정답을 직접 쉼표(,)로 치셔도 되고, 위에서 AI가 추출한 정답을 한 번 확인 후 수정하셔도 됩니다.")
+        omr_input = st.text_area("🔑 최종 정답 입력란", value=current_ans_str, height=150)
         
         if st.button("🚀 OMR 정답 세팅 및 학생 배포"):
             if test_name and omr_input:
@@ -431,6 +456,7 @@ elif menu == "🔒 원장님 전용 관리실":
                     writer.writeheader()
                     writer.writerows(filtered_data)
                     
+                st.session_state.extracted_omr_ans = "" # 제출 후 AI 추출값 초기화
                 st.success(f"✅ [{target_class_omr}] '{test_name}' (총 {len(ans_list)}문항) OMR 세팅 완료!")
             else:
                 st.error("과제 이름과 정답을 모두 입력해 주세요.")
@@ -591,7 +617,7 @@ elif menu == "🔒 원장님 전용 관리실":
             with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
                 csv.writer(f).writerow([new_roster_class, new_roster_name])
             st.success(f"✅ [{new_roster_class}] {new_roster_name} 학생 등록!")
-            st.reron() if hasattr(st, "rerun") else st.experimental_rerun()
+            st.rerun()
             
         st.divider()
         current_roster = get_roster()
