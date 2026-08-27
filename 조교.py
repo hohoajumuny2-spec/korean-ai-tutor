@@ -49,9 +49,9 @@ def send_telegram_alert(message):
 log_file_path = "학생질문_모니터링_기록.csv"
 reference_file_path = "공용해설지_누적본.txt" 
 hw_log_path = "과제제출_기록.csv"
-score_log_path = "OMR_채점_기록.csv" # 💡 OMR 채점 기록
+score_log_path = "OMR_채점_기록.csv" 
 ROSTER_FILE = "원생명단_DB.csv" 
-OMR_ANS_DB = "OMR_정답_세팅.csv" # 💡 원장님 OMR 정답 세팅 DB
+OMR_ANS_DB = "OMR_정답_세팅.csv" 
 HW_FOLDER = "hw_uploads"
 ANS_FOLDER = "answers"
 PUBLIC_FOLDER = "public_materials"
@@ -134,7 +134,8 @@ if student_class == "논술" and student_name == "최준용":
     if admin_pw == "2024":
         is_admin = True
         st.success("✅ 원장님, 환영합니다! 스텔스 관리자 모드가 활성화되었습니다.")
-        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "💯 OMR 자동 채점 및 제출", "📂 학원 자료실"]
+        # 메뉴 분리: 일반 과제용 / OMR 전용
+        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "📂 학원 자료실"]
     elif admin_pw:
         st.error("❌ 비밀번호가 틀렸습니다.")
         st.stop()
@@ -148,7 +149,8 @@ if not is_admin:
         st.error("🚨 등록되지 않은 원생입니다. 반과 이름이 정확한지 확인하시거나 학원에 문의해 주세요.")
         st.stop()
     
-    menu_options = ["💬 24시간 AI 튜터", "💯 OMR 자동 채점 및 제출", "📂 학원 자료실"]
+    # 메뉴 분리: 일반 과제용 / OMR 전용
+    menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "📂 학원 자료실"]
     st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
 
 menu = st.radio("🧭 원하는 메뉴를 선택하세요.", menu_options, horizontal=True)
@@ -233,57 +235,87 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 💯 메뉴 2: OMR 채점 및 과제 제출 (신규 OMR 로직 통합)
+# 📝 메뉴 2: 일반 과제 파일 제출 (분리됨)
 # ==========================================
-elif menu == "💯 OMR 자동 채점 및 제출":
-    st.subheader(f"💯 [{student_class}] OMR 자동 채점 및 과제 제출")
+elif menu == "📝 과제 파일 풀 제출":
+    st.subheader(f"📝 [{student_class}] 과제 파일 제출")
+    st.info("💡 푼 과제를 사진이나 PDF 파일로 제출해야만 해당 반의 정답지 락(Lock)이 해제됩니다.")
     
-    # 해당 반의 OMR 과제 목록 필터링
-    all_omr_data = []
-    if os.path.exists(OMR_ANS_DB):
-        all_omr_data = load_omr_answers()
-    class_omr_tasks = {d["과제명"]: d["정답데이터"] for d in all_omr_data if d["반 이름"] == student_class}
+    hw_files = st.file_uploader("📸 과제 사진 또는 📄 PDF 파일을 업로드하세요 (여러 개 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     
     hw_session_key = f"hw_submitted_{safe_class}"
     if hw_session_key not in st.session_state:
         st.session_state[hw_session_key] = False
 
-    st.markdown("#### 📸 국어 모의고사/과제 풀이 사진 업로드 (선택)")
-    hw_files = st.file_uploader("푼 시험지나 답안지 사진, PDF를 업로드하세요.", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    if hw_files:
+        if st.button("🚀 과제 최종 제출하기"):
+            with st.spinner("서버로 전송 중입니다..."):
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                file_names = []
+                for hw in hw_files:
+                    save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
+                    with open(save_path, "wb") as f:
+                        f.write(hw.getbuffer())
+                    file_names.append(hw.name)
+                
+                with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                    csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
+                
+                st.session_state[hw_session_key] = True
+            
+            st.balloons() 
+            st.success("✅ 과제 제출이 완료되었습니다! 아래에서 락이 해제된 정답을 확인하세요.")
+            send_telegram_alert(f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개")
 
-    if not class_omr_tasks:
-        st.info("💡 현재 등록된 자동 채점 모의고사/과제가 없습니다. 일반 과제만 제출할 수 있습니다.")
-        if st.button("🚀 일반 과제 사진 제출하기"):
-            if hw_files:
-                with st.spinner("서버로 전송 중입니다..."):
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    file_names = []
-                    for hw in hw_files:
-                        save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
-                        with open(save_path, "wb") as f:
-                            f.write(hw.getbuffer())
-                        file_names.append(hw.name)
-                    
-                    with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
-                        csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
-                    
-                    st.session_state[hw_session_key] = True
-                st.balloons()
-                st.success("✅ 과제 제출이 완료되었습니다!")
-                send_telegram_alert(f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개")
-            else:
-                st.error("파일을 업로드해 주세요.")
+    st.divider()
+    
+    if st.session_state[hw_session_key] or is_admin:
+        st.subheader(f"🔓 [열림] {student_class} 공식 해설지")
+        st.success("과제 제출이 확인되어 해당 반의 누적된 정답지 열람 권한이 부여되었습니다.")
+        
+        if os.path.exists(class_ans_file_info):
+            with open(class_ans_file_info, "r", encoding="utf-8") as f:
+                ans_filenames = f.read().splitlines()
+            for idx, ans_filename in enumerate(ans_filenames):
+                if os.path.exists(ans_filename):
+                    if ans_filename.lower().endswith('.pdf'):
+                        with open(ans_filename, "rb") as bf:
+                            st.download_button(f"📄 {os.path.basename(ans_filename)} 다운로드", bf, file_name=os.path.basename(ans_filename), key=f"dl_{idx}")
+                    else:
+                        st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
+        
+        if os.path.exists(class_ans_txt):
+            with open(class_ans_txt, "r", encoding="utf-8") as f:
+                st.markdown(f"**[원장님 공식 정답 텍스트]**\n\n{f.read()}")
     else:
-        # OMR 자동 채점 모드
+        st.subheader("🔒 [잠김] 정답 및 해설")
+        st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
+
+# ==========================================
+# 💯 메뉴 3: OMR 자동 채점 전용 공간 (분리됨)
+# ==========================================
+elif menu == "💯 OMR 자동 채점":
+    st.subheader(f"💯 [{student_class}] OMR 자동 채점")
+    st.info("💡 모의고사 답안을 OMR 형식으로 입력하면 즉시 채점되어 결과가 나옵니다. (파일 업로드는 필요 없습니다)")
+    
+    all_omr_data = []
+    if os.path.exists(OMR_ANS_DB):
+        all_omr_data = load_omr_answers()
+    class_omr_tasks = {d["과제명"]: d["정답데이터"] for d in all_omr_data if d["반 이름"] == student_class}
+    
+    omr_session_key = f"omr_submitted_{safe_class}"
+    
+    if not class_omr_tasks:
+        st.warning("현재 원장님께서 등록해 두신 OMR 자동 채점 과제가 없습니다.")
+    else:
         selected_task = st.selectbox("📌 채점할 모의고사/과제를 선택하세요.", ["선택하세요"] + list(class_omr_tasks.keys()))
         
         if selected_task != "선택하세요":
             correct_answers = class_omr_tasks[selected_task].split(",")
             total_q = len(correct_answers)
             
-            st.info(f"선택한 시험은 총 **{total_q}문항**입니다. 아래에 본인이 푼 정답을 입력하세요.")
+            st.markdown(f"선택한 시험은 총 **{total_q}문항**입니다. 아래에 본인이 푼 정답을 입력하세요.")
             
-            # 학생이 정답을 적을 수 있는 OMR 폼 생성
             with st.form("omr_form"):
                 student_answers = []
                 cols = st.columns(5) # 5개씩 한 줄에 배치
@@ -299,7 +331,7 @@ elif menu == "💯 OMR 자동 채점 및 제출":
                         correct_count = 0
                         wrong_list = []
                         
-                        # 채점 로직 (띄어쓰기, 대소문자 무시하고 채점)
+                        # 띄어쓰기, 대소문자 무시 채점 로직
                         for i in range(total_q):
                             c_ans = correct_answers[i].strip().replace(" ", "").lower()
                             s_ans = student_answers[i].strip().replace(" ", "").lower()
@@ -313,28 +345,16 @@ elif menu == "💯 OMR 자동 채점 및 제출":
                         
                         final_score = int((correct_count / total_q) * 100) if total_q > 0 else 0
                         
-                        st.session_state[hw_session_key] = True
-                        st.session_state[f"score_{hw_session_key}"] = final_score
-                        st.session_state[f"wrongs_{hw_session_key}"] = wrong_list
-                        st.session_state[f"correct_cnt_{hw_session_key}"] = correct_count
+                        st.session_state[omr_session_key] = True
+                        st.session_state[f"score_{omr_session_key}"] = final_score
+                        st.session_state[f"wrongs_{omr_session_key}"] = wrong_list
+                        st.session_state[f"correct_cnt_{omr_session_key}"] = correct_count
                         
-                        # 파일 저장
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        file_names = []
-                        if hw_files:
-                            for hw in hw_files:
-                                save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
-                                with open(save_path, "wb") as f:
-                                    f.write(hw.getbuffer())
-                                file_names.append(hw.name)
                         
-                        # 로그 저장
+                        # 채점 로그 저장
                         with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
                             csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{final_score}점", ",".join(student_answers), ", ".join([w.split("(")[0] for w in wrong_list])])
-                        
-                        if hw_files:
-                            with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
-                                csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
                         
                         st.balloons()
                         st.success("✅ 채점이 완료되었습니다! 아래에서 결과를 확인하세요.")
@@ -342,42 +362,21 @@ elif menu == "💯 OMR 자동 채점 및 제출":
 
     st.divider()
     
-    if st.session_state.get(hw_session_key, False) or is_admin:
-        if f"score_{hw_session_key}" in st.session_state and not is_admin:
-            st.subheader(f"🏆 채점 결과")
-            sc = st.session_state[f"score_{hw_session_key}"]
-            cnt = st.session_state[f"correct_cnt_{hw_session_key}"]
-            wl = st.session_state[f"wrongs_{hw_session_key}"]
-            
-            st.info(f"**원점수:** {sc}점 (총 {total_q}문제 중 {cnt}문제 정답)")
-            if wl:
-                st.error(f"**❌ 틀린 문항:** {', '.join(wl)}")
-                st.markdown("👉 **틀린 문제는 [💬 24시간 AI 튜터] 메뉴로 이동해서 질문하고 오답정리를 마무리하세요!**")
-            else:
-                st.success("🌟 완벽합니다! 모두 맞았습니다!")
-            st.divider()
-
-        st.subheader(f"🔓 [열림] {student_class} 공식 해설지")
-        if os.path.exists(class_ans_file_info):
-            with open(class_ans_file_info, "r", encoding="utf-8") as f:
-                ans_filenames = f.read().splitlines()
-            for idx, ans_filename in enumerate(ans_filenames):
-                if os.path.exists(ans_filename):
-                    if ans_filename.lower().endswith('.pdf'):
-                        with open(ans_filename, "rb") as bf:
-                            st.download_button(f"📄 {os.path.basename(ans_filename)} 다운로드", bf, file_name=os.path.basename(ans_filename), key=f"dl_{idx}")
-                    else:
-                        st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
+    if st.session_state.get(omr_session_key, False):
+        st.subheader(f"🏆 {selected_task} 채점 결과")
+        sc = st.session_state[f"score_{omr_session_key}"]
+        cnt = st.session_state[f"correct_cnt_{omr_session_key}"]
+        wl = st.session_state[f"wrongs_{omr_session_key}"]
         
-        if os.path.exists(class_ans_txt):
-            with open(class_ans_txt, "r", encoding="utf-8") as f:
-                st.markdown(f"**[원장님 공식 정답 해설]**\n\n{f.read()}")
-    else:
-        st.subheader("🔒 [잠김] 채점 결과 및 해설지")
-        st.warning("⚠️ 과제 및 OMR을 제출해야 결과를 확인할 수 있습니다.")
+        st.info(f"**원점수:** {sc}점 (총 {len(class_omr_tasks[selected_task].split(','))}문제 중 {cnt}문제 정답)")
+        if wl:
+            st.error(f"**❌ 틀린 문항:** {', '.join(wl)}")
+            st.markdown("👉 **틀린 문제는 [💬 24시간 AI 튜터] 메뉴로 이동해서 질문하고 오답정리를 마무리하세요!**")
+        else:
+            st.success("🌟 완벽합니다! 모두 맞았습니다!")
 
 # ==========================================
-# 📂 메뉴 3: 학원 자료실
+# 📂 메뉴 4: 학원 자료실
 # ==========================================
 elif menu == "📂 학원 자료실":
     st.subheader("📂 공용 학원 자료실")
@@ -394,14 +393,14 @@ elif menu == "📂 학원 자료실":
         st.info("현재 등록된 공개 자료가 없습니다.")
 
 # ==========================================
-# 🔒 메뉴 4: 원장님 전용 관리실
+# 🔒 메뉴 5: 원장님 전용 관리실
 # ==========================================
 elif menu == "🔒 원장님 전용 관리실":
     st.subheader("🔒 원장님 전용 관리실")
     
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
     
-    # 💡 탭 1: OMR 정답 세팅
+    # 탭 1: OMR 정답 세팅
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
         st.caption("학생들이 OMR 화면에 들어왔을 때 채점 기준으로 쓰일 정답을 세팅합니다.")
