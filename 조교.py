@@ -92,7 +92,6 @@ def get_roster():
                 roster.append((row["반 이름"], row["학생 이름"]))
     return roster
 
-# 특정 반의 OMR 정답 불러오기
 def load_omr_answers():
     with open(OMR_ANS_DB, mode='r', encoding='utf-8-sig') as f:
         return list(csv.DictReader(f))
@@ -127,14 +126,12 @@ if student_class == "반을 선택해 주세요." or not student_name:
     st.warning("수강 반 선택과 이름 입력을 완료해야 시스템 메뉴가 활성화됩니다.")
     st.stop()
 
-# 💡 원장님 스텔스 로그인
 is_admin = False
 if student_class == "논술" and student_name == "최준용":
     admin_pw = st.text_input("🔑 관리자 비밀번호를 입력하세요.", type="password")
     if admin_pw == "2024":
         is_admin = True
         st.success("✅ 원장님, 환영합니다! 스텔스 관리자 모드가 활성화되었습니다.")
-        # 메뉴 분리: 일반 과제용 / OMR 전용
         menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "📂 학원 자료실"]
     elif admin_pw:
         st.error("❌ 비밀번호가 틀렸습니다.")
@@ -142,14 +139,12 @@ if student_class == "논술" and student_name == "최준용":
     else:
         st.stop()
 
-# 💡 화이트리스트 대조
 if not is_admin:
     current_roster = get_roster()
     if (student_class, student_name) not in current_roster:
         st.error("🚨 등록되지 않은 원생입니다. 반과 이름이 정확한지 확인하시거나 학원에 문의해 주세요.")
         st.stop()
     
-    # 메뉴 분리: 일반 과제용 / OMR 전용
     menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "📂 학원 자료실"]
     st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
 
@@ -235,9 +230,9 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2: 일반 과제 파일 제출 (분리됨)
+# 📝 메뉴 2: 일반 과제 파일 제출
 # ==========================================
-elif menu == "📝 과제 파일 풀 제출":
+elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
     st.info("💡 푼 과제를 사진이나 PDF 파일로 제출해야만 해당 반의 정답지 락(Lock)이 해제됩니다.")
     
@@ -292,7 +287,7 @@ elif menu == "📝 과제 파일 풀 제출":
         st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
 
 # ==========================================
-# 💯 메뉴 3: OMR 자동 채점 전용 공간 (분리됨)
+# 💯 메뉴 3: OMR 자동 채점 전용 공간 (완벽한 1,2,3 순서 정렬)
 # ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
@@ -318,11 +313,19 @@ elif menu == "💯 OMR 자동 채점":
             
             with st.form("omr_form"):
                 student_answers = []
-                cols = st.columns(5) # 5개씩 한 줄에 배치
-                for i in range(total_q):
-                    with cols[i % 5]:
-                        ans = st.text_input(f"{i+1}번", key=f"q_{i}").strip()
-                        student_answers.append(ans)
+                
+                # 💡 핵심 수정: 1번, 2번, 3번... 순서대로 가로 정렬되도록 행 단위로 생성
+                for i in range(0, total_q, 5):
+                    cols = st.columns(5)
+                    for j in range(5):
+                        q_idx = i + j
+                        if q_idx < total_q:
+                            with cols[j]:
+                                ans = st.text_input(f"{q_idx+1}번", key=f"q_{q_idx}").strip()
+                                student_answers.append(ans)
+                        else:
+                            with cols[j]:
+                                st.write("") # 빈 칸 채우기
                 
                 submit_btn = st.form_submit_button("🚀 답안 제출 및 자동 채점하기")
                 
@@ -331,7 +334,6 @@ elif menu == "💯 OMR 자동 채점":
                         correct_count = 0
                         wrong_list = []
                         
-                        # 띄어쓰기, 대소문자 무시 채점 로직
                         for i in range(total_q):
                             c_ans = correct_answers[i].strip().replace(" ", "").lower()
                             s_ans = student_answers[i].strip().replace(" ", "").lower()
@@ -352,7 +354,6 @@ elif menu == "💯 OMR 자동 채점":
                         
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # 채점 로그 저장
                         with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
                             csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{final_score}점", ",".join(student_answers), ", ".join([w.split("(")[0] for w in wrong_list])])
                         
@@ -400,11 +401,8 @@ elif menu == "🔒 원장님 전용 관리실":
     
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
     
-    # 탭 1: OMR 정답 세팅
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
-        st.caption("학생들이 OMR 화면에 들어왔을 때 채점 기준으로 쓰일 정답을 세팅합니다.")
-        
         target_class_omr = st.selectbox("📌 정답을 세팅할 반을 선택하세요.", CLASS_LIST, key="omr_class_sel")
         test_name = st.text_input("📝 과제 또는 모의고사 이름 (예: 고1 3월 학평)")
         st.info("정답을 쉼표(,)로 구분하여 한 줄로 쭈욱 입력해 주세요.\n\n예시: `1, 3, 5, 2, 이육사, 4`")
@@ -433,7 +431,7 @@ elif menu == "🔒 원장님 전용 관리실":
                     writer.writeheader()
                     writer.writerows(filtered_data)
                     
-                st.success(f"✅ [{target_class_omr}] '{test_name}' (총 {len(ans_list)}문항) OMR 세팅 완료! 학생들이 즉시 채점할 수 있습니다.")
+                st.success(f"✅ [{target_class_omr}] '{test_name}' (총 {len(ans_list)}문항) OMR 세팅 완료!")
             else:
                 st.error("과제 이름과 정답을 모두 입력해 주세요.")
                 
@@ -454,7 +452,6 @@ elif menu == "🔒 원장님 전용 관리실":
         else:
             st.write("등록된 자동 채점 과제가 없습니다.")
 
-    # 탭 2: 정답지(해설) 누적 등록
     with tab2:
         st.markdown("#### 반별 과제 해설지 파일 등록 (누적)")
         target_class = st.selectbox("📌 해설지를 배포할 반을 선택하세요.", CLASS_LIST, key="ans_class_sel")
@@ -503,7 +500,6 @@ elif menu == "🔒 원장님 전용 관리실":
             st.success("✅ 배포 완료!")
             st.session_state.extracted_ans = ""
 
-    # 탭 3: 채점 및 과제 제출 현황
     with tab3:
         st.markdown("#### 💯 학생 OMR 채점 성적표")
         col_dl1, col_dl2 = st.columns(2)
@@ -595,7 +591,7 @@ elif menu == "🔒 원장님 전용 관리실":
             with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
                 csv.writer(f).writerow([new_roster_class, new_roster_name])
             st.success(f"✅ [{new_roster_class}] {new_roster_name} 학생 등록!")
-            st.rerun()
+            st.reron() if hasattr(st, "rerun") else st.experimental_rerun()
             
         st.divider()
         current_roster = get_roster()
