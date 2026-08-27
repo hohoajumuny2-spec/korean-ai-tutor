@@ -3,12 +3,11 @@ import os
 import sys
 import subprocess
 import csv
-import base64
 import requests
 from datetime import datetime
 
 # ==========================================
-# 🚨 서버 필수 부품 최신 버전 강제 설치 (불필요한 보조 프로그램 폐기)
+# 🚨 서버 필수 부품 강제 설치 
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
@@ -21,7 +20,7 @@ ensure_dependencies()
 import google.generativeai as genai
 
 # ==========================================
-# ⭐️ 구글 서버가 직접 지시한 최신 모델명 완벽 고정
+# ⭐️ 구글 공식 최신 표준 모델
 # ==========================================
 TARGET_MODEL = "gemini-3.6-flash" 
 
@@ -36,26 +35,26 @@ MY_API_KEY = st.secrets["MY_API_KEY"]
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-# 구글 다이렉트 엔진에 API 키 꽂기
 genai.configure(api_key=MY_API_KEY)
 
-# 🛠️ 텔레그램 에러 화면 출력 장치 추가 (무음 처리 해제)
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         try:
-            res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
-            if res.status_code != 200:
-                st.error(f"🚨 텔레그램 발송 실패 (에러 {res.status_code}): {res.text}")
-        except Exception as e:
-            st.error(f"🚨 텔레그램 통신 오류: {e}")
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=3)
+        except Exception:
+            pass
 
 # 파일 및 폴더 설정
 log_file_path = "학생질문_모니터링_기록.csv"
 reference_file_path = "공용해설지_누적본.txt" 
 hw_log_path = "과제제출_기록.csv"
+score_log_path = "OMR_채점_기록.csv" # 💡 OMR 채점 기록
+ROSTER_FILE = "원생명단_DB.csv" 
+OMR_ANS_DB = "OMR_정답_세팅.csv" # 💡 원장님 OMR 정답 세팅 DB
 HW_FOLDER = "hw_uploads"
 ANS_FOLDER = "answers"
+PUBLIC_FOLDER = "public_materials"
 
 CLASS_LIST = [
     "중등부 문해력", "고1 미강고", "고1 미사고", "고1 하남고", "고1 풍산고",
@@ -66,16 +65,37 @@ CLASS_LIST = [
 def get_safe_name(name):
     return name.replace("/", "_").replace(" ", "")
 
-for folder in [HW_FOLDER, ANS_FOLDER]:
+# 폴더 자동 생성
+for folder in [HW_FOLDER, ANS_FOLDER, PUBLIC_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
-for file_path, headers in [(log_file_path, ["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"]),
-                           (hw_log_path, ["제출 일시", "반 이름", "학생 이름", "제출 파일명"])]:
+# 파일 자동 생성
+for file_path, headers in [
+    (log_file_path, ["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"]),
+    (hw_log_path, ["제출 일시", "반 이름", "학생 이름", "제출 파일명"]),
+    (ROSTER_FILE, ["반 이름", "학생 이름"]),
+    (score_log_path, ["채점 일시", "반 이름", "학생 이름", "시험(과제)명", "점수", "틀린 번호"]),
+    (OMR_ANS_DB, ["반 이름", "과제명", "정답데이터"])
+]:
     if not os.path.exists(file_path):
         with open(file_path, mode='w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
+
+def get_roster():
+    roster = []
+    if os.path.exists(ROSTER_FILE):
+        with open(ROSTER_FILE, mode='r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                roster.append((row["반 이름"], row["학생 이름"]))
+    return roster
+
+# 특정 반의 OMR 정답 불러오기
+def load_omr_answers():
+    with open(OMR_ANS_DB, mode='r', encoding='utf-8-sig') as f:
+        return list(csv.DictReader(f))
 
 st.set_page_config(page_title="24시 국최", page_icon="🦉", layout="centered")
 
@@ -94,7 +114,7 @@ for img_name in image_names:
 st.divider()
 
 # ==========================================
-# 👤 학생 인증 및 반 선택
+# 👤 학생 인증
 # ==========================================
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -107,12 +127,31 @@ if student_class == "반을 선택해 주세요." or not student_name:
     st.warning("수강 반 선택과 이름 입력을 완료해야 시스템 메뉴가 활성화됩니다.")
     st.stop()
 
-st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
+# 💡 원장님 스텔스 로그인
+is_admin = False
+if student_class == "논술" and student_name == "최준용":
+    admin_pw = st.text_input("🔑 관리자 비밀번호를 입력하세요.", type="password")
+    if admin_pw == "2024":
+        is_admin = True
+        st.success("✅ 원장님, 환영합니다! 스텔스 관리자 모드가 활성화되었습니다.")
+        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "💯 OMR 자동 채점 및 제출", "📂 학원 자료실"]
+    elif admin_pw:
+        st.error("❌ 비밀번호가 틀렸습니다.")
+        st.stop()
+    else:
+        st.stop()
 
-menu = st.radio("🧭 원하는 메뉴를 선택하세요.", 
-                ["💬 24시간 AI 튜터", "📝 과제 제출 및 정답 확인", "🔒 원장님 전용 관리실"], 
-                horizontal=True)
+# 💡 화이트리스트 대조
+if not is_admin:
+    current_roster = get_roster()
+    if (student_class, student_name) not in current_roster:
+        st.error("🚨 등록되지 않은 원생입니다. 반과 이름이 정확한지 확인하시거나 학원에 문의해 주세요.")
+        st.stop()
+    
+    menu_options = ["💬 24시간 AI 튜터", "💯 OMR 자동 채점 및 제출", "📂 학원 자료실"]
+    st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
 
+menu = st.radio("🧭 원하는 메뉴를 선택하세요.", menu_options, horizontal=True)
 st.divider()
 
 safe_class = get_safe_name(student_class)
@@ -124,7 +163,7 @@ class_ans_file_info = os.path.join(ANS_FOLDER, f"ans_file_{safe_class}.txt")
 # ==========================================
 if menu == "💬 24시간 AI 튜터":
     st.subheader(f"💬 무엇이든 물어보세요, {student_name} 학생!")
-    st.markdown(f"모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
+    st.markdown("모르는 문제나 지문은 타이핑하거나 **사진 또는 PDF 파일을 첨부**해서 올려주세요.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -154,7 +193,6 @@ if menu == "💬 24시간 AI 튜터":
             
             try:
                 model = genai.GenerativeModel(TARGET_MODEL)
-                
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장님의 지식과 관리 방식을 완벽하게 물려받은 'AI 국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 대답을 시작할 때 항상 '안녕하세요! AI 국최입니다.' 와 같이 자신의 정체성을 밝히세요. 학생의 질문에 조금의 오류도 없이 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
                 if os.path.exists(class_ans_txt):
@@ -170,15 +208,9 @@ if menu == "💬 24시간 AI 튜터":
                         base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
                 contents = [f"{base_instruction}\n\n[학생 질문]\n{prompt}"]
-                
-                # 🛠️ 구글 네이티브 OCR을 위한 완벽한 파일 처리 로직
                 if uploaded_files:
                     for uf in uploaded_files:
-                        if uf.type.startswith("image"):
-                            contents.append({"mime_type": uf.type, "data": uf.getvalue()})
-                        elif uf.type == "application/pdf":
-                            # PDF를 텍스트로 긁지 않고, 원본 자체를 넘겨서 완벽한 OCR 수행
-                            contents.append({"mime_type": "application/pdf", "data": uf.getvalue()})
+                        contents.append({"mime_type": uf.type if not uf.type.endswith("pdf") else "application/pdf", "data": uf.getvalue()})
                 
                 response = model.generate_content(contents)
                 ai_response = response.text
@@ -190,252 +222,392 @@ if menu == "💬 24시간 AI 튜터":
                 file_count = f"{len(uploaded_files)}개" if uploaded_files else "0개"
                 
                 with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
+                    csv.writer(f).writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
                     
-                alert_msg = f"💡 [LogyEDU 새 질문 접수]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 첨부파일: {file_count}\n- 시간: {now_str}"
-                send_telegram_alert(alert_msg)
+                send_telegram_alert(f"💡 [LogyEDU 국어 질문]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 파일: {file_count}\n- 시간: {now_str}")
 
             except Exception as e:
-                message_placeholder.error(f"구글 통신 오류: {e}")
+                message_placeholder.error(f"오류: {e}")
                 
     st.divider()
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2: 과제 제출 및 정답 확인
+# 💯 메뉴 2: OMR 채점 및 과제 제출 (신규 OMR 로직 통합)
 # ==========================================
-elif menu == "📝 과제 제출 및 정답 확인":
-    st.subheader(f"📝 [{student_class}] 오늘의 과제 제출")
-    st.info("💡 푼 과제를 사진이나 PDF 파일로 제출해야만 해당 반의 정답을 확인할 수 있습니다.")
+elif menu == "💯 OMR 자동 채점 및 제출":
+    st.subheader(f"💯 [{student_class}] OMR 자동 채점 및 과제 제출")
     
-    hw_files = st.file_uploader("📸 과제 사진 또는 📄 PDF 파일을 업로드하세요 (여러 개 가능)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    # 해당 반의 OMR 과제 목록 필터링
+    all_omr_data = []
+    if os.path.exists(OMR_ANS_DB):
+        all_omr_data = load_omr_answers()
+    class_omr_tasks = {d["과제명"]: d["정답데이터"] for d in all_omr_data if d["반 이름"] == student_class}
     
     hw_session_key = f"hw_submitted_{safe_class}"
     if hw_session_key not in st.session_state:
         st.session_state[hw_session_key] = False
 
-    if hw_files:
-        if st.button("🚀 과제 최종 제출하기"):
-            with st.spinner("서버로 전송 중입니다..."):
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                file_names = []
-                for hw in hw_files:
-                    save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
-                    with open(save_path, "wb") as f:
-                        f.write(hw.getbuffer())
-                    file_names.append(hw.name)
-                
-                with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([now_str, student_class, student_name, ", ".join(file_names)])
-                
-                st.session_state[hw_session_key] = True
+    st.markdown("#### 📸 국어 모의고사/과제 풀이 사진 업로드 (선택)")
+    hw_files = st.file_uploader("푼 시험지나 답안지 사진, PDF를 업로드하세요.", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+
+    if not class_omr_tasks:
+        st.info("💡 현재 등록된 자동 채점 모의고사/과제가 없습니다. 일반 과제만 제출할 수 있습니다.")
+        if st.button("🚀 일반 과제 사진 제출하기"):
+            if hw_files:
+                with st.spinner("서버로 전송 중입니다..."):
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    file_names = []
+                    for hw in hw_files:
+                        save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
+                        with open(save_path, "wb") as f:
+                            f.write(hw.getbuffer())
+                        file_names.append(hw.name)
+                    
+                    with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                        csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
+                    
+                    st.session_state[hw_session_key] = True
+                st.balloons()
+                st.success("✅ 과제 제출이 완료되었습니다!")
+                send_telegram_alert(f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개")
+            else:
+                st.error("파일을 업로드해 주세요.")
+    else:
+        # OMR 자동 채점 모드
+        selected_task = st.selectbox("📌 채점할 모의고사/과제를 선택하세요.", ["선택하세요"] + list(class_omr_tasks.keys()))
+        
+        if selected_task != "선택하세요":
+            correct_answers = class_omr_tasks[selected_task].split(",")
+            total_q = len(correct_answers)
             
-            st.balloons() 
-            st.success("✅ 과제 제출이 완료되었습니다! 아래에서 정답을 확인하세요.")
+            st.info(f"선택한 시험은 총 **{total_q}문항**입니다. 아래에 본인이 푼 정답을 입력하세요.")
             
-            alert_msg = f"🚨 [LogyEDU 과제 제출]\n- 반: {student_class}\n- 학생: {student_name}\n- 파일 수: {len(hw_files)}개\n- 시간: {now_str}"
-            send_telegram_alert(alert_msg)
+            # 학생이 정답을 적을 수 있는 OMR 폼 생성
+            with st.form("omr_form"):
+                student_answers = []
+                cols = st.columns(5) # 5개씩 한 줄에 배치
+                for i in range(total_q):
+                    with cols[i % 5]:
+                        ans = st.text_input(f"{i+1}번", key=f"q_{i}").strip()
+                        student_answers.append(ans)
+                
+                submit_btn = st.form_submit_button("🚀 답안 제출 및 자동 채점하기")
+                
+                if submit_btn:
+                    with st.spinner("채점 및 저장 중입니다..."):
+                        correct_count = 0
+                        wrong_list = []
+                        
+                        # 채점 로직 (띄어쓰기, 대소문자 무시하고 채점)
+                        for i in range(total_q):
+                            c_ans = correct_answers[i].strip().replace(" ", "").lower()
+                            s_ans = student_answers[i].strip().replace(" ", "").lower()
+                            
+                            if s_ans == "" or s_ans == "-":
+                                wrong_list.append(f"{i+1}번(미입력)")
+                            elif s_ans == c_ans:
+                                correct_count += 1
+                            else:
+                                wrong_list.append(f"{i+1}번(내답:{s_ans})")
+                        
+                        final_score = int((correct_count / total_q) * 100) if total_q > 0 else 0
+                        
+                        st.session_state[hw_session_key] = True
+                        st.session_state[f"score_{hw_session_key}"] = final_score
+                        st.session_state[f"wrongs_{hw_session_key}"] = wrong_list
+                        st.session_state[f"correct_cnt_{hw_session_key}"] = correct_count
+                        
+                        # 파일 저장
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        file_names = []
+                        if hw_files:
+                            for hw in hw_files:
+                                save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
+                                with open(save_path, "wb") as f:
+                                    f.write(hw.getbuffer())
+                                file_names.append(hw.name)
+                        
+                        # 로그 저장
+                        with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                            csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{final_score}점", ",".join(student_answers), ", ".join([w.split("(")[0] for w in wrong_list])])
+                        
+                        if hw_files:
+                            with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                                csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
+                        
+                        st.balloons()
+                        st.success("✅ 채점이 완료되었습니다! 아래에서 결과를 확인하세요.")
+                        send_telegram_alert(f"💯 [LogyEDU 국어 채점]\n- 반: {student_class}\n- 학생: {student_name}\n- 시험: {selected_task}\n- 점수: {final_score}점\n- 오답: {len(wrong_list)}개")
 
     st.divider()
     
-    if st.session_state[hw_session_key]:
-        st.subheader(f"🔓 [열림] {student_class} 정답 및 해설")
-        st.success("과제 제출이 확인되어 해당 반의 누적된 정답지 열람 권한이 부여되었습니다.")
-        
+    if st.session_state.get(hw_session_key, False) or is_admin:
+        if f"score_{hw_session_key}" in st.session_state and not is_admin:
+            st.subheader(f"🏆 채점 결과")
+            sc = st.session_state[f"score_{hw_session_key}"]
+            cnt = st.session_state[f"correct_cnt_{hw_session_key}"]
+            wl = st.session_state[f"wrongs_{hw_session_key}"]
+            
+            st.info(f"**원점수:** {sc}점 (총 {total_q}문제 중 {cnt}문제 정답)")
+            if wl:
+                st.error(f"**❌ 틀린 문항:** {', '.join(wl)}")
+                st.markdown("👉 **틀린 문제는 [💬 24시간 AI 튜터] 메뉴로 이동해서 질문하고 오답정리를 마무리하세요!**")
+            else:
+                st.success("🌟 완벽합니다! 모두 맞았습니다!")
+            st.divider()
+
+        st.subheader(f"🔓 [열림] {student_class} 공식 해설지")
         if os.path.exists(class_ans_file_info):
             with open(class_ans_file_info, "r", encoding="utf-8") as f:
                 ans_filenames = f.read().splitlines()
             for idx, ans_filename in enumerate(ans_filenames):
                 if os.path.exists(ans_filename):
                     if ans_filename.lower().endswith('.pdf'):
-                        with open(ans_filename, "rb") as f:
-                            st.download_button(f"📄 {os.path.basename(ans_filename)} 다운로드", f, file_name=os.path.basename(ans_filename), mime="application/pdf", key=f"dl_{idx}")
+                        with open(ans_filename, "rb") as bf:
+                            st.download_button(f"📄 {os.path.basename(ans_filename)} 다운로드", bf, file_name=os.path.basename(ans_filename), key=f"dl_{idx}")
                     else:
-                        st.image(ans_filename, caption=f"[{student_class}] 정답지: {os.path.basename(ans_filename)}", use_container_width=True)
+                        st.image(ans_filename, caption=f"[{student_class}] 공식 정답지 원본", use_container_width=True)
         
         if os.path.exists(class_ans_txt):
             with open(class_ans_txt, "r", encoding="utf-8") as f:
-                ans_text = f.read()
-            if ans_text.strip():
-                st.markdown(f"**[원장님 공식 정답 텍스트]**\n\n{ans_text}")
+                st.markdown(f"**[원장님 공식 정답 해설]**\n\n{f.read()}")
     else:
-        st.subheader("🔒 [잠김] 정답 및 해설")
-        st.warning("⚠️ 과제 파일을 업로드하고 '제출하기' 버튼을 눌러야 락이 해제됩니다.")
+        st.subheader("🔒 [잠김] 채점 결과 및 해설지")
+        st.warning("⚠️ 과제 및 OMR을 제출해야 결과를 확인할 수 있습니다.")
 
 # ==========================================
-# 🔒 메뉴 3: 원장님 전용 관리실
+# 📂 메뉴 3: 학원 자료실
+# ==========================================
+elif menu == "📂 학원 자료실":
+    st.subheader("📂 공용 학원 자료실")
+    st.markdown("원장님께서 배포하신 해설지와 보충 자료를 언제든 자유롭게 다운로드할 수 있습니다.")
+    st.divider()
+    
+    if os.path.exists(PUBLIC_FOLDER) and os.listdir(PUBLIC_FOLDER):
+        for f_name in sorted(os.listdir(PUBLIC_FOLDER)):
+            with open(os.path.join(PUBLIC_FOLDER, f_name), "rb") as f:
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"📄 **{f_name}**")
+                col2.download_button("📥 다운로드", data=f.read(), file_name=f_name, key=f"pub_{f_name}")
+    else:
+        st.info("현재 등록된 공개 자료가 없습니다.")
+
+# ==========================================
+# 🔒 메뉴 4: 원장님 전용 관리실
 # ==========================================
 elif menu == "🔒 원장님 전용 관리실":
     st.subheader("🔒 원장님 전용 관리실")
-    admin_pw = st.text_input("관리자 비밀번호를 입력하세요.", type="password")
     
-    if admin_pw == "20241":
-        st.success("✅ 인증되었습니다.")
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
+    
+    # 💡 탭 1: OMR 정답 세팅
+    with tab1:
+        st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
+        st.caption("학생들이 OMR 화면에 들어왔을 때 채점 기준으로 쓰일 정답을 세팅합니다.")
         
-        tab1, tab2, tab3, tab4 = st.tabs(["🔑 반별 정답지 등록", "📝 과제 현황", "📊 질문 내역", "📚 해설지 누적"])
+        target_class_omr = st.selectbox("📌 정답을 세팅할 반을 선택하세요.", CLASS_LIST, key="omr_class_sel")
+        test_name = st.text_input("📝 과제 또는 모의고사 이름 (예: 고1 3월 학평)")
+        st.info("정답을 쉼표(,)로 구분하여 한 줄로 쭈욱 입력해 주세요.\n\n예시: `1, 3, 5, 2, 이육사, 4`")
         
-        with tab1:
-            st.markdown("#### 반별 과제 정답 파일 등록 (누적)")
-            target_class = st.selectbox("📌 정답지를 배포할 반을 선택하세요.", CLASS_LIST)
-            safe_target_class = get_safe_name(target_class)
-            target_ans_txt_path = os.path.join(ANS_FOLDER, f"ans_txt_{safe_target_class}.txt")
-            target_ans_file_path = os.path.join(ANS_FOLDER, f"ans_file_{safe_target_class}.txt")
+        all_omr_data = []
+        current_ans_str = ""
+        if os.path.exists(OMR_ANS_DB):
+            all_omr_data = load_omr_answers()
+            for d in all_omr_data:
+                if d["반 이름"] == target_class_omr and d["과제명"] == test_name:
+                    current_ans_str = d["정답데이터"]
+                    break
 
-            col_a, col_b = st.columns([3, 1])
-            with col_a:
-                ans_files = st.file_uploader(f"📸 [{target_class}] 정답지 파일 업로드 (여러 개 동시 가능)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
-            with col_b:
-                st.write("")
-                st.write("")
-                if st.button("🗑️ 이 반의 정답지 전체 초기화"):
-                    if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
-                    if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
-                    st.session_state.extracted_ans = ""
-                    st.success("✅ 초기화 완료!")
-                    st.rerun()
-            
-            if "extracted_ans" not in st.session_state:
-                st.session_state.extracted_ans = ""
+        omr_input = st.text_area("🔑 정답 입력란", value=current_ans_str, height=150)
+        
+        if st.button("🚀 OMR 정답 세팅 및 학생 배포"):
+            if test_name and omr_input:
+                ans_list = [ans.strip() for ans in omr_input.split(",") if ans.strip()]
+                clean_ans_str = ",".join(ans_list)
                 
-            if ans_files:
-                if st.button("✨ 최고 성능 AI로 정답 자동 스캔하기"):
-                    with st.spinner("AI 엔진이 네이티브 스캔 중입니다... (약 10초 소요)"):
-                        try:
-                            scan_model = genai.GenerativeModel(TARGET_MODEL)
-                            all_extracted_text = ""
-                            
-                            for ans_file in ans_files:
-                                scan_content = ["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘. 챗봇이 이 내용을 보고 학생들에게 해설해 줄 거야."]
-                                
-                                if ans_file.type.startswith("image"):
-                                    scan_content.append({"mime_type": ans_file.type, "data": ans_file.getvalue()})
-                                elif ans_file.type == "application/pdf":
-                                    # 🛠️ 관리실 스캐너도 PDF 통째로 OCR 인식 적용
-                                    scan_content.append({"mime_type": "application/pdf", "data": ans_file.getvalue()})
-                                    
-                                response = scan_model.generate_content(scan_content)
-                                all_extracted_text += f"\n\n--- [{ans_file.name}] ---\n" + response.text
-                            
-                            st.session_state.extracted_ans = all_extracted_text
-                            st.success("✅ 텍스트 스캔 완료! 아래 입력창에 자동 반영되었습니다.")
-                        except Exception as e:
-                            st.error(f"추출 중 오류가 발생했습니다: {e}")
-            
-            saved_answer = ""
-            if os.path.exists(target_ans_txt_path):
-                with open(target_ans_txt_path, "r", encoding="utf-8") as f:
-                    saved_answer = f.read()
-            
-            display_text = saved_answer
-            if st.session_state.extracted_ans:
-                if display_text:
-                    display_text += "\n" + st.session_state.extracted_ans
-                else:
-                    display_text = st.session_state.extracted_ans
-            
-            new_answer = st.text_area(f"📝 [{target_class}] 정답 텍스트 누적 확인 및 수정", value=display_text, height=300)
-            
-            if st.button(f"🚀 [{target_class}] 정답지 최종 배포(누적)하기"):
-                with open(target_ans_txt_path, "w", encoding="utf-8") as f:
-                    f.write(new_answer)
+                filtered_data = [d for d in all_omr_data if not (d["반 이름"] == target_class_omr and d["과제명"] == test_name)]
+                filtered_data.append({"반 이름": target_class_omr, "과제명": test_name, "정답데이터": clean_ans_str})
                 
-                existing_paths = []
-                if os.path.exists(target_ans_file_path):
-                    with open(target_ans_file_path, "r", encoding="utf-8") as f:
-                        existing_paths = f.read().splitlines()
-                
-                if ans_files:
-                    for ans_file in ans_files:
-                        save_path = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}_{ans_file.name}")
-                        with open(save_path, "wb") as f:
-                            f.write(ans_file.getbuffer())
-                        if save_path not in existing_paths:
-                            existing_paths.append(save_path)
-                
-                with open(target_ans_file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(existing_paths))
-                        
-                st.success(f"✅ [{target_class}] 정답지가 성공적으로 누적 배포되었습니다!")
-                st.session_state.extracted_ans = ""
-
-        with tab2:
-            st.markdown("#### 📊 실시간 과제 제출 기록")
-            if os.path.exists(hw_log_path):
-                with open(hw_log_path, "r", encoding='utf-8-sig') as f:
-                    st.download_button("📥 전체 제출 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="과제제출기록.csv", mime="text/csv")
-                with open(hw_log_path, "r", encoding='utf-8-sig') as f:
-                    hw_data = list(csv.reader(f))
-                    if len(hw_data) > 1:
-                        st.dataframe(hw_data[1:])
-            
-            st.divider()
-            st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
-            if os.path.exists(HW_FOLDER):
-                submitted_files = sorted(os.listdir(HW_FOLDER), reverse=True)
-                if submitted_files:
-                    for f_name in submitted_files:
-                        file_path = os.path.join(HW_FOLDER, f_name)
-                        with open(file_path, "rb") as f:
-                            file_bytes = f.read()
-                        col_a, col_b = st.columns([4, 1])
-                        with col_a:
-                            st.write(f"📄 {f_name}")
-                        with col_b:
-                            st.download_button("📥 열기", data=file_bytes, file_name=f_name, key=f_name)
-            
-            st.divider()
-            if st.button("🚨 과제 제출 기록 전체 삭제"):
-                with open(hw_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
-                    csv.writer(f).writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
-                st.success("✅ 삭제 완료.")
-
-        with tab3:
-            st.markdown("#### 학생들이 챗봇에 질문한 내역")
-            if os.path.exists(log_file_path):
-                with open(log_file_path, "r", encoding='utf-8-sig') as f:
-                    st.download_button("📥 질문 기록 다운로드 (엑셀)", data=f.read().encode('utf-8-sig'), file_name="질문기록.csv", mime="text/csv")
-                with open(log_file_path, "r", encoding='utf-8-sig') as f:
-                    data = list(csv.reader(f))
-                    if len(data) > 1:
-                        st.dataframe(data[1:])
-            
-            st.divider()
-            if st.button("🚨 학생 질문 기록 전체 삭제"):
-                with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
-                    csv.writer(f).writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
-                st.success("✅ 삭제 완료.")
-
-        with tab4:
-            st.markdown("#### 챗봇 두뇌 강화 (해설지 업로드)")
-            ref_files = st.file_uploader("새로운 해설지 파일 업로드", type=["pdf", "txt"], accept_multiple_files=True)
-            if ref_files and st.button("해설지 누적 학습시키기"):
-                with st.spinner("누적 중입니다..."):
-                    extracted_text = ""
-                    for ref_file in ref_files:
-                        if ref_file.name.lower().endswith('.pdf'):
-                            # 🛠️ 두뇌 강화 탭도 PDF 통째로 OCR 인식 적용
-                            try:
-                                extract_model = genai.GenerativeModel(TARGET_MODEL)
-                                extract_res = extract_model.generate_content([
-                                    "이 PDF 파일의 모든 텍스트를 빠짐없이 추출해줘.",
-                                    {"mime_type": "application/pdf", "data": ref_file.getvalue()}
-                                ])
-                                extracted_text += extract_res.text + "\n"
-                            except Exception as e:
-                                st.error(f"PDF 추출 오류: {e}")
-                        else:
-                            extracted_text += ref_file.getvalue().decode("utf-8") + "\n"
+                with open(OMR_ANS_DB, mode='w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.DictWriter(f, fieldnames=["반 이름", "과제명", "정답데이터"])
+                    writer.writeheader()
+                    writer.writerows(filtered_data)
                     
-                    with open(reference_file_path, mode='a', encoding='utf-8') as f:
-                        f.write(f"\n\n--- [업로드: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ---\n{extracted_text}")
-                    st.success("✅ 학습 완료!")
+                st.success(f"✅ [{target_class_omr}] '{test_name}' (총 {len(ans_list)}문항) OMR 세팅 완료! 학생들이 즉시 채점할 수 있습니다.")
+            else:
+                st.error("과제 이름과 정답을 모두 입력해 주세요.")
+                
+        st.divider()
+        st.markdown("#### 🗑️ 등록된 자동 채점 목록 관리")
+        current_omr_list = load_omr_answers() if os.path.exists(OMR_ANS_DB) else []
+        if current_omr_list:
+            for idx, row in enumerate(current_omr_list):
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"[{row['반 이름']}] **{row['과제명']}** (문항 수: {len(row['정답데이터'].split(','))}개)")
+                if col_b.button("❌ 삭제", key=f"del_omr_{idx}"):
+                    current_omr_list.remove(row)
+                    with open(OMR_ANS_DB, "w", newline='', encoding="utf-8-sig") as f:
+                        writer = csv.DictWriter(f, fieldnames=["반 이름", "과제명", "정답데이터"])
+                        writer.writeheader()
+                        writer.writerows(current_omr_list)
+                    st.rerun()
+        else:
+            st.write("등록된 자동 채점 과제가 없습니다.")
+
+    # 탭 2: 정답지(해설) 누적 등록
+    with tab2:
+        st.markdown("#### 반별 과제 해설지 파일 등록 (누적)")
+        target_class = st.selectbox("📌 해설지를 배포할 반을 선택하세요.", CLASS_LIST, key="ans_class_sel")
+        safe_target_class = get_safe_name(target_class)
+        target_ans_txt_path = os.path.join(ANS_FOLDER, f"ans_txt_{safe_target_class}.txt")
+        target_ans_file_path = os.path.join(ANS_FOLDER, f"ans_file_{safe_target_class}.txt")
+
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            ans_files = st.file_uploader(f"📸 [{target_class}] 해설지 업로드", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
+        with col_b:
+            st.write("")
+            st.write("")
+            if st.button("🗑️ 이 반 해설지 전체 초기화"):
+                if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
+                if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
+                st.session_state.extracted_ans = ""
+                st.success("✅ 초기화 완료!")
+                st.rerun()
+        
+        if "extracted_ans" not in st.session_state: st.session_state.extracted_ans = ""
             
-            if os.path.exists(reference_file_path):
-                if st.button("🗑️ 해설지 기억 초기화"):
-                    os.remove(reference_file_path)
-                    st.warning("초기화 완료")
-    else:
-        if admin_pw:
-            st.error("비밀번호가 틀렸습니다.")
+        if ans_files and st.button("✨ 자동 스캔하기"):
+            with st.spinner("스캔 중..."):
+                scan_model = genai.GenerativeModel(TARGET_MODEL)
+                for ans_file in ans_files:
+                    try:
+                        res = scan_model.generate_content(["이 파일에 적힌 모든 정답과 해설 텍스트를 정확하게 추출해서 보여줘.", {"mime_type": ans_file.type if not ans_file.type.endswith("pdf") else "application/pdf", "data": ans_file.getvalue()}])
+                        st.session_state.extracted_ans += f"\n\n--- [{ans_file.name}] ---\n" + res.text
+                    except Exception as e:
+                        st.error(f"추출 중 오류: {e}")
+                st.success("✅ 스캔 완료!")
+        
+        saved_answer = open(target_ans_txt_path, "r", encoding="utf-8").read() if os.path.exists(target_ans_txt_path) else ""
+        new_answer = st.text_area("📝 텍스트 해설 누적 확인/수정", value=saved_answer + ("\n" + st.session_state.extracted_ans if st.session_state.extracted_ans else ""), height=200)
+        
+        if st.button(f"🚀 [{target_class}] 해설지 최종 배포(누적)하기"):
+            with open(target_ans_txt_path, "w", encoding="utf-8") as f: f.write(new_answer)
+            paths = open(target_ans_file_path, "r", encoding="utf-8").read().splitlines() if os.path.exists(target_ans_file_path) else []
+            if ans_files:
+                for af in ans_files:
+                    p = os.path.join(ANS_FOLDER, f"원본_{safe_target_class}_{af.name}")
+                    with open(p, "wb") as f: f.write(af.getbuffer())
+                    if p not in paths: paths.append(p)
+            with open(target_ans_file_path, "w", encoding="utf-8") as f: f.write("\n".join(paths))
+            st.success("✅ 배포 완료!")
+            st.session_state.extracted_ans = ""
+
+    # 탭 3: 채점 및 과제 제출 현황
+    with tab3:
+        st.markdown("#### 💯 학생 OMR 채점 성적표")
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            if os.path.exists(score_log_path):
+                st.download_button("📥 OMR 채점 기록 다운로드 (엑셀)", open(score_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "OMR채점기록.csv", "text/csv")
+        with col_dl2:
+            if os.path.exists(hw_log_path):
+                st.download_button("📥 일반 과제 제출 기록 (엑셀)", open(hw_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "과제제출기록.csv", "text/csv")
+        
+        if os.path.exists(score_log_path):
+            with open(score_log_path, "r", encoding='utf-8-sig') as f:
+                omr_log_data = list(csv.reader(f))
+                if len(omr_log_data) > 1:
+                    st.dataframe(omr_log_data[1:])
+        else:
+            st.info("아직 채점 기록이 없습니다.")
+            
+        st.divider()
+        st.markdown("#### 📂 학생 제출 과제 원본 파일 확인")
+        if os.path.exists(HW_FOLDER) and os.listdir(HW_FOLDER):
+            for f_name in sorted(os.listdir(HW_FOLDER), reverse=True):
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"📄 {f_name}")
+                col_b.download_button("📥 열기", open(os.path.join(HW_FOLDER, f_name), "rb").read(), f_name, key=f"hw_{f_name}")
+        
+        st.divider()
+        if st.button("🚨 제출/채점 기록 및 원본 파일 전체 삭제"):
+            with open(hw_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                csv.writer(f).writerow(["제출 일시", "반 이름", "학생 이름", "제출 파일명"])
+            with open(score_log_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                csv.writer(f).writerow(["채점 일시", "반 이름", "학생 이름", "과제명", "원점수", "학생답안", "틀린문항"])
+            if os.path.exists(HW_FOLDER):
+                for f_name in os.listdir(HW_FOLDER):
+                    os.remove(os.path.join(HW_FOLDER, f_name))
+            st.success("✅ 삭제 완료.")
+
+    with tab4:
+        st.markdown("#### 학생들이 챗봇에 질문한 내역")
+        if os.path.exists(log_file_path):
+            st.download_button("📥 질문 기록 다운로드", open(log_file_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "질문기록.csv", "text/csv")
+            with open(log_file_path, "r", encoding='utf-8-sig') as f:
+                data = list(csv.reader(f))
+                if len(data) > 1:
+                    st.dataframe(data[1:])
+        
+        st.divider()
+        if st.button("🚨 학생 질문 기록 전체 삭제"):
+            with open(log_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
+                csv.writer(f).writerow(["질문 일시", "반 이름", "학생 이름", "질문 내용", "첨부파일 수", "AI 답변 요약"])
+            st.success("✅ 삭제 완료.")
+
+    with tab5:
+        st.markdown("#### 챗봇 두뇌 강화 (해설지 업로드)")
+        ref_files = st.file_uploader("새로운 해설지 누적", type=["pdf", "txt"], accept_multiple_files=True)
+        if ref_files and st.button("학습시키기"):
+            for rf in ref_files:
+                text = rf.getvalue().decode("utf-8") if rf.name.endswith(".txt") else genai.GenerativeModel(TARGET_MODEL).generate_content(["텍스트 추출", {"mime_type": "application/pdf", "data": rf.getvalue()}]).text
+                with open(reference_file_path, "a", encoding="utf-8") as f: f.write(f"\n{text}")
+            st.success("✅ 완료!")
+        if os.path.exists(reference_file_path) and st.button("🗑️ 기억 초기화"):
+            os.remove(reference_file_path)
+
+    with tab6:
+        st.markdown("#### 📂 공용 국어 자료 올리기")
+        pub_files = st.file_uploader("공개할 파일 업로드", accept_multiple_files=True, key="pub_up")
+        if pub_files and st.button("🚀 배포하기"):
+            for pf in pub_files:
+                with open(os.path.join(PUBLIC_FOLDER, pf.name), "wb") as f: f.write(pf.getbuffer())
+            st.success("✅ 등록 완료!")
+            st.rerun()
+
+        st.divider()
+        if os.path.exists(PUBLIC_FOLDER) and os.listdir(PUBLIC_FOLDER):
+            for f_name in sorted(os.listdir(PUBLIC_FOLDER)):
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"📄 {f_name}")
+                if col_b.button("❌ 삭제", key=f"del_pub_{f_name}"):
+                    os.remove(os.path.join(PUBLIC_FOLDER, f_name))
+                    st.rerun()
+
+    with tab7:
+        st.markdown("#### 👥 반별 원생 명단 관리")
+        c1, c2 = st.columns(2)
+        with c1: new_roster_class = st.selectbox("반 선택", CLASS_LIST, key="roster_cls")
+        with c2: new_roster_name = st.text_input("학생 이름", key="roster_nm")
+            
+        if st.button("➕ 명단에 추가하기") and new_roster_name:
+            with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
+                csv.writer(f).writerow([new_roster_class, new_roster_name])
+            st.success(f"✅ [{new_roster_class}] {new_roster_name} 학생 등록!")
+            st.rerun()
+            
+        st.divider()
+        current_roster = get_roster()
+        if current_roster:
+            for r_class, r_name in current_roster:
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"[{r_class}] **{r_name}**")
+                if col_b.button("❌ 삭제", key=f"del_{r_class}_{r_name}"):
+                    current_roster.remove((r_class, r_name))
+                    with open(ROSTER_FILE, mode='w', newline='', encoding='utf-8-sig') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["반 이름", "학생 이름"])
+                        for rc, rn in current_roster: writer.writerow([rc, rn])
+                    st.rerun()
