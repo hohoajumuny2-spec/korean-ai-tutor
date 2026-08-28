@@ -566,9 +566,6 @@ elif menu == "🔒 원장님 전용 관리실":
         else:
             st.info("현재 등록된 원생이 없습니다.")
 
-    # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 난이도별 개수 지정 및 기본값 제거 적용)
-    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
@@ -584,12 +581,10 @@ elif menu == "🔒 원장님 전용 관리실":
         with col_q1:
             q_style = st.selectbox("🎯 출제 스타일", ["수능형", "내신형", "문해력형"])
         with col_q2:
-            # 💡 기본 선택값 제거 (원장님이 선택하신 항목으로만 100% 엄격 출제)
             q_type = st.multiselect("📝 문제 유형 선택 (복수 선택 가능)", 
                                     ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "내용 일치/불일치", "핵심어/주제 추론", "서술형/논술형", "<보기> 적용형"], 
                                     default=[])
         
-        # 💡 난이도별 출제 문항 수 세부 설정 구역
         st.markdown("##### 🔢 난이도별 출제 문항 수 세부 설정")
         col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns(5)
         with col_d1: cnt_killer = st.number_input("🔥 킬러", min_value=0, max_value=10, value=0)
@@ -790,4 +785,27 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.balloons()
             
         st.markdown("---")
-        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조
+        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
+        if db:
+            try:
+                exams_ref = db.collection("online_exams").get()
+                raw_exams = [doc.to_dict() for doc in exams_ref]
+                exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
+                
+                if exam_list:
+                    for idx, exam in enumerate(exam_list):
+                        ex_title = exam.get("제목", "제목 없음")
+                        ex_class = exam.get("대상반", "알 수 없음")
+                        ex_date = exam.get("출제일시", "")
+                        
+                        col_ex1, col_ex2 = st.columns([4, 1])
+                        col_ex1.write(f"📝 **{ex_title}** [{ex_class} 전용] ({ex_date})")
+                        if col_ex2.button("❌ 시험 삭제", key=f"del_exam_db_{idx}"):
+                            db.collection("online_exams").document(ex_title).delete()
+                            st.rerun()
+                else:
+                    st.info("현재 파이어베이스에 배포된 시험이 없습니다.")
+            except Exception as e:
+                st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
+        else:
+            st.warning("파이어베이스 연결이 필요합니다.")
