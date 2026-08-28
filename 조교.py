@@ -338,7 +338,7 @@ elif menu == "💯 OMR 자동 채점":
         st.warning("등록된 OMR 과제가 없습니다.")
 
 # ==========================================
-# 💻 메뉴 6: 온라인 시험장 (🔥 1문항 1답안 & 빈칸 방지 완벽 개편)
+# 💻 메뉴 6: 온라인 시험장
 # ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
@@ -356,22 +356,20 @@ elif menu == "💻 온라인 시험장":
                 c_types = c_ex.get("유형배열", [])
                 q_array = c_ex.get("문항배열", [])
                 
-                st.info("💡 각 문항을 읽고, 바로 밑에 있는 알맞은 형태의 버튼/칸에 답을 입력하세요. 모든 문항을 풀어야 최종 제출이 가능합니다.")
+                st.info("💡 문항을 읽고 바로 밑의 버튼을 누르거나 빈칸을 채우세요. 모든 문항을 풀어야 최종 제출이 가능합니다.")
                 st.divider()
                 
                 with st.form("ol_form"):
                     student_answers = []
-                    
                     actual_q_cnt = len(q_array) if q_array else q_cnt
                     
                     if q_array:
                         for idx, q_text in enumerate(q_array):
-                            st.markdown(f"#### 📌 {idx+1}번 문항")
+                            st.markdown(f"#### 📌 **[{idx+1}번 문항]**")
                             st.markdown(q_text)
                             
                             q_type = c_types[idx] if idx < len(c_types) else "단답형"
                             
-                            # 💡 유형별 맞춤형 OMR 자동 생성 
                             if "5지" in q_type or "객관식" in q_type:
                                 ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
                             elif "O/X" in q_type.upper() or "오엑스" in q_type:
@@ -379,11 +377,12 @@ elif menu == "💻 온라인 시험장":
                             elif "2지" in q_type:
                                 ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
                             else:
-                                ans = st.text_input(f"✍️ {idx+1}번 정답 입력 (주관식/단답형)", key=f"ol_ans_{idx}")
+                                ans = st.text_input(f"✍️ {idx+1}번 정답 직접 입력 (주관식)", key=f"ol_ans_{idx}")
                                 
                             student_answers.append(ans)
                             st.markdown("---")
                     else:
+                        st.warning("⚠️ 이 시험지는 이전 버전에 출제된 과거 시험지입니다. 원장님께서 새 시스템으로 재출제해 주시면 문항별 분리 OMR로 응시할 수 있습니다.")
                         st.markdown(c_ex.get("문제지", ""))
                         st.divider()
                         for idx in range(q_cnt):
@@ -394,7 +393,6 @@ elif menu == "💻 온라인 시험장":
                     submit_btn = st.form_submit_button("🚀 모든 답안 작성 완료 및 최종 제출", use_container_width=True)
                     
                     if submit_btn:
-                        # 💡 빈칸 방지(제출 차단) 로직: None 이거나 빈 문자열이면 미입력으로 간주
                         unanswered = []
                         for idx, a in enumerate(student_answers):
                             if a is None or (isinstance(a, str) and not a.strip()):
@@ -527,7 +525,7 @@ elif menu == "📝 AI 국최 논술 첨삭":
                     1. 논제 파악 및 요구 조건 충족 여부
                     2. 주장의 타당성과 논거의 적절성
                     3. 단락 구성의 논리성(서론-본론-결론 등) 및 표현력(어휘, 문장력, 맞춤법)
-                    4. 종합 평가 및 예상 점수(100점 만점 기준), 그리고 앞으로 보완해야 할 점
+                    4. 종합 평가 및 예상 점수(100점 만점 기준), 그리고 앞으로 보완해야 단점 분석
                     
                     [논제/조건]
                     {essay_topic if essay_topic.strip() else '제출되지 않음'}
@@ -683,9 +681,6 @@ elif menu == "🔒 원장님 전용 관리실":
         else:
             st.info("현재 등록된 원생이 없습니다.")
 
-    # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 강제 분리 프롬프트 강화)
-    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
@@ -750,13 +745,13 @@ elif menu == "🔒 원장님 전용 관리실":
                         
                         [🚨 출력 형식 및 지문 배치 규칙 - 절대 엄수 🚨]
                         1. 하나의 공통 [지문]에 여러 문제가 연결되더라도, **절대로 여러 문제를 하나의 '---문항---' 블록에 묶어서 출력하지 마세요.**
-                        2. 반드시 1번 문제 블록, 2번 문제 블록, 3번 문제 블록을 완벽하게 쪼개야 합니다. 
-                        3. 이를 위해 각 문제마다 해당 문제에 필요한 [지문]을 매번 중복해서라도 삽입하여 블록을 독립시키세요.
-                        4. "---문항---" 구분선은 정확히 요청한 문항 수({total_q_count}개)만큼 사용되어야 합니다.
+                        2. 반드시 1번 문제 블록, 2번 문제 블록, 3번 문제 블록 등 지정한 총 문항 수({total_q_count}개)만큼 완벽하게 쪼개야 합니다. 
+                        3. 이를 위해 각 문제마다 해당 문제에 필요한 [지문]을 매번 중복해서라도 삽입하여 블록을 100% 독립시키세요.
                         
                         [⭐ 로지에듀 특별 출제 매뉴얼]
-                        1. 선택지 길이: 객관식 출제 시 1번부터 5번까지 선택지 길이를 균형 있게 맞추세요.
-                        2. 함정 패턴:
+                        1. 문제 유형 차단: 선택되지 않은 다른 유형은 절대로 출제하지 마세요. 
+                        2. 선택지 길이: 객관식 출제 시 1번부터 5번까지 선택지 길이를 균형 있게 맞추세요.
+                        3. 함정 패턴:
                            - 직관적으로 답이 1초 만에 보이는 문제는 절대 배제하세요.
                            - 서로 대비되는 정보의 공통점과 차이점을 교묘하게 묻는 문항.
                            - A의 특징과 B의 특징을 교차하여 오답 생성.
@@ -885,7 +880,9 @@ elif menu == "🔒 원장님 전용 관리실":
                         st.error("추가 출제 실패")
 
             final_q_text = "\n\n".join([item["q"] for item in st.session_state.q_list])
-            final_a_text = "\n\n".join([item["a"] for item in st.session_state.q_list])
+            
+            # 💡 [핵심 패치] 해설지 텍스트 렌더링 시 문항 번호표 (▶️ [N번 문항 정답 및 해설]) 자동 부여 
+            final_a_text = "\n\n".join([f"▶️ [{idx+1}번 문항 정답 및 해설]\n{item['a']}" for idx, item in enumerate(st.session_state.q_list)])
             
             st.markdown("---")
             col_res1, col_res2 = st.columns(2)
