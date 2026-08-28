@@ -271,6 +271,10 @@ if menu == "💬 24시간 AI 튜터":
             except Exception as e:
                 message_placeholder.error(f"오류: {e}")
 
+    # 💡 찐 국최 링크 버튼 복구 완료!
+    st.divider()
+    st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
+
 # ==========================================
 # 📝 메뉴 2: 과제 제출
 # ==========================================
