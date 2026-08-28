@@ -6,3 +6,4 @@ langchain-core
 pymupdf
 requests
 google-generativeai
+firebase-admin
