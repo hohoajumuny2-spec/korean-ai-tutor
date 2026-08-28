@@ -451,7 +451,8 @@ elif menu == "📂 학원 자료실":
 elif menu == "🔒 원장님 전용 관리실":
     st.subheader("🔒 원장님 전용 관리실")
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
+    # 💡 탭 8(AI 문제 출제기)이 추가되었습니다.
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리", "🪄 AI 문제 출제기"])
     
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
@@ -553,10 +554,6 @@ elif menu == "🔒 원장님 전용 관리실":
                 if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
                 if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
                 
-                # 🔥 파이어베이스 데이터는 삭제하지 않고 영구 보존하도록 주석/제거 처리
-                # if db:
-                #     db.collection("ai_knowledge").document(f"class_{safe_target_class}").delete()
-                
                 st.session_state.extracted_ans = ""
                 st.success("✅ 로컬 파일 초기화 완료! (파이어베이스 영구 지식은 안전하게 보존됩니다.)")
                 st.rerun()
@@ -651,30 +648,49 @@ elif menu == "🔒 원장님 전용 관리실":
     with tab5:
         st.markdown("#### 챗봇 두뇌 강화 (해설지 업로드)")
         ref_files = st.file_uploader("새로운 해설지 누적", type=["pdf", "txt"], accept_multiple_files=True)
-        if ref_files and st.button("학습시키기"):
-            for rf in ref_files:
-                text = rf.getvalue().decode("utf-8") if rf.name.endswith(".txt") else genai.GenerativeModel(TARGET_MODEL).generate_content(["텍스트 추출", {"mime_type": "application/pdf", "data": rf.getvalue()}]).text
-                with open(reference_file_path, "a", encoding="utf-8") as f: f.write(f"\n{text}")
+        
+        if ref_files and st.button("🚀 학습시키기"):
+            # 💡 AI가 문서를 읽는 동안 로딩 표시 추가
+            with st.spinner("AI가 문서를 읽고 파이어베이스에 저장 중입니다... (PDF는 약 5~10초 소요)"):
+                for rf in ref_files:
+                    try:
+                        text = rf.getvalue().decode("utf-8") if rf.name.endswith(".txt") else genai.GenerativeModel(TARGET_MODEL).generate_content(["텍스트 추출", {"mime_type": "application/pdf", "data": rf.getvalue()}]).text
+                        with open(reference_file_path, "a", encoding="utf-8") as f: f.write(f"\n{text}")
+                        
+                        if db:
+                            doc_ref = db.collection("ai_knowledge").document("common_reference")
+                            doc = doc_ref.get()
+                            existing_text = doc.to_dict().get("text", "") if doc.exists else ""
+                            doc_ref.set({
+                                "text": existing_text + "\n" + text,
+                                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                    except Exception as e:
+                        st.error(f"🚨 오류 발생: {e}")
                 
+                st.success("✅ 파이어베이스 AI 두뇌에 학습이 완벽하게 완료되었습니다!")
+                st.rerun()
+
+        st.markdown("---")
+        # 💡 파이어베이스에 저장된 지식을 눈으로 확인하는 창
+        current_common_text = "아직 파이어베이스에 등록된 공통 지식이 없습니다."
+        if db:
+            try:
+                doc = db.collection("ai_knowledge").document("common_reference").get()
+                if doc.exists:
+                    current_common_text = doc.to_dict().get("text", "")
+            except: pass
+            
+        st.text_area("🧠 현재 파이어베이스에 누적된 공통 지식 확인", value=current_common_text, height=200, disabled=True)
+            
+        if os.path.exists(reference_file_path) or (db and current_common_text != "아직 파이어베이스에 등록된 공통 지식이 없습니다."):
+            if st.button("🗑️ 기억 초기화"):
+                if os.path.exists(reference_file_path):
+                    os.remove(reference_file_path)
                 if db:
-                    doc_ref = db.collection("ai_knowledge").document("common_reference")
-                    doc = doc_ref.get()
-                    existing_text = doc.to_dict().get("text", "") if doc.exists else ""
-                    doc_ref.set({
-                        "text": existing_text + "\n" + text,
-                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                    
-            st.success("✅ 파이어베이스 AI 두뇌에 학습 완료!")
-            
-        if os.path.exists(reference_file_path) and st.button("🗑️ 기억 초기화"):
-            os.remove(reference_file_path)
-            
-            # 🔥 파이어베이스 데이터는 삭제하지 않고 영구 보존하도록 주석/제거 처리
-            # if db:
-            #     db.collection("ai_knowledge").document("common_reference").delete()
-                
-            st.success("✅ 로컬 기억 초기화 완료! (파이어베이스 영구 지식은 안전하게 보존됩니다.)")
+                    db.collection("ai_knowledge").document("common_reference").delete()
+                st.success("✅ 파이어베이스와 서버의 공통 지식이 모두 초기화되었습니다.")
+                st.rerun()
 
     with tab6:
         st.markdown("#### 📂 공용 국어 자료 올리기")
@@ -719,3 +735,56 @@ elif menu == "🔒 원장님 전용 관리실":
                         writer.writerow(["반 이름", "학생 이름"])
                         for rc, rn in current_roster: writer.writerow([rc, rn])
                     st.rerun()
+
+    # 💡 탭 8(AI 문제 출제기) 추가!
+    with tab8:
+        st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
+        st.info("💡 교과서나 모의고사 지문을 넣으면, 단 한 치의 오류도 없는 완벽한 국어 문제를 즉시 생성합니다.")
+        
+        col_q1, col_q2 = st.columns(2)
+        with col_q1:
+            q_style = st.selectbox("🎯 출제 스타일", ["수능/모의고사형", "하남고 내신형", "미강고 내신형", "미사고 내신형", "풍산고 내신형", "중등부 문해력"])
+            q_count = st.number_input("🔢 출제할 문항 수", min_value=1, max_value=10, value=3)
+        with col_q2:
+            q_type = st.multiselect("📝 문제 유형 (복수 선택 가능)", ["내용 일치/불일치", "핵심어/주제 추론", "문맥상 의미 파악", "표현상의 특징", "서술형/논술형", "<보기> 적용형"], default=["내용 일치/불일치", "핵심어/주제 추론"])
+        
+        q_text = st.text_area("📄 출제할 지문을 입력(복사+붙여넣기)하세요.", height=200)
+        
+        if st.button("🚀 로지에듀 수준의 완벽한 문제 생성하기", use_container_width=True):
+            if not q_text.strip():
+                st.warning("⚠️ 출제할 지문을 먼저 입력해 주세요.")
+            elif not q_type:
+                st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
+            else:
+                with st.spinner("AI가 지문을 정밀 분석하여 함정 선지와 함께 문제를 출제 중입니다... (약 10~20초)"):
+                    try:
+                        q_model = genai.GenerativeModel(TARGET_MODEL)
+                        q_prompt = f"""
+                        당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
+                        주어진 지문을 바탕으로 단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽하고 정확한 국어 문제를 출제해야 합니다.
+                        오답 선지는 매력적인 함정을 포함하되, 지문에 근거하여 명백히 틀린 이유가 설명되어야 합니다.
+                        
+                        [출제 조건]
+                        - 대상 및 스타일: {q_style}
+                        - 문제 유형: {', '.join(q_type)}
+                        - 문항 수: 총 {q_count}문제
+                        
+                        [요청 사항]
+                        1. 각 문제에는 '문항 번호', '발문(질문)', '선지(1~5번)'를 명확히 작성하세요. (서술형인 경우 선지 제외)
+                        2. 모든 문제가 끝난 후, 맨 아래에 [정답 및 명쾌한 해설] 파트를 따로 만들어서 정답의 근거와 오답의 이유를 하나하나 정확하게 설명하세요.
+                        3. 국어 문법과 맞춤법을 완벽하게 준수하세요.
+                        
+                        [지문]
+                        {q_text}
+                        """
+                        
+                        q_response = q_model.generate_content(q_prompt)
+                        st.session_state.generated_questions = q_response.text
+                        st.success("✅ 출제가 완료되었습니다! 내용을 확인하시고 복사하여 한글이나 워드에 붙여넣어 사용하세요.")
+                    except Exception as e:
+                        st.error(f"🚨 문제 생성 중 오류가 발생했습니다: {e}")
+        
+        if "generated_questions" in st.session_state:
+            st.markdown("---")
+            st.markdown("#### 📜 생성된 문제 및 해설")
+            st.text_area("복사해서 사용하세요 (Ctrl+A, Ctrl+C)", value=st.session_state.generated_questions, height=400)
