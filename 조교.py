@@ -4,20 +4,25 @@ import sys
 import subprocess
 import csv
 import requests
+import json
 from datetime import datetime
 
 # ==========================================
-# 🚨 서버 필수 부품 강제 설치 
+# 🚨 서버 필수 부품 강제 설치
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
     try:
         import google.generativeai
+        import firebase_admin
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai", "firebase-admin"])
 
 ensure_dependencies()
 import google.generativeai as genai
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 # ==========================================
 # ⭐️ 구글 공식 최신 표준 모델
@@ -25,7 +30,7 @@ import google.generativeai as genai
 TARGET_MODEL = "gemini-3.6-flash" 
 
 # ==========================================
-# 🔒 비밀 금고 안전장치 (열쇠 확인)
+# 🔒 비밀 금고 안전장치 및 파이어베이스 연동
 # ==========================================
 if "MY_API_KEY" not in st.secrets:
     st.warning("🔑 아직 열쇠가 없습니다! 우측 하단 `< 앱 관리 (Manage app)` -> `Settings` -> `Secrets` 에 구글 API 키를 먼저 넣어주세요.")
@@ -36,6 +41,21 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
 genai.configure(api_key=MY_API_KEY)
+
+# 🔥 파이어베이스 영구 창고 연결
+if not firebase_admin._apps:
+    try:
+        key_dict = json.loads(st.secrets["firebase_key"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"🚨 파이어베이스 연결 오류: {e}")
+
+# 데이터베이스 조종 리모컨
+try:
+    db = firestore.client()
+except:
+    db = None
 
 def send_telegram_alert(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -192,17 +212,31 @@ if menu == "💬 24시간 AI 튜터":
                 model = genai.GenerativeModel(TARGET_MODEL)
                 base_instruction = f"당신은 LogyEDU 최준용 국어 원장님의 지식과 관리 방식을 완벽하게 물려받은 'AI 국최'입니다. 학생 이름은 '{student_name}'이고 소속은 '{student_class}'입니다. 대답을 시작할 때 항상 '안녕하세요! AI 국최입니다.' 와 같이 자신의 정체성을 밝히세요. 학생의 질문에 조금의 오류도 없이 정확하고 올바른 정답과 명쾌한 해설을 제공하세요. 국어 외의 사적인 잡담은 단호히 거절하세요."
                 
-                if os.path.exists(class_ans_txt):
+                # 🔥 파이어베이스 지식 우선 호출 로직
+                fb_class_ans = ""
+                fb_common_ans = ""
+                if db:
+                    try:
+                        c_doc = db.collection("ai_knowledge").document(f"class_{safe_class}").get()
+                        if c_doc.exists: fb_class_ans = c_doc.to_dict().get("text", "")
+                        
+                        r_doc = db.collection("ai_knowledge").document("common_reference").get()
+                        if r_doc.exists: fb_common_ans = r_doc.to_dict().get("text", "")
+                    except: pass
+                
+                if fb_class_ans:
+                    base_instruction += f"\n\n[해당 반({student_class}) 누적 과제 정답지]\n{fb_class_ans}"
+                elif os.path.exists(class_ans_txt):
                     with open(class_ans_txt, mode='r', encoding='utf-8') as f:
                         today_ans = f.read()
-                    if today_ans.strip():
-                        base_instruction += f"\n\n[해당 반({student_class}) 누적 과제 정답지]\n{today_ans}"
-                        
-                if os.path.exists(reference_file_path):
+                    if today_ans.strip(): base_instruction += f"\n\n[해당 반({student_class}) 누적 과제 정답지]\n{today_ans}"
+                
+                if fb_common_ans:
+                    base_instruction += f"\n\n[학원 누적 해설지]\n{fb_common_ans}"
+                elif os.path.exists(reference_file_path):
                     with open(reference_file_path, mode='r', encoding='utf-8') as f:
                         accumulated_doc = f.read()
-                    if accumulated_doc.strip():
-                        base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
+                    if accumulated_doc.strip(): base_instruction += f"\n\n[학원 누적 해설지]\n{accumulated_doc}"
                 
                 contents = [f"{base_instruction}\n\n[학생 질문]\n{prompt}"]
                 if uploaded_files:
@@ -220,6 +254,12 @@ if menu == "💬 24시간 AI 튜터":
                 
                 with open(log_file_path, mode='a', newline='', encoding='utf-8-sig') as f:
                     csv.writer(f).writerow([now_str, student_class, student_name, prompt, file_count, ai_response[:50] + "..."])
+                
+                if db:
+                    db.collection("chat_logs").add({
+                        "질문일시": now_str, "반이름": student_class, "학생이름": student_name,
+                        "질문내용": prompt, "첨부파일수": file_count, "AI답변요약": ai_response[:50] + "..."
+                    })
                     
                 send_telegram_alert(f"💡 [LogyEDU 국어 질문]\n- 반: {student_class}\n- 학생: {student_name}\n- 질문: {prompt}\n- 파일: {file_count}\n- 시간: {now_str}")
 
@@ -255,6 +295,12 @@ elif menu == "📝 과제 파일 제출":
                 
                 with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
                     csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
+                
+                if db:
+                    db.collection("homework_logs").add({
+                        "제출일시": now_str, "반이름": student_class, 
+                        "학생이름": student_name, "제출파일명": ", ".join(file_names)
+                    })
                 
                 st.session_state[hw_session_key] = True
             
@@ -356,6 +402,13 @@ elif menu == "💯 OMR 자동 채점":
                         with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
                             csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{final_score}점", ",".join(student_answers), ", ".join([w.split("(")[0] for w in wrong_list])])
                         
+                        if db:
+                            db.collection("omr_logs").add({
+                                "채점일시": now_str, "반이름": student_class, "학생이름": student_name,
+                                "과제명": selected_task, "점수": final_score,
+                                "학생답안": ",".join(student_answers), "틀린문항": ", ".join([w.split("(")[0] for w in wrong_list])
+                            })
+                        
                         st.balloons()
                         st.success("✅ 채점이 완료되었습니다! 아래에서 결과를 확인하세요.")
                         send_telegram_alert(f"💯 [LogyEDU 국어 채점]\n- 반: {student_class}\n- 학생: {student_name}\n- 시험: {selected_task}\n- 점수: {final_score}점\n- 오답: {len(wrong_list)}개")
@@ -400,13 +453,11 @@ elif menu == "🔒 원장님 전용 관리실":
     
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리"])
     
-    # 💡 탭 1: OMR 정답 세팅 (AI 자동 추출 기능 추가)
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
         target_class_omr = st.selectbox("📌 정답을 세팅할 반을 선택하세요.", CLASS_LIST, key="omr_class_sel")
         test_name = st.text_input("📝 과제 또는 모의고사 이름 (예: 고1 3월 학평)")
         
-        # --- 💡 AI 정답 추출기 ---
         st.markdown("##### 🤖 AI 자동 정답 추출 (수작업 입력 방지)")
         st.info("정답지(PDF 또는 사진)를 올리면 AI가 알아서 '1,4,3,2,5' 형태로 정답만 쏙쏙 뽑아줍니다!")
         omr_extract_file = st.file_uploader("정답지 파일 업로드", type=["png", "jpg", "jpeg", "pdf"], key="omr_extract_uploader")
@@ -425,7 +476,6 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.success("✅ 정답 추출 성공! 아래 입력란에 자동 반영되었습니다.")
                 except Exception as e:
                     st.error(f"추출 실패: {e}")
-        # ------------------------
 
         all_omr_data = []
         current_ans_str = ""
@@ -436,7 +486,6 @@ elif menu == "🔒 원장님 전용 관리실":
                     current_ans_str = d["정답데이터"]
                     break
         
-        # AI가 추출한 값이 있으면 우선 반영
         if st.session_state.extracted_omr_ans:
             current_ans_str = st.session_state.extracted_omr_ans
 
@@ -456,7 +505,14 @@ elif menu == "🔒 원장님 전용 관리실":
                     writer.writeheader()
                     writer.writerows(filtered_data)
                     
-                st.session_state.extracted_omr_ans = "" # 제출 후 AI 추출값 초기화
+                if db:
+                    db.collection("omr_settings").document(f"{target_class_omr}_{test_name}").set({
+                        "반이름": target_class_omr,
+                        "과제명": test_name,
+                        "정답데이터": clean_ans_str
+                    })
+                    
+                st.session_state.extracted_omr_ans = "" 
                 st.success(f"✅ [{target_class_omr}] '{test_name}' (총 {len(ans_list)}문항) OMR 세팅 완료!")
             else:
                 st.error("과제 이름과 정답을 모두 입력해 주세요.")
@@ -474,6 +530,8 @@ elif menu == "🔒 원장님 전용 관리실":
                         writer = csv.DictWriter(f, fieldnames=["반 이름", "과제명", "정답데이터"])
                         writer.writeheader()
                         writer.writerows(current_omr_list)
+                    if db:
+                        db.collection("omr_settings").document(f"{row['반 이름']}_{row['과제명']}").delete()
                     st.rerun()
         else:
             st.write("등록된 자동 채점 과제가 없습니다.")
@@ -494,8 +552,13 @@ elif menu == "🔒 원장님 전용 관리실":
             if st.button("🗑️ 이 반 해설지 전체 초기화"):
                 if os.path.exists(target_ans_txt_path): os.remove(target_ans_txt_path)
                 if os.path.exists(target_ans_file_path): os.remove(target_ans_file_path)
+                
+                # 🔥 파이어베이스 데이터는 삭제하지 않고 영구 보존하도록 주석/제거 처리
+                # if db:
+                #     db.collection("ai_knowledge").document(f"class_{safe_target_class}").delete()
+                
                 st.session_state.extracted_ans = ""
-                st.success("✅ 초기화 완료!")
+                st.success("✅ 로컬 파일 초기화 완료! (파이어베이스 영구 지식은 안전하게 보존됩니다.)")
                 st.rerun()
         
         if "extracted_ans" not in st.session_state: st.session_state.extracted_ans = ""
@@ -523,7 +586,14 @@ elif menu == "🔒 원장님 전용 관리실":
                     with open(p, "wb") as f: f.write(af.getbuffer())
                     if p not in paths: paths.append(p)
             with open(target_ans_file_path, "w", encoding="utf-8") as f: f.write("\n".join(paths))
-            st.success("✅ 배포 완료!")
+            
+            if db:
+                db.collection("ai_knowledge").document(f"class_{safe_target_class}").set({
+                    "text": new_answer,
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                
+            st.success("✅ 배포 및 파이어베이스 AI 두뇌 연동 완료!")
             st.session_state.extracted_ans = ""
 
     with tab3:
@@ -585,9 +655,26 @@ elif menu == "🔒 원장님 전용 관리실":
             for rf in ref_files:
                 text = rf.getvalue().decode("utf-8") if rf.name.endswith(".txt") else genai.GenerativeModel(TARGET_MODEL).generate_content(["텍스트 추출", {"mime_type": "application/pdf", "data": rf.getvalue()}]).text
                 with open(reference_file_path, "a", encoding="utf-8") as f: f.write(f"\n{text}")
-            st.success("✅ 완료!")
+                
+                if db:
+                    doc_ref = db.collection("ai_knowledge").document("common_reference")
+                    doc = doc_ref.get()
+                    existing_text = doc.to_dict().get("text", "") if doc.exists else ""
+                    doc_ref.set({
+                        "text": existing_text + "\n" + text,
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                    
+            st.success("✅ 파이어베이스 AI 두뇌에 학습 완료!")
+            
         if os.path.exists(reference_file_path) and st.button("🗑️ 기억 초기화"):
             os.remove(reference_file_path)
+            
+            # 🔥 파이어베이스 데이터는 삭제하지 않고 영구 보존하도록 주석/제거 처리
+            # if db:
+            #     db.collection("ai_knowledge").document("common_reference").delete()
+                
+            st.success("✅ 로컬 기억 초기화 완료! (파이어베이스 영구 지식은 안전하게 보존됩니다.)")
 
     with tab6:
         st.markdown("#### 📂 공용 국어 자료 올리기")
