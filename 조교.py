@@ -331,7 +331,7 @@ elif menu == "💯 OMR 자동 채점":
         st.warning("등록된 OMR 과제가 없습니다.")
 
 # ==========================================
-# 💻 메뉴 6: 온라인 시험장 (🔥 문제 바로 밑 답안 입력 구조로 개편)
+# 💻 메뉴 6: 온라인 시험장
 # ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
@@ -354,7 +354,6 @@ elif menu == "💻 온라인 시험장":
                 with st.form("ol_form"):
                     student_answers = []
                     
-                    # 💡 개편: 문제 출력 ➔ 바로 아래 답안 입력 칸 ➔ 구분선
                     if q_array:
                         for idx, q_text in enumerate(q_array):
                             st.markdown(q_text)
@@ -362,7 +361,6 @@ elif menu == "💻 온라인 시험장":
                             student_answers.append(ans)
                             st.markdown("---")
                     else:
-                        # 통짜 지문일 경우 기존 방식 호환
                         st.markdown(c_ex["문제지"])
                         st.divider()
                         for idx in range(q_cnt):
@@ -569,11 +567,11 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기
+    # 🪄 탭 8: AI 문제 출제기 (🔥 난이도별 개수 지정 및 기본값 제거 적용)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
-        st.info("💡 출제 시 AI가 정답과 난이도를 자동 추출합니다. 원장님께서 확인 후 배포하면 학생 답안이 자동 채점됩니다.")
+        st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
         
         q_mode = st.radio("📝 출제 모드 선택", ["✨ 새로운 지문 기반 신규 문제 창조", "🔄 기존 기출문제 기반 쌍둥이 변형 문제 출제"], horizontal=True)
         st.divider()
@@ -585,13 +583,25 @@ elif menu == "🔒 원장님 전용 관리실":
         col_q1, col_q2 = st.columns(2)
         with col_q1:
             q_style = st.selectbox("🎯 출제 스타일", ["수능형", "내신형", "문해력형"])
-            q_diff = st.selectbox("🔥 목표 난이도", ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"])
-            q_count = st.number_input("🔢 출제할 문항 수", min_value=1, max_value=20, value=3)
         with col_q2:
-            q_type = st.multiselect("📝 문제 유형 (복수 선택)", 
+            # 💡 기본 선택값 제거 (원장님이 선택하신 항목으로만 100% 엄격 출제)
+            q_type = st.multiselect("📝 문제 유형 선택 (복수 선택 가능)", 
                                     ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "내용 일치/불일치", "핵심어/주제 추론", "서술형/논술형", "<보기> 적용형"], 
-                                    default=["5지 선다형", "내용 일치/불일치"])
+                                    default=[])
         
+        # 💡 난이도별 출제 문항 수 세부 설정 구역
+        st.markdown("##### 🔢 난이도별 출제 문항 수 세부 설정")
+        col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns(5)
+        with col_d1: cnt_killer = st.number_input("🔥 킬러", min_value=0, max_value=10, value=0)
+        with col_d2: cnt_semi = st.number_input("⚡ 준킬러", min_value=0, max_value=10, value=0)
+        with col_d3: cnt_high = st.number_input("📈 상난이도", min_value=0, max_value=10, value=1)
+        with col_d4: cnt_mid = st.number_input("📊 중난이도", min_value=0, max_value=10, value=2)
+        with col_d5: cnt_low = st.number_input("📉 하난이도", min_value=0, max_value=10, value=0)
+        
+        total_q_count = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+        st.caption(f"💡 현재 설정된 총 출제 문항 수: **{total_q_count}문제**")
+        st.divider()
+
         q_files = st.file_uploader("📂 기준 자료 파일 업로드 (PDF, 이미지 등)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
         if "신규" in q_mode:
             q_text = st.text_area("📄 출제할 지문 텍스트 (파일만 올려도 무방합니다)", height=150)
@@ -602,12 +612,14 @@ elif menu == "🔒 원장님 전용 관리실":
         if "q_contents_cache" not in st.session_state: st.session_state.q_contents_cache = []
             
         if st.button("🚀 로지에듀 수준의 완벽한 문제 최초 생성", use_container_width=True):
-            if not q_text.strip() and not q_files:
+            if total_q_count == 0:
+                st.warning("⚠️ 출제할 문항 수를 최소 1개 이상 설정해 주세요.")
+            elif not q_text.strip() and not q_files:
                 st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
             elif not q_type:
-                st.warning("⚠️ 문제 유형을 선택해 주세요.")
+                st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
             else:
-                with st.spinner("AI가 자료를 정밀 분석하여 자동 채점 기준과 함께 문제를 설계 중입니다... (약 10~20초)"):
+                with st.spinner("AI가 난이도별 문항 수와 지정 유형을 정밀 계산하여 문제 생성 중입니다... (약 10~20초)"):
                     try:
                         q_model = genai.GenerativeModel(TARGET_MODEL)
                         q_prompt = f"""
@@ -617,12 +629,16 @@ elif menu == "🔒 원장님 전용 관리실":
                         [출제 기본 조건]
                         - 작업 모드: {q_mode}
                         - 대상 및 스타일: {q_style}
-                        - 문제 유형: {', '.join(q_type)}
-                        - 목표 난이도: {q_diff} (문항별로 약간씩 난이도 편차를 두어도 좋습니다)
-                        - 문항 수: 총 {q_count}문제
+                        - 지정된 문제 유형: {', '.join(q_type)}
+                        - 총 문항 수: 총 {total_q_count}문제
+                        - 난이도별 세부 지정 개수: 킬러 문항({cnt_killer}개), 준킬러 문항({cnt_semi}개), 상난이도({cnt_high}개), 중난이도({cnt_mid}개), 하난이도({cnt_low}개)
                         
-                        [⭐ 로지에듀 특별 출제 매뉴얼 (필수 반영)]
-                        1. 선택지 길이: 1번부터 5번까지 선택지의 길이를 실전처럼 균형 있게 맞추세요.
+                        [🚨 유형 및 난이도 엄격 준수 수칙 (매우 중요)]
+                        1. 문제 유형 차단: 원장님이 지정하신 [{', '.join(q_type)}] 방식'만' 사용하여 출제해야 합니다. 선택하지 않은 다른 유형(예: 선택 목록에 없는 5지 선다형 등)은 절대로 출제하지 마세요. 단답형/서술형만 선택된 경우 객관식 1~5번 선지를 만들지 말고 주관식으로만 구성하세요.
+                        2. 난이도 구성: 정확히 킬러({cnt_killer}개), 준킬러({cnt_semi}개), 상({cnt_high}개), 중({cnt_mid}개), 하({cnt_low}개) 수량을 맞춰 총 {total_q_count}문제를 구성하세요.
+                        
+                        [⭐ 로지에듀 특별 출제 매뉴얼]
+                        1. 선택지 길이: 객관식 출제 시 1번부터 5번까지 선택지 길이를 균형 있게 맞추세요.
                         2. 어휘 제한: 외부 어휘 개입을 최소화하고 자료에 있는 어휘를 최대한 활용하세요.
                         3. 함정 패턴:
                            - 직관적으로 답이 1초 만에 보이는 문제는 절대 배제하세요.
@@ -634,13 +650,13 @@ elif menu == "🔒 원장님 전용 관리실":
                         [출력 형식 - 매우 중요]
                         반드시 아래의 특수 구분선을 사용하여 각 문제와 해설을 철저히 분리하세요.
                         ---문항---
-                        1. 발문과 선지 내용...
+                        1. 발문과 내용...
                         ---해설---
-                        정답: 3
-                        난이도: {q_diff} (반드시 '킬러 문항', '준킬러 문항', '상난이도', '중난이도', '하난이도' 5개 중 하나로만 적으세요)
+                        정답: (객관식이면 숫자, 단답형이면 정확한 단어/문장)
+                        난이도: (킬러 문항 / 준킬러 문항 / 상난이도 / 중난이도 / 하난이도 중 정확히 하나 표기)
                         해설: 정답의 근거 및 오답 분석...
                         ---문항---
-                        2. 발문과 선지 내용...
+                        2. 발문과 내용...
                         ---해설---
                         ...
                         
@@ -676,7 +692,7 @@ elif menu == "🔒 원장님 전용 관리실":
                                     parsed_list.append({"q": q_str, "a": a_str, "ans": ans_match, "diff": diff_match})
                                     
                         st.session_state.q_list = parsed_list
-                        st.success(f"✅ {len(parsed_list)}문제가 로지에듀 기준에 맞춰 성공적으로 출제되었습니다!")
+                        st.success(f"✅ {len(parsed_list)}문제가 설정한 난이도와 유형에 완벽히 맞추어 출제되었습니다!")
                     except Exception as e:
                         st.error(f"🚨 출제 오류: {e}")
         
@@ -747,7 +763,6 @@ elif menu == "🔒 원장님 전용 관리실":
             with col_res2:
                 st.download_button("📥 완성된 해설지 다운로드", data=final_a_text, file_name=f"{q_test_title}_해설지.txt")
                 
-            # 💡 배포 시 개별 문항 배열(q_array)도 파이어베이스에 함께 저장하여 문제 밑 답안 칸 구조 생성
             if st.button("🚀 원장님 최종 승인: 위 문항을 [온라인 시험장]으로 배포하기"):
                 if not q_test_title:
                     st.error("시험 제목을 입력해 주세요.")
@@ -775,27 +790,4 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.balloons()
             
         st.markdown("---")
-        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
-        if db:
-            try:
-                exams_ref = db.collection("online_exams").get()
-                raw_exams = [doc.to_dict() for doc in exams_ref]
-                exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
-                
-                if exam_list:
-                    for idx, exam in enumerate(exam_list):
-                        ex_title = exam.get("제목", "제목 없음")
-                        ex_class = exam.get("대상반", "알 수 없음")
-                        ex_date = exam.get("출제일시", "")
-                        
-                        col_ex1, col_ex2 = st.columns([4, 1])
-                        col_ex1.write(f"📝 **{ex_title}** [{ex_class} 전용] ({ex_date})")
-                        if col_ex2.button("❌ 시험 삭제", key=f"del_exam_db_{idx}"):
-                            db.collection("online_exams").document(ex_title).delete()
-                            st.rerun()
-                else:
-                    st.info("현재 파이어베이스에 배포된 시험이 없습니다.")
-            except Exception as e:
-                st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
-        else:
-            st.warning("파이어베이스 연결이 필요합니다.")
+        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조
