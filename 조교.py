@@ -331,7 +331,7 @@ elif menu == "💯 OMR 자동 채점":
         st.warning("등록된 OMR 과제가 없습니다.")
 
 # ==========================================
-# 💻 메뉴 6: 온라인 시험장 (🔥 난이도별 상세 자동 채점 탑재)
+# 💻 메뉴 6: 온라인 시험장 (🔥 문제 바로 밑 답안 입력 구조로 개편)
 # ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
@@ -343,33 +343,35 @@ elif menu == "💻 온라인 시험장":
             if s_ex != "선택하세요":
                 c_ex = next(e for e in av_exams if e["제목"] == s_ex)
                 
-                st.markdown("### 📜 문제지")
-                st.markdown(c_ex["문제지"])
-                
                 q_cnt = c_ex.get("문항수", 5)
                 c_answers = c_ex.get("정답배열", [])
                 c_diffs = c_ex.get("난이도배열", [])
+                q_array = c_ex.get("문항배열", [])
                 
+                st.info("💡 각 문항을 읽고, 바로 밑의 답안 칸에 정답을 입력하세요. 모두 풀고 맨 아래 제출 버튼을 누르면 채점이 완료됩니다.")
                 st.divider()
-                st.markdown("### ✍️ OMR 답안 작성 및 실시간 자동 채점")
-                st.info("💡 문항 번호에 맞는 정답(숫자)이나 주관식 단어를 입력하세요. 제출 즉시 난이도별 채점 결과가 나옵니다.")
                 
                 with st.form("ol_form"):
                     student_answers = []
-                    for i in range(0, q_cnt, 2):
-                        cols = st.columns(2)
-                        with cols[0]:
-                            ans = st.text_input(f"✅ {i+1}번 문항", key=f"ol_ans_{i}")
+                    
+                    # 💡 개편: 문제 출력 ➔ 바로 아래 답안 입력 칸 ➔ 구분선
+                    if q_array:
+                        for idx, q_text in enumerate(q_array):
+                            st.markdown(q_text)
+                            ans = st.text_input(f"✍️ {idx+1}번 답안 입력", key=f"ol_ans_{idx}")
                             student_answers.append(ans)
-                        if i + 1 < q_cnt:
-                            with cols[1]:
-                                ans2 = st.text_input(f"✅ {i+2}번 문항", key=f"ol_ans_{i+1}")
-                                student_answers.append(ans2)
+                            st.markdown("---")
+                    else:
+                        # 통짜 지문일 경우 기존 방식 호환
+                        st.markdown(c_ex["문제지"])
+                        st.divider()
+                        for idx in range(q_cnt):
+                            ans = st.text_input(f"✍️ {idx+1}번 답안 입력", key=f"ol_ans_{idx}")
+                            student_answers.append(ans)
                                 
                     st.markdown("<br>", unsafe_allow_html=True)
                     if st.form_submit_button("🚀 답안 제출 및 채점 결과 확인", use_container_width=True):
                         
-                        # 💡 난이도별 채점 로직
                         total_correct = 0
                         stats = {
                             "킬러 문항": {"O": 0, "총": 0},
@@ -399,7 +401,6 @@ elif menu == "💻 온라인 시험장":
                             
                         ans_text = " | ".join(student_ans_str)
                         
-                        # 구형 시험지(정답배열 없음) 방어 로직
                         if not c_answers:
                             score_summary = "수동 채점 필요 (과거 시험지)"
                         else:
@@ -568,7 +569,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 정답/난이도 추출 기능 추가)
+    # 🪄 탭 8: AI 문제 출제기
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -663,7 +664,6 @@ elif menu == "🔒 원장님 전용 관리실":
                                 q_str = parts[0].strip()
                                 a_str = parts[1].strip()
                                 
-                                # 💡 정답 및 난이도 자동 파싱 로직
                                 ans_match = ""
                                 diff_match = "중난이도"
                                 for line in a_str.split('\n'):
@@ -683,13 +683,12 @@ elif menu == "🔒 원장님 전용 관리실":
         if st.session_state.q_list:
             st.markdown("---")
             st.markdown("#### 🛠️ 문항 개별 확인 및 편집 (정답/난이도 확인)")
-            st.info("💡 AI가 추출한 정답과 난이도가 정확한지 확인해 주십시오. (이 데이터를 바탕으로 학생 답안이 자동 채점됩니다)")
+            st.info("💡 AI가 추출한 정답과 난이도가 정확한지 확인해 주십시오.")
             
             for idx, item in enumerate(st.session_state.q_list):
                 with st.expander(f"📌 {idx+1}번 문항 (클릭하여 텍스트/정답/난이도 수정)", expanded=False):
                     new_q = st.text_area(f"{idx+1}번 문제지 영역", item["q"], key=f"edit_q_{idx}", height=150)
                     
-                    # 💡 자동 채점용 정답 및 난이도 입력 UI
                     col_ans1, col_ans2 = st.columns(2)
                     with col_ans1:
                         new_ans = st.text_input(f"✅ {idx+1}번 실제 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
@@ -748,7 +747,7 @@ elif menu == "🔒 원장님 전용 관리실":
             with col_res2:
                 st.download_button("📥 완성된 해설지 다운로드", data=final_a_text, file_name=f"{q_test_title}_해설지.txt")
                 
-            # 💡 배포 시 파이어베이스에 정답배열 및 난이도배열 전송
+            # 💡 배포 시 개별 문항 배열(q_array)도 파이어베이스에 함께 저장하여 문제 밑 답안 칸 구조 생성
             if st.button("🚀 원장님 최종 승인: 위 문항을 [온라인 시험장]으로 배포하기"):
                 if not q_test_title:
                     st.error("시험 제목을 입력해 주세요.")
@@ -757,6 +756,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 else:
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
+                    q_array = [item.get("q", "") for item in st.session_state.q_list]
                     ans_array = [item.get("ans", "") for item in st.session_state.q_list]
                     diff_array = [item.get("diff", "중난이도") for item in st.session_state.q_list]
                     
@@ -766,6 +766,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         "문제지": final_q_text,
                         "해설지": final_a_text,
                         "문항수": len(st.session_state.q_list),
+                        "문항배열": q_array,
                         "정답배열": ans_array,
                         "난이도배열": diff_array,
                         "출제일시": now_str
