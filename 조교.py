@@ -428,10 +428,13 @@ elif menu == "🔒 원장님 전용 관리실":
         if db:
             if st.button("🔄 최신 학생 제출 결과 불러오기"):
                 try:
-                    subs_ref = db.collection("online_exam_submissions").order_by("제출일시", direction=firestore.Query.DESCENDING).limit(50).get()
+                    # 💡 한글 필드명 버그 해결: 직접 가져온 뒤 파이썬에서 정렬
+                    subs_ref = db.collection("online_exam_submissions").get()
+                    raw_list = [doc.to_dict() for doc in subs_ref]
+                    sorted_list = sorted(raw_list, key=lambda x: x.get("제출일시", ""), reverse=True)[:50]
+                    
                     sub_list = []
-                    for doc in subs_ref:
-                        data = doc.to_dict()
+                    for data in sorted_list:
                         sub_list.append({
                             "제출일시": data.get("제출일시", ""),
                             "반": data.get("반이름", ""),
@@ -646,15 +649,15 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!")
                     st.balloons()
             
-        # ==========================================
-        # 💡 [새 기능] 배포된 온라인 시험 관리 및 삭제 구역
-        # ==========================================
         st.markdown("---")
         st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
         if db:
             try:
-                exams_ref = db.collection("online_exams").order_by("출제일시", direction=firestore.Query.DESCENDING).get()
-                exam_list = [doc.to_dict() for doc in exams_ref]
+                # 💡 한글 필드명 버그 해결: 직접 가져온 뒤 파이썬에서 정렬
+                exams_ref = db.collection("online_exams").get()
+                raw_exams = [doc.to_dict() for doc in exams_ref]
+                exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
+                
                 if exam_list:
                     for idx, exam in enumerate(exam_list):
                         ex_title = exam.get("제목", "제목 없음")
