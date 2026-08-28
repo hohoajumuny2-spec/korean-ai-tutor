@@ -101,11 +101,21 @@ for file_path, headers in [
 
 def get_roster():
     roster = []
-    if os.path.exists(ROSTER_FILE):
+    if db:
+        try:
+            docs = db.collection("students").get()
+            for doc in docs:
+                data = doc.to_dict()
+                roster.append((data.get("class", ""), data.get("name", "")))
+        except:
+            pass
+            
+    if not roster and os.path.exists(ROSTER_FILE):
         with open(ROSTER_FILE, mode='r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                roster.append((row["반 이름"], row["학생 이름"]))
+                if (row["반 이름"], row["학생 이름"]) not in roster:
+                    roster.append((row["반 이름"], row["학생 이름"]))
     return roster
 
 def load_omr_answers():
@@ -321,7 +331,7 @@ elif menu == "💯 OMR 자동 채점":
         st.warning("등록된 OMR 과제가 없습니다.")
 
 # ==========================================
-# 💻 메뉴 6: 온라인 시험장
+# 💻 메뉴 6: 온라인 시험장 (🔥 난이도별 상세 자동 채점 탑재)
 # ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
@@ -336,11 +346,13 @@ elif menu == "💻 온라인 시험장":
                 st.markdown("### 📜 문제지")
                 st.markdown(c_ex["문제지"])
                 
-                q_cnt = c_ex.get("문항수", 5) 
+                q_cnt = c_ex.get("문항수", 5)
+                c_answers = c_ex.get("정답배열", [])
+                c_diffs = c_ex.get("난이도배열", [])
                 
                 st.divider()
-                st.markdown("### ✍️ 직관적인 OMR 답안 작성란")
-                st.info("💡 각 번호에 맞는 정답(숫자) 또는 주관식 답안을 아래 칸에 바로 입력하세요.")
+                st.markdown("### ✍️ OMR 답안 작성 및 실시간 자동 채점")
+                st.info("💡 문항 번호에 맞는 정답(숫자)이나 주관식 단어를 입력하세요. 제출 즉시 난이도별 채점 결과가 나옵니다.")
                 
                 with st.form("ol_form"):
                     student_answers = []
@@ -355,21 +367,61 @@ elif menu == "💻 온라인 시험장":
                                 student_answers.append(ans2)
                                 
                     st.markdown("<br>", unsafe_allow_html=True)
-                    if st.form_submit_button("🚀 답안 최종 제출 및 해설 확인", use_container_width=True):
-                        ans_text = " | ".join([f"{idx+1}번: {a.strip() if a.strip() else '미입력'}" for idx, a in enumerate(student_answers)])
+                    if st.form_submit_button("🚀 답안 제출 및 채점 결과 확인", use_container_width=True):
+                        
+                        # 💡 난이도별 채점 로직
+                        total_correct = 0
+                        stats = {
+                            "킬러 문항": {"O": 0, "총": 0},
+                            "준킬러 문항": {"O": 0, "총": 0},
+                            "상난이도": {"O": 0, "총": 0},
+                            "중난이도": {"O": 0, "총": 0},
+                            "하난이도": {"O": 0, "총": 0},
+                        }
+                        
+                        student_ans_str = []
+                        for idx, s_a in enumerate(student_answers):
+                            s_val = s_a.strip()
+                            c_val = c_answers[idx].strip() if idx < len(c_answers) else ""
+                            d_val = c_diffs[idx] if idx < len(c_diffs) else "중난이도"
+                            
+                            if d_val in stats:
+                                stats[d_val]["총"] += 1
+                                
+                            is_correct = False
+                            if s_val and c_val and s_val.lower() == c_val.lower():
+                                is_correct = True
+                                total_correct += 1
+                                if d_val in stats:
+                                    stats[d_val]["O"] += 1
+                                    
+                            student_ans_str.append(f"{idx+1}번: {s_val if s_val else '미입력'} ({'O' if is_correct else 'X'})")
+                            
+                        ans_text = " | ".join(student_ans_str)
+                        
+                        # 구형 시험지(정답배열 없음) 방어 로직
+                        if not c_answers:
+                            score_summary = "수동 채점 필요 (과거 시험지)"
+                        else:
+                            score_summary = f"총점: {total_correct}/{q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
                         
                         db.collection("online_exam_submissions").add({
                             "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "반이름": student_class, 
                             "학생이름": student_name, 
                             "시험제목": s_ex, 
-                            "학생답안": ans_text
+                            "학생답안": ans_text,
+                            "점수요약": score_summary
                         })
                         st.session_state[f"ol_done_{s_ex}"] = True
+                        st.session_state[f"ol_score_{s_ex}"] = score_summary
                         st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!")
+                        st.balloons()
                         
                 if st.session_state.get(f"ol_done_{s_ex}") or is_admin:
                     st.divider()
+                    st.markdown("### 🏆 내 채점 결과")
+                    st.info(f"**{st.session_state.get(f'ol_score_{s_ex}', '확인 완료')}**")
                     st.markdown("### 💡 공식 해설지")
                     st.markdown(c_ex["해설지"])
         else:
@@ -428,7 +480,6 @@ elif menu == "🔒 원장님 전용 관리실":
         if db:
             if st.button("🔄 최신 학생 제출 결과 불러오기"):
                 try:
-                    # 💡 한글 필드명 버그 해결: 직접 가져온 뒤 파이썬에서 정렬
                     subs_ref = db.collection("online_exam_submissions").get()
                     raw_list = [doc.to_dict() for doc in subs_ref]
                     sorted_list = sorted(raw_list, key=lambda x: x.get("제출일시", ""), reverse=True)[:50]
@@ -440,7 +491,8 @@ elif menu == "🔒 원장님 전용 관리실":
                             "반": data.get("반이름", ""),
                             "이름": data.get("학생이름", ""),
                             "시험제목": data.get("시험제목", ""),
-                            "답안": data.get("학생답안", "")
+                            "점수결과": data.get("점수요약", "채점 기록 없음"),
+                            "상세답안": data.get("학생답안", "")
                         })
                         
                     if sub_list:
@@ -478,15 +530,49 @@ elif menu == "🔒 원장님 전용 관리실":
             st.success("✅ 등록 완료")
 
     with tab7:
-        st.markdown("#### 원생 명단 관리")
-        r_c = st.selectbox("반", CLASS_LIST); r_n = st.text_input("이름")
-        if st.button("➕ 추가") and r_n:
-            with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f: csv.writer(f).writerow([r_c, r_n])
-            st.success("✅ 추가 완료")
+        st.markdown("#### 👥 반별 원생 명단 영구 관리 (Firebase)")
+        r_c = st.selectbox("반", CLASS_LIST, key="rost_c")
+        r_n = st.text_input("이름", key="rost_n")
+        
+        if st.button("➕ 영구 등록하기") and r_n:
+            if db:
+                doc_id = f"{get_safe_name(r_c)}_{r_n}"
+                db.collection("students").document(doc_id).set({
+                    "class": r_c,
+                    "name": r_n
+                })
+            with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
+                csv.writer(f).writerow([r_c, r_n])
+            st.success(f"✅ [{r_c}] {r_n} 학생 영구 등록 완료!")
+            st.rerun()
 
+        st.divider()
+        current_roster = get_roster()
+        if current_roster:
+            for r_class, r_name in current_roster:
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"[{r_class}] **{r_name}**")
+                if col_b.button("❌ 삭제", key=f"del_{r_class}_{r_name}"):
+                    if db:
+                        doc_id = f"{get_safe_name(r_class)}_{r_name}"
+                        db.collection("students").document(doc_id).delete()
+                    if (r_class, r_name) in current_roster:
+                        current_roster.remove((r_class, r_name))
+                    with open(ROSTER_FILE, mode='w', newline='', encoding='utf-8-sig') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["반 이름", "학생 이름"])
+                        for rc, rn in current_roster:
+                            writer.writerow([rc, rn])
+                    st.rerun()
+        else:
+            st.info("현재 등록된 원생이 없습니다.")
+
+    # ==========================================
+    # 🪄 탭 8: AI 문제 출제기 (🔥 정답/난이도 추출 기능 추가)
+    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
-        st.info("💡 원장님의 까다로운 출제 원칙(크로스 함정, 인과관계 역전 등)이 프롬프트에 완벽히 세팅되어 있습니다.")
+        st.info("💡 출제 시 AI가 정답과 난이도를 자동 추출합니다. 원장님께서 확인 후 배포하면 학생 답안이 자동 채점됩니다.")
         
         q_mode = st.radio("📝 출제 모드 선택", ["✨ 새로운 지문 기반 신규 문제 창조", "🔄 기존 기출문제 기반 쌍둥이 변형 문제 출제"], horizontal=True)
         st.divider()
@@ -498,7 +584,7 @@ elif menu == "🔒 원장님 전용 관리실":
         col_q1, col_q2 = st.columns(2)
         with col_q1:
             q_style = st.selectbox("🎯 출제 스타일", ["수능형", "내신형", "문해력형"])
-            q_diff = st.selectbox("🔥 난이도", ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"])
+            q_diff = st.selectbox("🔥 목표 난이도", ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"])
             q_count = st.number_input("🔢 출제할 문항 수", min_value=1, max_value=20, value=3)
         with col_q2:
             q_type = st.multiselect("📝 문제 유형 (복수 선택)", 
@@ -520,38 +606,38 @@ elif menu == "🔒 원장님 전용 관리실":
             elif not q_type:
                 st.warning("⚠️ 문제 유형을 선택해 주세요.")
             else:
-                with st.spinner("AI가 자료를 정밀 분석하여 매력적인 함정 선지를 설계 중입니다... (약 10~20초)"):
+                with st.spinner("AI가 자료를 정밀 분석하여 자동 채점 기준과 함께 문제를 설계 중입니다... (약 10~20초)"):
                     try:
                         q_model = genai.GenerativeModel(TARGET_MODEL)
                         q_prompt = f"""
                         당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
-                        원장님이 옳지 않은 답과 엉성한 문제를 매우 싫어하므로, 단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
+                        단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
                         
                         [출제 기본 조건]
                         - 작업 모드: {q_mode}
                         - 대상 및 스타일: {q_style}
                         - 문제 유형: {', '.join(q_type)}
-                        - 난이도: {q_diff}
+                        - 목표 난이도: {q_diff} (문항별로 약간씩 난이도 편차를 두어도 좋습니다)
                         - 문항 수: 총 {q_count}문제
                         
                         [⭐ 로지에듀 특별 출제 매뉴얼 (필수 반영)]
-                        1. 선택지 길이: 1번부터 5번까지 선택지의 길이를 실전 모의고사처럼 적절하고 균형 있게 맞추세요.
+                        1. 선택지 길이: 1번부터 5번까지 선택지의 길이를 실전처럼 균형 있게 맞추세요.
                         2. 어휘 제한: 외부 어휘 개입을 최소화하고 자료에 있는 어휘를 최대한 활용하세요.
-                        3. 함정 패턴 (중난이도 이상 필수 적용):
-                           - 직관적으로 답이 1초 만에 보이는 1차원적인 문제는 절대 배제하세요.
-                           - (대비) 서로 대비되는 정보의 공통점과 차이점을 교묘하게 묻는 문항을 포함하세요.
-                           - (크로스 오답) A의 특징과 B의 특징을 교차(섞어서)하여 오답을 생성하세요.
-                           - (숨은 공통점) 두 개 이상의 대상에 대해, 잘 안 보이는 공통점을 묻거나 공통점을 마치 차이점인 것처럼 속이는 선지를 만드세요.
-                           - (문학 특화 왜곡) 문학 문제의 경우, 지문의 내용 자체(Fact)는 틀리게 바꾸고 뒷부분(효과, 감상)은 옳게 만들어서 그럴싸한 오답을 구성하세요.
-                           - (인과/순서 역전) 순서, 과정, 원인과 결과의 논리적 선후 관계를 섞거나 뒤집어서 내는 문항을 반드시 포함하세요.
+                        3. 함정 패턴:
+                           - 직관적으로 답이 1초 만에 보이는 문제는 절대 배제하세요.
+                           - 서로 대비되는 정보의 공통점과 차이점을 교묘하게 묻는 문항.
+                           - A의 특징과 B의 특징을 교차하여 오답 생성.
+                           - 잘 안 보이는 공통점을 묻거나 공통점을 차이점인 것처럼 속이는 선지.
+                           - 인과관계나 논리적 선후 관계를 섞어서 내는 문항 필수.
                            
                         [출력 형식 - 매우 중요]
                         반드시 아래의 특수 구분선을 사용하여 각 문제와 해설을 철저히 분리하세요.
                         ---문항---
                         1. 발문과 선지 내용...
                         ---해설---
-                        정답: 
-                        해설: 정답의 근거 및 위 매뉴얼의 어떤 '함정 패턴'을 사용해 오답을 만들었는지 원장님이 확인할 수 있도록 분석.
+                        정답: 3
+                        난이도: {q_diff} (반드시 '킬러 문항', '준킬러 문항', '상난이도', '중난이도', '하난이도' 5개 중 하나로만 적으세요)
+                        해설: 정답의 근거 및 오답 분석...
                         ---문항---
                         2. 발문과 선지 내용...
                         ---해설---
@@ -576,8 +662,18 @@ elif menu == "🔒 원장님 전용 관리실":
                                 parts = block.split("---해설---")
                                 q_str = parts[0].strip()
                                 a_str = parts[1].strip()
+                                
+                                # 💡 정답 및 난이도 자동 파싱 로직
+                                ans_match = ""
+                                diff_match = "중난이도"
+                                for line in a_str.split('\n'):
+                                    if line.strip().startswith("정답:"):
+                                        ans_match = line.replace("정답:", "").strip()
+                                    if line.strip().startswith("난이도:"):
+                                        diff_match = line.replace("난이도:", "").strip()
+                                
                                 if q_str and a_str:
-                                    parsed_list.append({"q": q_str, "a": a_str})
+                                    parsed_list.append({"q": q_str, "a": a_str, "ans": ans_match, "diff": diff_match})
                                     
                         st.session_state.q_list = parsed_list
                         st.success(f"✅ {len(parsed_list)}문제가 로지에듀 기준에 맞춰 성공적으로 출제되었습니다!")
@@ -586,15 +682,29 @@ elif menu == "🔒 원장님 전용 관리실":
         
         if st.session_state.q_list:
             st.markdown("---")
-            st.markdown("#### 🛠️ 문항 개별 확인 및 편집")
+            st.markdown("#### 🛠️ 문항 개별 확인 및 편집 (정답/난이도 확인)")
+            st.info("💡 AI가 추출한 정답과 난이도가 정확한지 확인해 주십시오. (이 데이터를 바탕으로 학생 답안이 자동 채점됩니다)")
             
             for idx, item in enumerate(st.session_state.q_list):
-                with st.expander(f"📌 {idx+1}번 문항 (클릭하여 텍스트 직접 수정 가능)", expanded=False):
+                with st.expander(f"📌 {idx+1}번 문항 (클릭하여 텍스트/정답/난이도 수정)", expanded=False):
                     new_q = st.text_area(f"{idx+1}번 문제지 영역", item["q"], key=f"edit_q_{idx}", height=150)
+                    
+                    # 💡 자동 채점용 정답 및 난이도 입력 UI
+                    col_ans1, col_ans2 = st.columns(2)
+                    with col_ans1:
+                        new_ans = st.text_input(f"✅ {idx+1}번 실제 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
+                    with col_ans2:
+                        diff_options = ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"]
+                        default_diff = item.get("diff", "중난이도")
+                        if default_diff not in diff_options: default_diff = "중난이도"
+                        new_diff = st.selectbox(f"🔥 {idx+1}번 난이도", diff_options, index=diff_options.index(default_diff), key=f"edit_diff_{idx}")
+                    
                     new_a = st.text_area(f"{idx+1}번 해설지 영역", item["a"], key=f"edit_a_{idx}", height=100)
                     
                     st.session_state.q_list[idx]["q"] = new_q
                     st.session_state.q_list[idx]["a"] = new_a
+                    st.session_state.q_list[idx]["ans"] = new_ans
+                    st.session_state.q_list[idx]["diff"] = new_diff
                     
                     if st.button("❌ 이 문항 삭제", key=f"del_{idx}"):
                         st.session_state.q_list.pop(idx)
@@ -604,7 +714,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 with st.spinner("새로운 문항을 1개 추가 생성 중입니다..."):
                     try:
                         add_model = genai.GenerativeModel(TARGET_MODEL)
-                        add_prompt = "앞서 제시한 자료와 동일한 매뉴얼을 적용하여, 기존에 출제한 것과 겹치지 않는 새로운 함정 문제 딱 1개만 더 만들어줘. 출력 형식(---문항---, ---해설---)을 반드시 지켜."
+                        add_prompt = "앞서 제시한 자료와 동일한 매뉴얼을 적용하여, 기존에 출제한 것과 겹치지 않는 새로운 함정 문제 딱 1개만 더 만들어줘. 출력 형식(---문항---, ---해설---, 정답:, 난이도:)을 반드시 지켜."
                         add_contents = st.session_state.q_contents_cache + [add_prompt]
                         
                         add_response = add_model.generate_content(add_contents)
@@ -615,8 +725,15 @@ elif menu == "🔒 원장님 전용 관리실":
                                 parts = block.split("---해설---")
                                 q_str = parts[0].strip()
                                 a_str = parts[1].strip()
+                                
+                                ans_match = ""
+                                diff_match = "중난이도"
+                                for line in a_str.split('\n'):
+                                    if line.strip().startswith("정답:"): ans_match = line.replace("정답:", "").strip()
+                                    if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
+                                        
                                 if q_str and a_str:
-                                    st.session_state.q_list.append({"q": q_str, "a": a_str})
+                                    st.session_state.q_list.append({"q": q_str, "a": a_str, "ans": ans_match, "diff": diff_match})
                                     st.rerun()
                     except Exception as e:
                         st.error("추가 출제 실패")
@@ -631,6 +748,7 @@ elif menu == "🔒 원장님 전용 관리실":
             with col_res2:
                 st.download_button("📥 완성된 해설지 다운로드", data=final_a_text, file_name=f"{q_test_title}_해설지.txt")
                 
+            # 💡 배포 시 파이어베이스에 정답배열 및 난이도배열 전송
             if st.button("🚀 원장님 최종 승인: 위 문항을 [온라인 시험장]으로 배포하기"):
                 if not q_test_title:
                     st.error("시험 제목을 입력해 주세요.")
@@ -638,12 +756,18 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.error("파이어베이스 연결이 필요합니다.")
                 else:
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    ans_array = [item.get("ans", "") for item in st.session_state.q_list]
+                    diff_array = [item.get("diff", "중난이도") for item in st.session_state.q_list]
+                    
                     db.collection("online_exams").document(q_test_title).set({
                         "제목": q_test_title,
                         "대상반": q_target_class,
                         "문제지": final_q_text,
                         "해설지": final_a_text,
                         "문항수": len(st.session_state.q_list),
+                        "정답배열": ans_array,
+                        "난이도배열": diff_array,
                         "출제일시": now_str
                     })
                     st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!")
@@ -653,7 +777,6 @@ elif menu == "🔒 원장님 전용 관리실":
         st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
         if db:
             try:
-                # 💡 한글 필드명 버그 해결: 직접 가져온 뒤 파이썬에서 정렬
                 exams_ref = db.collection("online_exams").get()
                 raw_exams = [doc.to_dict() for doc in exams_ref]
                 exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
