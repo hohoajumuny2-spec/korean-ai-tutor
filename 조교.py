@@ -139,7 +139,7 @@ for img_name in image_names:
 st.divider()
 
 # ==========================================
-# 👤 학생 인증
+# 👤 학생 인증 및 맞춤형 메뉴 노출
 # ==========================================
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -158,7 +158,7 @@ if student_class == "논술" and student_name == "최준용":
     if admin_pw == "2024":
         is_admin = True
         st.success("✅ 원장님, 환영합니다! 스텔스 관리자 모드가 활성화되었습니다.")
-        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "📂 학원 자료실"]
+        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "✍️ AI 요약 첨삭", "📝 AI 국최 논술 첨삭", "📂 학원 자료실"]
     elif admin_pw:
         st.error("❌ 비밀번호가 틀렸습니다.")
         st.stop()
@@ -171,7 +171,12 @@ if not is_admin:
         st.error("🚨 등록되지 않은 원생입니다. 반과 이름이 정확한지 확인하시거나 학원에 문의해 주세요.")
         st.stop()
     
-    menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "📂 학원 자료실"]
+    # 💡 모든 학생에게 'AI 요약 첨삭'은 기본 노출, '논술 첨삭'은 논술반에만 노출
+    menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "✍️ AI 요약 첨삭"]
+    if student_class == "논술":
+        menu_options.append("📝 AI 국최 논술 첨삭")
+    menu_options.append("📂 학원 자료실")
+    
     st.success(f"✅ [{student_class}] {student_name} 학생, 환영합니다!")
 
 menu = st.radio("🧭 원하는 메뉴를 선택하세요.", menu_options, horizontal=True)
@@ -271,7 +276,6 @@ if menu == "💬 24시간 AI 튜터":
             except Exception as e:
                 message_placeholder.error(f"오류: {e}")
 
-    # 💡 찐 국최 링크 버튼 복구 완료!
     st.divider()
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
@@ -429,6 +433,90 @@ elif menu == "💻 온라인 시험장":
                     st.markdown(c_ex["해설지"])
         else:
             st.warning("현재 응시 가능한 시험이 없습니다.")
+
+# ==========================================
+# ✍️ [신규] 메뉴 7: AI 요약 첨삭 (전체 학생용)
+# ==========================================
+elif menu == "✍️ AI 요약 첨삭":
+    st.subheader(f"✍️ [{student_class}] AI 요약 첨삭")
+    st.info("💡 지문을 읽고 손글씨로 쓴 요약본 사진이나 PDF를 올리면 AI가 원장님의 시선으로 꼼꼼하게 첨삭해 줍니다.")
+    
+    orig_text = st.text_area("📄 (선택) 원본 지문을 붙여넣어 주시면 더 정확한 첨삭이 가능합니다.", height=150)
+    summary_files = st.file_uploader("📸 요약본 사진/PDF 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    
+    if st.button("🚀 요약 첨삭 받기", use_container_width=True):
+        if not summary_files:
+            st.warning("⚠️ 첨삭받을 요약본 파일을 업로드해 주세요.")
+        else:
+            with st.spinner("AI 국최가 학생의 손글씨를 판독하고 정밀하게 첨삭 중입니다... (약 10~20초 소요)"):
+                try:
+                    sum_model = genai.GenerativeModel(TARGET_MODEL)
+                    sum_prompt = f"""
+                    당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 최준용 원장님입니다. 
+                    학생이 손글씨 등으로 작성한 요약본을 엄격하고 정확하게 첨삭해 주세요.
+                    
+                    [첨삭 기준]
+                    1. 핵심어 포함 여부 및 중심 내용 포착 여부
+                    2. 불필요한 세부 정보의 포함 여부 (너무 지엽적인 내용이 들어가면 감점 요소로 지적)
+                    3. 문장 간의 논리적 연결성 및 맞춤법
+                    
+                    원본 지문이 있을 경우 이를 기준으로 평가하고, 없다면 제출된 내용 자체의 논리성과 요약적 완성도를 평가하세요.
+                    평가 후 반드시 긍정적이고 따뜻한 격려의 한마디를 덧붙여 주세요.
+                    
+                    [원본 지문]
+                    {orig_text if orig_text.strip() else '제출되지 않음'}
+                    """
+                    contents = [sum_prompt]
+                    for sf in summary_files:
+                        contents.append({"mime_type": sf.type if not sf.type.endswith("pdf") else "application/pdf", "data": sf.getvalue()})
+                        
+                    res = sum_model.generate_content(contents)
+                    st.success("✅ 요약 첨삭이 완료되었습니다!")
+                    st.markdown("### 💡 AI 국최의 첨삭 결과")
+                    st.markdown(res.text)
+                except Exception as e:
+                    st.error(f"🚨 첨삭 중 오류가 발생했습니다: {e}")
+
+# ==========================================
+# 📝 [신규] 메뉴 8: AI 국최 논술 첨삭 (논술반 전용)
+# ==========================================
+elif menu == "📝 AI 국최 논술 첨삭":
+    st.subheader(f"📝 [{student_class}] AI 국최 논술 첨삭")
+    st.info("💡 논술 답안지 사진이나 PDF를 올리면 AI가 대학 입시/내신 논술 기준에 맞춰 엄격하게 평가하고 첨삭해 줍니다.")
+    
+    essay_topic = st.text_area("📄 (선택) 논제(문제)나 조건을 입력해 주시면 더 완벽한 첨삭이 가능합니다.", height=100)
+    essay_files = st.file_uploader("📸 논술 답안 사진/PDF 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    
+    if st.button("🚀 논술 첨삭 받기", use_container_width=True):
+        if not essay_files:
+            st.warning("⚠️ 첨삭받을 논술 답안 파일을 업로드해 주세요.")
+        else:
+            with st.spinner("AI 국최가 학생의 논술 답안을 논리적 기준에 맞춰 정밀 평가 중입니다... (약 10~20초 소요)"):
+                try:
+                    essay_model = genai.GenerativeModel(TARGET_MODEL)
+                    essay_prompt = f"""
+                    당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 최준용 원장님(논술 최고 전문가)입니다. 
+                    학생이 작성한 논술 답안을 매우 엄격하고 논리적인 기준으로 첨삭 및 평가해 주세요. 당신은 논리적 비약과 옳지 않은 답을 가장 싫어합니다.
+                    
+                    [첨삭 기준]
+                    1. 논제 파악 및 요구 조건 충족 여부
+                    2. 주장의 타당성과 논거의 적절성
+                    3. 단락 구성의 논리성(서론-본론-결론 등) 및 표현력(어휘, 문장력, 맞춤법)
+                    4. 종합 평가 및 예상 점수(100점 만점 기준), 그리고 앞으로 보완해야 할 점
+                    
+                    [논제/조건]
+                    {essay_topic if essay_topic.strip() else '제출되지 않음'}
+                    """
+                    contents = [essay_prompt]
+                    for ef in essay_files:
+                        contents.append({"mime_type": ef.type if not ef.type.endswith("pdf") else "application/pdf", "data": ef.getvalue()})
+                        
+                    res = essay_model.generate_content(contents)
+                    st.success("✅ 논술 첨삭이 완료되었습니다!")
+                    st.markdown("### 💡 AI 국최의 논술 평가 및 첨삭 결과")
+                    st.markdown(res.text)
+                except Exception as e:
+                    st.error(f"🚨 첨삭 중 오류가 발생했습니다: {e}")
 
 # ==========================================
 # 📂 메뉴 4: 학원 자료실
