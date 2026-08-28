@@ -262,7 +262,7 @@ if menu == "💬 24시간 AI 튜터":
                 message_placeholder.error(f"오류: {e}")
 
 # ==========================================
-# 📝 메뉴 2: 과제 제출, 💯 3: OMR, 💻 6: 온라인, 📂 4: 자료실
+# 📝 메뉴 2: 과제 제출
 # ==========================================
 elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
@@ -292,6 +292,9 @@ elif menu == "📝 과제 파일 제출":
     else:
         st.warning("⚠️ 과제를 제출해야 정답이 보입니다.")
 
+# ==========================================
+# 💯 메뉴 3: OMR 자동 채점
+# ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
     all_omr_data = load_omr_answers() if os.path.exists(OMR_ANS_DB) else []
@@ -317,6 +320,9 @@ elif menu == "💯 OMR 자동 채점":
     else:
         st.warning("등록된 OMR 과제가 없습니다.")
 
+# ==========================================
+# 💻 메뉴 6: 온라인 시험장
+# ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
     if db:
@@ -326,18 +332,52 @@ elif menu == "💻 온라인 시험장":
             s_ex = st.selectbox("📝 응시할 시험 선택", ["선택하세요"] + [ex["제목"] for ex in av_exams])
             if s_ex != "선택하세요":
                 c_ex = next(e for e in av_exams if e["제목"] == s_ex)
-                st.markdown("### 📜 문제지"); st.markdown(c_ex["문제지"])
+                
+                st.markdown("### 📜 문제지")
+                st.markdown(c_ex["문제지"])
+                
+                q_cnt = c_ex.get("문항수", 5) 
+                
+                st.divider()
+                st.markdown("### ✍️ 직관적인 OMR 답안 작성란")
+                st.info("💡 각 번호에 맞는 정답(숫자) 또는 주관식 답안을 아래 칸에 바로 입력하세요.")
+                
                 with st.form("ol_form"):
-                    ans_t = st.text_area("답안 작성")
-                    if st.form_submit_button("🚀 제출 및 해설 확인") and ans_t.strip():
-                        db.collection("online_exam_submissions").add({"반": student_class, "이름": student_name, "시험": s_ex, "답안": ans_t})
+                    student_answers = []
+                    for i in range(0, q_cnt, 2):
+                        cols = st.columns(2)
+                        with cols[0]:
+                            ans = st.text_input(f"✅ {i+1}번 문항", key=f"ol_ans_{i}")
+                            student_answers.append(ans)
+                        if i + 1 < q_cnt:
+                            with cols[1]:
+                                ans2 = st.text_input(f"✅ {i+2}번 문항", key=f"ol_ans_{i+1}")
+                                student_answers.append(ans2)
+                                
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.form_submit_button("🚀 답안 최종 제출 및 해설 확인", use_container_width=True):
+                        ans_text = " | ".join([f"{idx+1}번: {a.strip() if a.strip() else '미입력'}" for idx, a in enumerate(student_answers)])
+                        
+                        db.collection("online_exam_submissions").add({
+                            "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "반이름": student_class, 
+                            "학생이름": student_name, 
+                            "시험제목": s_ex, 
+                            "학생답안": ans_text
+                        })
                         st.session_state[f"ol_done_{s_ex}"] = True
-                        st.success("제출 완료!")
+                        st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!")
+                        
                 if st.session_state.get(f"ol_done_{s_ex}") or is_admin:
-                    st.markdown("### 💡 해설지"); st.markdown(c_ex["해설지"])
+                    st.divider()
+                    st.markdown("### 💡 공식 해설지")
+                    st.markdown(c_ex["해설지"])
         else:
-            st.warning("응시 가능한 시험이 없습니다.")
+            st.warning("현재 응시 가능한 시험이 없습니다.")
 
+# ==========================================
+# 📂 메뉴 4: 학원 자료실
+# ==========================================
 elif menu == "📂 학원 자료실":
     st.subheader("📂 공용 학원 자료실")
     if os.path.exists(PUBLIC_FOLDER) and os.listdir(PUBLIC_FOLDER):
@@ -379,9 +419,35 @@ elif menu == "🔒 원장님 전용 관리실":
             st.success("✅ 배포 완료!")
 
     with tab3:
-        st.markdown("#### 채점 및 과제 제출 현황")
-        if os.path.exists(score_log_path): st.download_button("📥 OMR 채점 기록", open(score_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "OMR기록.csv")
-        if os.path.exists(hw_log_path): st.download_button("📥 과제 제출 기록", open(hw_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "과제기록.csv")
+        st.markdown("#### 📝 오프라인 과제 및 OMR 채점 기록")
+        if os.path.exists(score_log_path): st.download_button("📥 OMR 채점 엑셀 다운로드", open(score_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "OMR기록.csv")
+        if os.path.exists(hw_log_path): st.download_button("📥 과제 제출 엑셀 다운로드", open(hw_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "과제기록.csv")
+
+        st.divider()
+        st.markdown("#### 💻 파이어베이스 실시간 [온라인 시험 제출 현황판]")
+        if db:
+            if st.button("🔄 최신 학생 제출 결과 불러오기"):
+                try:
+                    subs_ref = db.collection("online_exam_submissions").order_by("제출일시", direction=firestore.Query.DESCENDING).limit(50).get()
+                    sub_list = []
+                    for doc in subs_ref:
+                        data = doc.to_dict()
+                        sub_list.append({
+                            "제출일시": data.get("제출일시", ""),
+                            "반": data.get("반이름", ""),
+                            "이름": data.get("학생이름", ""),
+                            "시험제목": data.get("시험제목", ""),
+                            "답안": data.get("학생답안", "")
+                        })
+                        
+                    if sub_list:
+                        st.dataframe(sub_list)
+                    else:
+                        st.info("아직 학생들이 제출한 온라인 시험 답안이 없습니다.")
+                except Exception as e:
+                    st.error(f"결과를 불러오는 중 오류가 발생했습니다: {e}")
+        else:
+            st.warning("파이어베이스 연결이 필요합니다.")
 
     with tab4:
         st.markdown("#### 질문 내역")
@@ -415,18 +481,13 @@ elif menu == "🔒 원장님 전용 관리실":
             with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f: csv.writer(f).writerow([r_c, r_n])
             st.success("✅ 추가 완료")
 
-    # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (완벽판)
-    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 원장님의 까다로운 출제 원칙(크로스 함정, 인과관계 역전 등)이 프롬프트에 완벽히 세팅되어 있습니다.")
         
-        # 1. 출제 모드 선택 (신규 지문 vs 기존 기출문제 변형)
         q_mode = st.radio("📝 출제 모드 선택", ["✨ 새로운 지문 기반 신규 문제 창조", "🔄 기존 기출문제 기반 쌍둥이 변형 문제 출제"], horizontal=True)
         st.divider()
 
-        # 2. 시험 기본 정보 및 설정
         col_t1, col_t2 = st.columns([2, 1])
         with col_t1: q_test_title = st.text_input("📝 시험 제목", placeholder="예: 미강고 2학년 중간고사 대비 쪽지시험 1회")
         with col_t2: q_target_class = st.selectbox("🎯 온라인 배포 대상", ["전체"] + CLASS_LIST)
@@ -441,7 +502,6 @@ elif menu == "🔒 원장님 전용 관리실":
                                     ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "내용 일치/불일치", "핵심어/주제 추론", "서술형/논술형", "<보기> 적용형"], 
                                     default=["5지 선다형", "내용 일치/불일치"])
         
-        # 3. 입력 자료 (지문 또는 문제지)
         q_files = st.file_uploader("📂 기준 자료 파일 업로드 (PDF, 이미지 등)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
         if "신규" in q_mode:
             q_text = st.text_area("📄 출제할 지문 텍스트 (파일만 올려도 무방합니다)", height=150)
@@ -451,7 +511,6 @@ elif menu == "🔒 원장님 전용 관리실":
         if "q_list" not in st.session_state: st.session_state.q_list = []
         if "q_contents_cache" not in st.session_state: st.session_state.q_contents_cache = []
             
-        # --- 출제 엔진 ---
         if st.button("🚀 로지에듀 수준의 완벽한 문제 최초 생성", use_container_width=True):
             if not q_text.strip() and not q_files:
                 st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
@@ -522,7 +581,6 @@ elif menu == "🔒 원장님 전용 관리실":
                     except Exception as e:
                         st.error(f"🚨 출제 오류: {e}")
         
-        # 4. 편집, 삭제, 추가 UI 렌더링
         if st.session_state.q_list:
             st.markdown("---")
             st.markdown("#### 🛠️ 문항 개별 확인 및 편집")
@@ -560,7 +618,6 @@ elif menu == "🔒 원장님 전용 관리실":
                     except Exception as e:
                         st.error("추가 출제 실패")
 
-            # 5. 배포용 최종 컴파일
             final_q_text = "\n\n".join([item["q"] for item in st.session_state.q_list])
             final_a_text = "\n\n".join([item["a"] for item in st.session_state.q_list])
             
@@ -583,7 +640,35 @@ elif menu == "🔒 원장님 전용 관리실":
                         "대상반": q_target_class,
                         "문제지": final_q_text,
                         "해설지": final_a_text,
+                        "문항수": len(st.session_state.q_list),
                         "출제일시": now_str
                     })
                     st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!")
                     st.balloons()
+            
+        # ==========================================
+        # 💡 [새 기능] 배포된 온라인 시험 관리 및 삭제 구역
+        # ==========================================
+        st.markdown("---")
+        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
+        if db:
+            try:
+                exams_ref = db.collection("online_exams").order_by("출제일시", direction=firestore.Query.DESCENDING).get()
+                exam_list = [doc.to_dict() for doc in exams_ref]
+                if exam_list:
+                    for idx, exam in enumerate(exam_list):
+                        ex_title = exam.get("제목", "제목 없음")
+                        ex_class = exam.get("대상반", "알 수 없음")
+                        ex_date = exam.get("출제일시", "")
+                        
+                        col_ex1, col_ex2 = st.columns([4, 1])
+                        col_ex1.write(f"📝 **{ex_title}** [{ex_class} 전용] ({ex_date})")
+                        if col_ex2.button("❌ 시험 삭제", key=f"del_exam_db_{idx}"):
+                            db.collection("online_exams").document(ex_title).delete()
+                            st.rerun()
+                else:
+                    st.info("현재 파이어베이스에 배포된 시험이 없습니다.")
+            except Exception as e:
+                st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
+        else:
+            st.warning("파이어베이스 연결이 필요합니다.")
