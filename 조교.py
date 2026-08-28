@@ -139,7 +139,7 @@ for img_name in image_names:
 st.divider()
 
 # ==========================================
-# 👤 학생 인증
+# 👤 학생 인증 및 맞춤형 메뉴 노출
 # ==========================================
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -338,7 +338,7 @@ elif menu == "💯 OMR 자동 채점":
         st.warning("등록된 OMR 과제가 없습니다.")
 
 # ==========================================
-# 💻 메뉴 6: 온라인 시험장 (🔥 문제 바로 밑 유형별 답안 체크박스 지원)
+# 💻 메뉴 6: 온라인 시험장 (🔥 1문항 1답안 & 빈칸 방지 완벽 개편)
 # ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
@@ -353,36 +353,37 @@ elif menu == "💻 온라인 시험장":
                 q_cnt = c_ex.get("문항수", 5)
                 c_answers = c_ex.get("정답배열", [])
                 c_diffs = c_ex.get("난이도배열", [])
-                c_types = c_ex.get("유형배열", []) # 💡 각 문제의 유형(5지, O/X 등) 배열
+                c_types = c_ex.get("유형배열", [])
                 q_array = c_ex.get("문항배열", [])
                 
-                st.info("💡 각 문항을 읽고, 바로 밑의 답안 칸에 체크/입력하세요. 모두 풀고 맨 아래 제출 버튼을 누르면 채점이 완료됩니다.")
+                st.info("💡 각 문항을 읽고, 바로 밑에 있는 알맞은 형태의 버튼/칸에 답을 입력하세요. 모든 문항을 풀어야 최종 제출이 가능합니다.")
                 st.divider()
                 
                 with st.form("ol_form"):
                     student_answers = []
                     
+                    actual_q_cnt = len(q_array) if q_array else q_cnt
+                    
                     if q_array:
                         for idx, q_text in enumerate(q_array):
-                            st.markdown(f"**[{idx+1}번 문항]**")
+                            st.markdown(f"#### 📌 {idx+1}번 문항")
                             st.markdown(q_text)
                             
-                            # 💡 유형에 따른 맞춤형 입력 폼 (라디오버튼, 텍스트) 자동 렌더링
                             q_type = c_types[idx] if idx < len(c_types) else "단답형"
                             
+                            # 💡 유형별 맞춤형 OMR 자동 생성 
                             if "5지" in q_type or "객관식" in q_type:
-                                ans = st.radio(f"✍️ {idx+1}번 정답 선택", ["선택 안 함", "1", "2", "3", "4", "5"], key=f"ol_ans_{idx}", horizontal=True)
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
                             elif "O/X" in q_type.upper() or "오엑스" in q_type:
-                                ans = st.radio(f"✍️ {idx+1}번 정답 선택", ["선택 안 함", "O", "X"], key=f"ol_ans_{idx}", horizontal=True)
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["O", "X"], index=None, key=f"ol_ans_{idx}", horizontal=True)
                             elif "2지" in q_type:
-                                ans = st.radio(f"✍️ {idx+1}번 정답 선택", ["선택 안 함", "1", "2"], key=f"ol_ans_{idx}", horizontal=True)
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
                             else:
-                                ans = st.text_input(f"✍️ {idx+1}번 정답 입력 (주관식)", key=f"ol_ans_{idx}")
+                                ans = st.text_input(f"✍️ {idx+1}번 정답 입력 (주관식/단답형)", key=f"ol_ans_{idx}")
                                 
                             student_answers.append(ans)
                             st.markdown("---")
                     else:
-                        # 과거 시험지(통짜 텍스트) 호환
                         st.markdown(c_ex.get("문제지", ""))
                         st.divider()
                         for idx in range(q_cnt):
@@ -393,14 +394,14 @@ elif menu == "💻 온라인 시험장":
                     submit_btn = st.form_submit_button("🚀 모든 답안 작성 완료 및 최종 제출", use_container_width=True)
                     
                     if submit_btn:
-                        # 💡 필수 입력 검사: 하나라도 비어있거나 '선택 안 함'이면 제출 차단
+                        # 💡 빈칸 방지(제출 차단) 로직: None 이거나 빈 문자열이면 미입력으로 간주
                         unanswered = []
                         for idx, a in enumerate(student_answers):
-                            if a == "선택 안 함" or not a.strip():
+                            if a is None or (isinstance(a, str) and not a.strip()):
                                 unanswered.append(str(idx+1))
                                 
                         if unanswered:
-                            st.error(f"⚠️ 아직 풀지 않은 문항이 있습니다: **{', '.join(unanswered)}번**\n\n모든 문항의 답을 입력해야 정상적으로 제출됩니다.")
+                            st.error(f"⚠️ 아직 풀지 않은 문항이 있습니다: **{', '.join(unanswered)}번**\n\n모든 문항의 답을 체크하거나 입력해야 정상적으로 제출됩니다. 위로 올려 빈칸을 채워주세요.")
                         else:
                             total_correct = 0
                             stats = {
@@ -413,7 +414,7 @@ elif menu == "💻 온라인 시험장":
                             
                             student_ans_str = []
                             for idx, s_a in enumerate(student_answers):
-                                s_val = s_a.strip()
+                                s_val = str(s_a).strip()
                                 c_val = c_answers[idx].strip() if idx < len(c_answers) else ""
                                 d_val = c_diffs[idx] if idx < len(c_diffs) else "중난이도"
                                 
@@ -434,7 +435,7 @@ elif menu == "💻 온라인 시험장":
                             if not c_answers:
                                 score_summary = "수동 채점 필요 (과거 시험지)"
                             else:
-                                score_summary = f"총점: {total_correct}/{q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
+                                score_summary = f"총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
                             
                             db.collection("online_exam_submissions").add({
                                 "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -447,7 +448,7 @@ elif menu == "💻 온라인 시험장":
                             st.session_state[f"ol_done_{s_ex}"] = True
                             st.session_state[f"ol_score_{s_ex}"] = score_summary
                             st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!")
-                            st.balloons()
+                            st.rerun()
                         
                 if st.session_state.get(f"ol_done_{s_ex}") or is_admin:
                     st.divider()
@@ -683,7 +684,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 유형 자동 저장 로직 추가)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 강제 분리 프롬프트 강화)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -747,9 +748,11 @@ elif menu == "🔒 원장님 전용 관리실":
                         - 총 문항 수: 총 {total_q_count}문제
                         - 난이도별 세부 지정 개수: 킬러 문항({cnt_killer}개), 준킬러 문항({cnt_semi}개), 상난이도({cnt_high}개), 중난이도({cnt_mid}개), 하난이도({cnt_low}개)
                         
-                        [🚨 유형 및 난이도 엄격 준수 수칙 (매우 중요)]
-                        1. 문제 유형 차단: 원장님이 지정하신 [{', '.join(q_type)}] 방식'만' 사용하여 출제해야 합니다. 선택하지 않은 다른 유형은 절대로 출제하지 마세요. 
-                        2. 난이도 구성: 정확히 킬러({cnt_killer}개), 준킬러({cnt_semi}개), 상({cnt_high}개), 중({cnt_mid}개), 하({cnt_low}개) 수량을 맞춰 총 {total_q_count}문제를 구성하세요.
+                        [🚨 출력 형식 및 지문 배치 규칙 - 절대 엄수 🚨]
+                        1. 하나의 공통 [지문]에 여러 문제가 연결되더라도, **절대로 여러 문제를 하나의 '---문항---' 블록에 묶어서 출력하지 마세요.**
+                        2. 반드시 1번 문제 블록, 2번 문제 블록, 3번 문제 블록을 완벽하게 쪼개야 합니다. 
+                        3. 이를 위해 각 문제마다 해당 문제에 필요한 [지문]을 매번 중복해서라도 삽입하여 블록을 독립시키세요.
+                        4. "---문항---" 구분선은 정확히 요청한 문항 수({total_q_count}개)만큼 사용되어야 합니다.
                         
                         [⭐ 로지에듀 특별 출제 매뉴얼]
                         1. 선택지 길이: 객관식 출제 시 1번부터 5번까지 선택지 길이를 균형 있게 맞추세요.
@@ -762,6 +765,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         [출력 형식 - 매우 중요]
                         반드시 아래의 특수 구분선을 사용하여 각 문제와 해설을 철저히 분리하세요.
                         ---문항---
+                        [지문] 지문 내용 복사...
                         1. 발문과 내용...
                         ---해설---
                         정답: (객관식이면 숫자, 단답형이면 정확한 단어/문장, O/X면 O 또는 X)
@@ -769,6 +773,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         유형: (5지 선다형 / 복잡한 선택지 2지 선다형 / O/X 문제형 / 단답형 / 빈칸 채우기형 / 서술형/논술형 중 정확히 하나 표기)
                         해설: 정답의 근거 및 오답 분석...
                         ---문항---
+                        [지문] 지문 내용 복사...
                         2. 발문과 내용...
                         ---해설---
                         ...
@@ -819,7 +824,6 @@ elif menu == "🔒 원장님 전용 관리실":
                 with st.expander(f"📌 {idx+1}번 문항 (클릭하여 텍스트/정답/난이도/유형 수정)", expanded=False):
                     new_q = st.text_area(f"{idx+1}번 문제지 영역", item["q"], key=f"edit_q_{idx}", height=150)
                     
-                    # 💡 정답/난이도/유형 3분할 렌더링
                     col_a1, col_a2, col_a3 = st.columns([1, 1, 1])
                     with col_a1:
                         new_ans = st.text_input(f"✅ {idx+1}번 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
