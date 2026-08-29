@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime
 import io
-from xml.sax.saxutils import escape  # 💡 글자 증발 방지용 보호막 모듈 추가
+from xml.sax.saxutils import escape  # 💡 글자 증발 방지용 보호막
 
 # ==========================================
 # 🚨 서버 필수 부품 강제 설치 (PDF 패키지 reportlab 추가)
@@ -29,7 +29,7 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 폰트 자동 세팅
+# 📄 PDF 조판 엔진 및 바탕체(명조) 폰트 세팅
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
@@ -43,22 +43,23 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
-    # 1. 기본 고딕 폰트 (문제/선택지용)
-    base_font_path = "NanumGothic.ttf"
+    # 💡 핵심 1: 완벽한 기호 지원을 위해 표준 바탕체(나눔명조) 다운로드
+    base_font_path = "NanumMyeongjo.ttf"
     if not os.path.exists(base_font_path):
-        url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+        url = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Regular.ttf"
         urllib.request.urlretrieve(url, base_font_path)
-    pdfmetrics.registerFont(TTFont('KoreanFont', base_font_path))
+    pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
-    # 2. 지문 전용 폰트 (HY그래픽)
-    hy_font_path = "HYGraphic.ttf"
-    if os.path.exists(hy_font_path):
-        pdfmetrics.registerFont(TTFont('HYGraphic', hy_font_path))
-        passage_font = 'HYGraphic'
-    else:
-        passage_font = 'KoreanFont' # HY그래픽 파일이 없을 경우 임시 대체
+    # 💡 핵심 2: 굵은 글씨 증발 방지를 위해 볼드체 전용 폰트 함께 묶기
+    bold_font_path = "NanumMyeongjoBold.ttf"
+    if not os.path.exists(bold_font_path):
+        url_bold = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Bold.ttf"
+        urllib.request.urlretrieve(url_bold, bold_font_path)
+    pdfmetrics.registerFont(TTFont('BatangFont-Bold', bold_font_path))
+    
+    pdfmetrics.registerFontFamily('BatangFont', normal='BatangFont', bold='BatangFont-Bold')
         
-    return passage_font
+    return 'BatangFont'
 
 # ==========================================
 # ⭐️ 구글 공식 최신 표준 모델
@@ -99,14 +100,13 @@ def send_telegram_alert(message):
         except Exception:
             pass
 
-# 💡 AI 출력물 정제 (별표 치환 및 기호 통일)
+# 💡 AI 출력물 1차 정제 및 기호 보호막 함수
 def clean_ai_text(text):
     text = text.replace("**", "'")
     return text
 
-# 💡 PDF 글자 증발 방지 보호막 함수
 def safe_text(text):
-    return escape(text)
+    return escape(text) # <보기> 등의 글자 증발 원천 차단
 
 # 파일/폴더 자동 세팅
 log_file_path = "학생질문_모니터링_기록.csv"
@@ -591,7 +591,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 강제 번호 주입 및 글자 증발 방지 시스템 탑재)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 폰트 패밀리 완비, 최강 선택지 주입 엔진)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -637,16 +637,14 @@ elif menu == "🔒 원장님 전용 관리실":
                 with st.status("⏳ **AI 국최 두뇌 가동 중... (아래 창에서 실시간 과정을 확인하세요)**", expanded=True) as status:
                     try:
                         q_model = genai.GenerativeModel(TARGET_MODEL)
-                        
-                        # 💡 5지선다 번호를 1), 2) 로 강제하는 강력 프롬프트 추가
                         q_prompt = f"""
                         당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
                         단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
                         
                         [🚨 치명적 오류 방지 3대 절대 규칙 - 위반 시 처벌 🚨]
-                        1. 마크다운 별표(**) 절대 금지: 강조가 필요하면 반드시 작은따옴표('')를 사용하세요. (예: '핵심어')
-                        2. 지문 1개당 '최대 5문제' 강제: 한 지문 아래에 6개 이상의 문제를 연달아 쓰면 시스템이 파괴됩니다. 5번 문제가 끝나면 무조건 ===지문=== 을 다시 출력하고 지문을 통째로 다시 적은 후 6번 문제를 출제하세요.
-                        3. 선택지 기호 강제: 5지 선다형의 보기는 반드시 맨 앞에 1), 2), 3), 4), 5) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰거나 ① 같은 다른 기호는 쓰지 마세요.
+                        1. 마크다운 강조 금지: 텍스트에 별표 두 개(**)는 절대 사용하지 마세요. 강조가 필요하면 반드시 작은따옴표('')를 쓰세요.
+                        2. 지문 1개당 '최대 5문제' 강제: 한 지문 아래에 6개 이상의 문제를 연달아 쓰면 시스템이 파괴됩니다. 5번 문제가 끝나면 무조건 ===지문=== 을 다시 적고 6번 문제를 출제하세요.
+                        3. 선택지 동그라미 기호 강제: 5지 선다형의 각 보기는 무조건 맨 앞에 원문자(①, ②, ③, ④, ⑤) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰면 절대 안 됩니다.
                         
                         [🚨 철저한 자료 독립 원칙 🚨]
                         과거에 출제했던 내용이나 배경지식을 섞지 마세요. 오직 **[입력 자료]** 내용 안에서만 출제하세요.
@@ -660,7 +658,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         
                         [지문 및 문항 배치 규칙]
                         1. 지문의 첫 줄에는 반드시 "■ 다음을 읽고 물음에 답하시오."를 기재하세요.
-                        2. 특수 구분선(===지문===, ===문항===, ===해설===)을 반드시 사용하여 데이터를 완벽하게 분리하세요.
+                        2. 특수 구분선(===지문===, ===문항===, ===해설===)을 반드시 사용하여 데이터를 분리하세요.
                         
                         [출력 형식]
                         ===지문===
@@ -668,11 +666,11 @@ elif menu == "🔒 원장님 전용 관리실":
                         (지문 내용 전체...)
                         ===문항===
                         1. 발문과 내용...
-                        1) 선택지 1
-                        2) 선택지 2
-                        3) 선택지 3
-                        4) 선택지 4
-                        5) 선택지 5
+                        ① 선택지 1
+                        ② 선택지 2
+                        ③ 선택지 3
+                        ④ 선택지 4
+                        ⑤ 선택지 5
                         ===해설===
                         정답: 1
                         난이도: 상난이도
@@ -728,25 +726,22 @@ elif menu == "🔒 원장님 전용 관리실":
                                             if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
                                             if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
                                         
-                                        # 💡 핵심 파이썬 강제 보정 엔진: AI가 기호를 빼먹었어도 강제로 1) 2) 주입!
-                                        ans_is_number = bool(re.match(r'^[1-5]$', ans_match.strip()))
-                                        if "5지" in type_match or "선다" in type_match or "객관" in type_match or ans_is_number:
+                                        # 💡 핵심 2. 최강 보정 엔진: AI가 기호를 빼먹었어도 선택지 무조건 강제 주입
+                                        if "5지" in type_match or "선다" in type_match or "객관" in type_match or bool(re.match(r'^[1-5]$', ans_match.strip())):
                                             q_lines = q_str.split('\n')
-                                            non_empty_indices = [i for i, l in enumerate(q_lines) if l.strip()]
+                                            valid_lines = [(i, l) for i, l in enumerate(q_lines) if l.strip()]
                                             
-                                            # 질문 1줄 + 보기 5줄 = 최소 6줄 이상일 때 발동
-                                            if len(non_empty_indices) >= 6: 
-                                                # 마지막 5줄에 기호(1) 등)가 있는지 검사
-                                                has_bullet = any(re.match(r'^([①②③④⑤]|\d+[\)\.])', q_lines[i].strip()) for i in non_empty_indices[-5:])
-                                                
-                                                # 기호가 없으면 마지막 5줄을 강제로 낚아채서 1) 2) 3) 주입!
-                                                if not has_bullet:
-                                                    for i in range(5):
-                                                        idx = non_empty_indices[len(non_empty_indices) - 5 + i]
-                                                        # 쓸데없는 기호, 괄호 등 찌꺼기 완벽 제거 후 번호 부여
-                                                        clean_l = re.sub(r'^[\-\*\d\)\.①②③④⑤\]\[\<>]+\s*', '', q_lines[idx].strip())
-                                                        q_lines[idx] = f"{i+1}) {clean_l}"
-                                                    q_str = '\n'.join(q_lines)
+                                            # 발문 최소 1줄 + 보기 5줄 = 6줄 이상일 때 마지막 5줄을 강제로 낚아챔
+                                            if len(valid_lines) >= 6: 
+                                                for i in range(5):
+                                                    real_idx = valid_lines[-5 + i][0]
+                                                    text_line = valid_lines[-5 + i][1].strip()
+                                                    
+                                                    # 맨 앞이 동그라미(①~⑤)가 아니면 무조건 강제로 덮어씌움
+                                                    if not re.match(r'^[①②③④⑤]', text_line):
+                                                        clean_l = re.sub(r'^[\-\*\d\)\.\]\[\<>]+\s*', '', text_line)
+                                                        q_lines[real_idx] = f"{['①', '②', '③', '④', '⑤'][i]} {clean_l}"
+                                            q_str = '\n'.join(q_lines)
                                         
                                         parsed_list.append({
                                             "passage": passage_text,
@@ -807,9 +802,8 @@ elif menu == "🔒 원장님 전용 관리실":
                 passage_font = load_fonts() 
                 buffer = io.BytesIO()
                 
-                # 상하좌우 여백 2.5cm / 상단 1.0cm 고정
-                m_left = 2.0 * cm 
-                m_right = 2.0 * cm
+                m_left = 2.5 * cm 
+                m_right = 2.5 * cm
                 m_top = 1.0 * cm   
                 m_bot = 1.5 * cm
                 
@@ -817,44 +811,45 @@ elif menu == "🔒 원장님 전용 관리실":
                 
                 def header_first(canvas, doc):
                     canvas.saveState()
-                    canvas.setFont('KoreanFont', 18)
+                    canvas.setFont('BatangFont-Bold', 18)
                     canvas.drawCentredString(A4[0]/2, A4[1] - 1.5*cm, f"{title}")
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawRightString(A4[0] - 2.0*cm, A4[1] - 2.5*cm, "반: _______  이름: _______  점수: _______ / 100")
+                    canvas.setFont('BatangFont', 10)
+                    canvas.drawRightString(A4[0] - 2.5*cm, A4[1] - 2.5*cm, "반: _______  이름: _______  점수: _______ / 100")
                     canvas.setLineWidth(1)
-                    canvas.line(2.0*cm, A4[1] - 2.7*cm, A4[0] - 2.0*cm, A4[1] - 2.7*cm)
-                    canvas.setFont('KoreanFont', 10)
+                    canvas.line(2.5*cm, A4[1] - 2.7*cm, A4[0] - 2.5*cm, A4[1] - 2.7*cm)
+                    canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
-                    canvas.setFont('KoreanFont', 8)
+                    canvas.setFont('BatangFont', 8)
                     canvas.setFillColor(colors.gray)
                     canvas.drawCentredString(A4[0]/2, 0.4*cm, "LogyEDU 24 AI Tutor System")
                     canvas.restoreState()
 
                 def header_later(canvas, doc):
                     canvas.saveState()
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawString(2.0*cm, A4[1] - 0.7*cm, f"[{title}]")
+                    canvas.setFont('BatangFont', 10)
+                    canvas.drawString(2.5*cm, A4[1] - 0.7*cm, f"[{title}]")
                     canvas.setLineWidth(1)
-                    canvas.line(2.0*cm, A4[1] - 0.9*cm, A4[0] - 2.0*cm, A4[1] - 0.9*cm)
-                    canvas.setFont('KoreanFont', 10)
+                    canvas.line(2.5*cm, A4[1] - 0.9*cm, A4[0] - 2.5*cm, A4[1] - 0.9*cm)
+                    canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
                     canvas.restoreState()
                     
                 def header_ans(canvas, doc):
                     canvas.saveState()
-                    canvas.setFont('KoreanFont', 14)
+                    canvas.setFont('BatangFont-Bold', 14)
                     canvas.drawCentredString(A4[0]/2, A4[1] - 1.0*cm, f"정답 및 해설")
                     canvas.setLineWidth(1)
-                    canvas.line(2.0*cm, A4[1] - 1.3*cm, A4[0] - 2.0*cm, A4[1] - 1.3*cm)
-                    canvas.setFont('KoreanFont', 10)
+                    canvas.line(2.5*cm, A4[1] - 1.3*cm, A4[0] - 2.5*cm, A4[1] - 1.3*cm)
+                    canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
                     canvas.restoreState()
 
                 fw_full = doc.width; fw_half = doc.width/2 - 0.4*cm
                 
-                # 1페이지 상단 공간 약 4cm 축소
-                h_first = doc.height - 2.5 * cm  
+                # 💡 핵심 3. 1페이지 상단 공간 약 4cm 더 위로 올려서 콤팩트하게 적용
+                h_first = doc.height - 1.5 * cm  
                 y_first = doc.bottomMargin
+                
                 h_later = doc.height 
                 y_later = doc.bottomMargin
                 
@@ -878,11 +873,11 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 핵심 조판 엔진 세팅: 내어쓰기를 위한 bullet 태그 지원 스타일로 완전 변경
+                # 💡 폰트 바탕체로 완전 변경 및 내어쓰기 간격 15pt로 대폭 확대
                 passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16, wordWrap='CJK')
-                question_style = ParagraphStyle('Question_KR', fontName='KoreanFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=20, bulletIndent=0)
-                choice_style = ParagraphStyle('Choice_KR', fontName='KoreanFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0)
-                ans_style = ParagraphStyle('Ans_KR', fontName='KoreanFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK')
+                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, bulletIndent=0)
+                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0)
+                ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK')
                 
                 story = []
                 story.append(NextPageTemplate('Later'))
@@ -899,8 +894,7 @@ elif menu == "🔒 원장님 전용 관리실":
                             if not p_line: 
                                 elements_group.append(Spacer(1, 0.2*cm))
                                 continue
-                            # 💡 XML 에러(글자 증발) 방지 보호막 씌우기
-                            elements_group.append(Paragraph(f"<b>{safe_text(p_line)}</b>", passage_style))
+                            elements_group.append(Paragraph(safe_text(p_line), passage_style))
                         elements_group.append(Spacer(1, 0.6*cm))
                         previous_passage = current_passage
                         
@@ -911,9 +905,9 @@ elif menu == "🔒 원장님 전용 관리실":
                             elements_group.append(Spacer(1, 0.3*cm))
                             continue
                         
-                        # 💡 질문 분석 및 조판 (문제 번호 및 선택지를 태그로 변환하여 완벽 내어쓰기 구현)
+                        # 내어쓰기(bullet) 처리를 위한 태그 조판 로직
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
-                        m_c = re.match(r'^([①②③④⑤]|\d+[\)\.]|\[\d+\]|\(\d+\)|\<[1-5]\>)\s+(.*)', line)
+                        m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
                         if m_q:
                             b_text = safe_text(m_q.group(1))
@@ -923,19 +917,8 @@ elif menu == "🔒 원장님 전용 관리실":
                             elements_group.append(Paragraph(para_text, question_style))
                             elements_group.append(Spacer(1, 0.2*cm))
                         elif m_c:
-                            b_raw = m_c.group(1)
+                            b_text = safe_text(m_c.group(1))
                             content = safe_text(m_c.group(2))
-                            # 모든 꼼수 기호를 1) 2) 로 싹 통일하여 폰트 에러 100% 차단
-                            num = re.sub(r'\D', '', b_raw)
-                            if not num: 
-                                mapping = {'①':'1', '②':'2', '③':'3', '④':'4', '⑤':'5'}
-                                num = mapping.get(b_raw, '1')
-                            b_text = f"①" if b_raw in ['①','②','③','④','⑤'] else f"{num})" # 기존에 ①이 있으면 ① 유지, 아니면 1) 변환
-                            
-                            # 특수기호 지원 폰트 누락 대비용 최후의 수단
-                            if b_raw in ['①','②','③','④','⑤']: b_text = b_raw
-                            else: b_text = f"{num})"
-                            
                             para_text = f"<bullet>{b_text}</bullet>{content}"
                             elements_group.append(Paragraph(para_text, choice_style))
                         elif line.startswith('※') or '<보기>' in line or '[지문]' in line or '■' in line:
