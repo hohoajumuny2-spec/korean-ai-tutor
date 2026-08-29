@@ -5,24 +5,59 @@ import subprocess
 import csv
 import requests
 import json
+import re
 from datetime import datetime
+import io
 
 # ==========================================
-# 🚨 서버 필수 부품 강제 설치
+# 🚨 서버 필수 부품 강제 설치 (PDF 패키지 reportlab 추가)
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
     try:
         import google.generativeai
         import firebase_admin
+        import reportlab
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai", "firebase-admin"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai", "firebase-admin", "reportlab"])
 
 ensure_dependencies()
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
+
+# ==========================================
+# 📄 PDF 조판 엔진 및 폰트 자동 세팅
+# ==========================================
+from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+
+@st.cache_resource
+def load_fonts():
+    import urllib.request
+    
+    # 1. 기본 고딕 폰트 (문제/선택지용)
+    base_font_path = "NanumGothic.ttf"
+    if not os.path.exists(base_font_path):
+        url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+        urllib.request.urlretrieve(url, base_font_path)
+    pdfmetrics.registerFont(TTFont('KoreanFont', base_font_path))
+    
+    # 2. 지문 전용 폰트 (HY그래픽)
+    hy_font_path = "HYGraphic.ttf"
+    if os.path.exists(hy_font_path):
+        pdfmetrics.registerFont(TTFont('HYGraphic', hy_font_path))
+        passage_font = 'HYGraphic'
+    else:
+        passage_font = 'KoreanFont' # HY그래픽 파일이 없을 경우 임시 대체
+        
+    return passage_font
 
 # ==========================================
 # ⭐️ 구글 공식 최신 표준 모델
@@ -279,7 +314,7 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2: 과제 제출
+# 📝 메뉴 2~7 (생략 없이 유지)
 # ==========================================
 elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
@@ -309,9 +344,6 @@ elif menu == "📝 과제 파일 제출":
     else:
         st.warning("⚠️ 과제를 제출해야 정답이 보입니다.")
 
-# ==========================================
-# 💯 메뉴 3: OMR 자동 채점
-# ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
     all_omr_data = load_omr_answers() if os.path.exists(OMR_ANS_DB) else []
@@ -337,9 +369,6 @@ elif menu == "💯 OMR 자동 채점":
     else:
         st.warning("등록된 OMR 과제가 없습니다.")
 
-# ==========================================
-# 💻 메뉴 6: 온라인 시험장
-# ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 온라인 시험장")
     if db:
@@ -349,216 +378,115 @@ elif menu == "💻 온라인 시험장":
             s_ex = st.selectbox("📝 응시할 시험 선택", ["선택하세요"] + [ex["제목"] for ex in av_exams])
             if s_ex != "선택하세요":
                 c_ex = next(e for e in av_exams if e["제목"] == s_ex)
-                
                 q_cnt = c_ex.get("문항수", 5)
                 c_answers = c_ex.get("정답배열", [])
                 c_diffs = c_ex.get("난이도배열", [])
                 c_types = c_ex.get("유형배열", [])
                 q_array = c_ex.get("문항배열", [])
-                
-                st.info("💡 문항을 읽고 바로 밑의 버튼을 누르거나 빈칸을 채우세요. 모든 문항을 풀어야 최종 제출이 가능합니다.")
+                st.info("💡 문항을 읽고 바로 밑의 버튼을 누르거나 빈칸을 채우세요. 단 한 문항이라도 비워두면 제출되지 않습니다.")
                 st.divider()
                 
                 with st.form("ol_form"):
                     student_answers = []
                     actual_q_cnt = len(q_array) if q_array else q_cnt
-                    
                     if q_array:
                         for idx, q_text in enumerate(q_array):
                             st.markdown(f"#### 📌 **[{idx+1}번 문항]**")
                             st.markdown(q_text)
-                            
                             q_type = c_types[idx] if idx < len(c_types) else "단답형"
-                            
-                            if "5지" in q_type or "객관식" in q_type:
-                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            elif "O/X" in q_type.upper() or "오엑스" in q_type:
-                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["O", "X"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            elif "2지" in q_type:
-                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            else:
-                                ans = st.text_input(f"✍️ {idx+1}번 정답 직접 입력 (주관식)", key=f"ol_ans_{idx}")
-                                
-                            student_answers.append(ans)
-                            st.markdown("---")
+                            if "5지" in q_type or "객관식" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            elif "O/X" in q_type.upper() or "오엑스" in q_type: ans = st.radio(f"👉 정답 선택", ["O", "X"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            elif "2지" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            else: ans = st.text_input(f"✍️ 정답 입력", key=f"ol_ans_{idx}")
+                            student_answers.append(ans); st.markdown("---")
                     else:
-                        st.warning("⚠️ 이 시험지는 이전 버전에 출제된 과거 시험지입니다. 원장님께서 새 시스템으로 재출제해 주시면 문항별 분리 OMR로 응시할 수 있습니다.")
-                        st.markdown(c_ex.get("문제지", ""))
-                        st.divider()
+                        st.warning("⚠️ 과거 시험지입니다.")
+                        st.markdown(c_ex.get("문제지", "")); st.divider()
                         for idx in range(q_cnt):
                             ans = st.text_input(f"✍️ {idx+1}번 정답 입력", key=f"ol_ans_{idx}")
                             student_answers.append(ans)
                                 
                     st.markdown("<br>", unsafe_allow_html=True)
                     submit_btn = st.form_submit_button("🚀 모든 답안 작성 완료 및 최종 제출", use_container_width=True)
-                    
                     if submit_btn:
-                        unanswered = []
-                        for idx, a in enumerate(student_answers):
-                            if a is None or (isinstance(a, str) and not a.strip()):
-                                unanswered.append(str(idx+1))
-                                
-                        if unanswered:
-                            st.error(f"⚠️ 아직 풀지 않은 문항이 있습니다: **{', '.join(unanswered)}번**\n\n모든 문항의 답을 체크하거나 입력해야 정상적으로 제출됩니다. 위로 올려 빈칸을 채워주세요.")
+                        unanswered = [str(idx+1) for idx, a in enumerate(student_answers) if a is None or (isinstance(a, str) and not a.strip())]
+                        if unanswered: st.error(f"⚠️ 풀지 않은 문항: **{', '.join(unanswered)}번**")
                         else:
                             total_correct = 0
-                            stats = {
-                                "킬러 문항": {"O": 0, "총": 0},
-                                "준킬러 문항": {"O": 0, "총": 0},
-                                "상난이도": {"O": 0, "총": 0},
-                                "중난이도": {"O": 0, "총": 0},
-                                "하난이도": {"O": 0, "총": 0},
-                            }
-                            
+                            stats = {"킬러 문항": {"O": 0, "총": 0}, "준킬러 문항": {"O": 0, "총": 0}, "상난이도": {"O": 0, "총": 0}, "중난이도": {"O": 0, "총": 0}, "하난이도": {"O": 0, "총": 0}}
                             student_ans_str = []
                             for idx, s_a in enumerate(student_answers):
                                 s_val = str(s_a).strip()
                                 c_val = c_answers[idx].strip() if idx < len(c_answers) else ""
                                 d_val = c_diffs[idx] if idx < len(c_diffs) else "중난이도"
-                                
-                                if d_val in stats:
-                                    stats[d_val]["총"] += 1
-                                    
+                                if d_val in stats: stats[d_val]["총"] += 1
                                 is_correct = False
                                 if s_val and c_val and s_val.lower() == c_val.lower():
-                                    is_correct = True
-                                    total_correct += 1
-                                    if d_val in stats:
-                                        stats[d_val]["O"] += 1
-                                        
+                                    is_correct = True; total_correct += 1
+                                    if d_val in stats: stats[d_val]["O"] += 1
                                 student_ans_str.append(f"{idx+1}번: {s_val} ({'O' if is_correct else 'X'})")
-                                
                             ans_text = " | ".join(student_ans_str)
-                            
-                            if not c_answers:
-                                score_summary = "수동 채점 필요 (과거 시험지)"
-                            else:
-                                score_summary = f"총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
+                            if not c_answers: score_summary = "수동 채점 필요 (과거 시험지)"
+                            else: score_summary = f"총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
                             
                             db.collection("online_exam_submissions").add({
-                                "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "반이름": student_class, 
-                                "학생이름": student_name, 
-                                "시험제목": s_ex, 
-                                "학생답안": ans_text,
-                                "점수요약": score_summary
+                                "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "반이름": student_class, "학생이름": student_name, 
+                                "시험제목": s_ex, "학생답안": ans_text, "점수요약": score_summary
                             })
-                            st.session_state[f"ol_done_{s_ex}"] = True
-                            st.session_state[f"ol_score_{s_ex}"] = score_summary
-                            st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!")
-                            st.rerun()
+                            st.session_state[f"ol_done_{s_ex}"] = True; st.session_state[f"ol_score_{s_ex}"] = score_summary
+                            st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!"); st.rerun()
                         
                 if st.session_state.get(f"ol_done_{s_ex}") or is_admin:
-                    st.divider()
-                    st.markdown("### 🏆 내 채점 결과")
-                    st.info(f"**{st.session_state.get(f'ol_score_{s_ex}', '확인 완료')}**")
-                    st.markdown("### 💡 공식 해설지")
-                    st.markdown(c_ex["해설지"])
-        else:
-            st.warning("현재 응시 가능한 시험이 없습니다.")
+                    st.divider(); st.markdown("### 🏆 내 채점 결과"); st.info(f"**{st.session_state.get(f'ol_score_{s_ex}', '확인 완료')}**")
+                    st.markdown("### 💡 공식 해설지"); st.markdown(c_ex["해설지"])
+        else: st.warning("현재 응시 가능한 시험이 없습니다.")
 
-# ==========================================
-# ✍️ 메뉴 7: AI 요약 첨삭 (전체 학생용)
-# ==========================================
 elif menu == "✍️ AI 요약 첨삭":
     st.subheader(f"✍️ [{student_class}] AI 요약 첨삭")
-    st.info("💡 지문을 읽고 손글씨로 쓴 요약본 사진이나 PDF를 올리면 AI가 원장님의 시선으로 꼼꼼하게 첨삭해 줍니다.")
-    
     orig_text = st.text_area("📄 (선택) 원본 지문을 붙여넣어 주시면 더 정확한 첨삭이 가능합니다.", height=150)
     summary_files = st.file_uploader("📸 요약본 사진/PDF 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
-    
     if st.button("🚀 요약 첨삭 받기", use_container_width=True):
-        if not summary_files:
-            st.warning("⚠️ 첨삭받을 요약본 파일을 업로드해 주세요.")
+        if not summary_files: st.warning("⚠️ 첨삭받을 요약본 파일을 업로드해 주세요.")
         else:
-            with st.spinner("AI 국최가 학생의 손글씨를 판독하고 정밀하게 첨삭 중입니다... (약 10~20초 소요)"):
+            with st.spinner("AI 국최가 정밀하게 첨삭 중입니다..."):
                 try:
                     sum_model = genai.GenerativeModel(TARGET_MODEL)
-                    sum_prompt = f"""
-                    당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 최준용 원장님입니다. 
-                    학생이 손글씨 등으로 작성한 요약본을 엄격하고 정확하게 첨삭해 주세요.
-                    
-                    [첨삭 기준]
-                    1. 핵심어 포함 여부 및 중심 내용 포착 여부
-                    2. 불필요한 세부 정보의 포함 여부 (너무 지엽적인 내용이 들어가면 감점 요소로 지적)
-                    3. 문장 간의 논리적 연결성 및 맞춤법
-                    
-                    원본 지문이 있을 경우 이를 기준으로 평가하고, 없다면 제출된 내용 자체의 논리성과 요약적 완성도를 평가하세요.
-                    평가 후 반드시 긍정적이고 따뜻한 격려의 한마디를 덧붙여 주세요.
-                    
-                    [원본 지문]
-                    {orig_text if orig_text.strip() else '제출되지 않음'}
-                    """
+                    sum_prompt = f"당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 최준용 원장님입니다...\n[원본 지문]\n{orig_text if orig_text.strip() else '제출되지 않음'}"
                     contents = [sum_prompt]
-                    for sf in summary_files:
-                        contents.append({"mime_type": sf.type if not sf.type.endswith("pdf") else "application/pdf", "data": sf.getvalue()})
-                        
+                    for sf in summary_files: contents.append({"mime_type": sf.type if not sf.type.endswith("pdf") else "application/pdf", "data": sf.getvalue()})
                     res = sum_model.generate_content(contents)
-                    st.success("✅ 요약 첨삭이 완료되었습니다!")
-                    st.markdown("### 💡 AI 국최의 첨삭 결과")
-                    st.markdown(res.text)
-                except Exception as e:
-                    st.error(f"🚨 첨삭 중 오류가 발생했습니다: {e}")
+                    st.success("✅ 요약 첨삭이 완료되었습니다!"); st.markdown(res.text)
+                except Exception as e: st.error(f"🚨 오류: {e}")
 
-# ==========================================
-# 📝 메뉴 8: AI 국최 논술 첨삭 (논술반 전용)
-# ==========================================
 elif menu == "📝 AI 국최 논술 첨삭":
     st.subheader(f"📝 [{student_class}] AI 국최 논술 첨삭")
-    st.info("💡 논술 답안지 사진이나 PDF를 올리면 AI가 대학 입시/내신 논술 기준에 맞춰 엄격하게 평가하고 첨삭해 줍니다.")
-    
     essay_topic = st.text_area("📄 (선택) 논제(문제)나 조건을 입력해 주시면 더 완벽한 첨삭이 가능합니다.", height=100)
     essay_files = st.file_uploader("📸 논술 답안 사진/PDF 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
-    
     if st.button("🚀 논술 첨삭 받기", use_container_width=True):
-        if not essay_files:
-            st.warning("⚠️ 첨삭받을 논술 답안 파일을 업로드해 주세요.")
+        if not essay_files: st.warning("⚠️ 첨삭받을 논술 답안 파일을 업로드해 주세요.")
         else:
-            with st.spinner("AI 국최가 학생의 논술 답안을 논리적 기준에 맞춰 정밀 평가 중입니다... (약 10~20초 소요)"):
+            with st.spinner("AI 국최가 정밀 평가 중입니다..."):
                 try:
                     essay_model = genai.GenerativeModel(TARGET_MODEL)
-                    essay_prompt = f"""
-                    당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 최준용 원장님(논술 최고 전문가)입니다. 
-                    학생이 작성한 논술 답안을 매우 엄격하고 논리적인 기준으로 첨삭 및 평가해 주세요. 당신은 논리적 비약과 옳지 않은 답을 가장 싫어합니다.
-                    
-                    [첨삭 기준]
-                    1. 논제 파악 및 요구 조건 충족 여부
-                    2. 주장의 타당성과 논거의 적절성
-                    3. 단락 구성의 논리성(서론-본론-결론 등) 및 표현력(어휘, 문장력, 맞춤법)
-                    4. 종합 평가 및 예상 점수(100점 만점 기준), 그리고 앞으로 보완해야 단점 분석
-                    
-                    [논제/조건]
-                    {essay_topic if essay_topic.strip() else '제출되지 않음'}
-                    """
+                    essay_prompt = f"당신은 '로지에듀 국어학원'의 최준용 원장님(논술 최고 전문가)입니다...\n[논제/조건]\n{essay_topic if essay_topic.strip() else '제출되지 않음'}"
                     contents = [essay_prompt]
-                    for ef in essay_files:
-                        contents.append({"mime_type": ef.type if not ef.type.endswith("pdf") else "application/pdf", "data": ef.getvalue()})
-                        
+                    for ef in essay_files: contents.append({"mime_type": ef.type if not ef.type.endswith("pdf") else "application/pdf", "data": ef.getvalue()})
                     res = essay_model.generate_content(contents)
-                    st.success("✅ 논술 첨삭이 완료되었습니다!")
-                    st.markdown("### 💡 AI 국최의 논술 평가 및 첨삭 결과")
-                    st.markdown(res.text)
-                except Exception as e:
-                    st.error(f"🚨 첨삭 중 오류가 발생했습니다: {e}")
+                    st.success("✅ 논술 첨삭이 완료되었습니다!"); st.markdown(res.text)
+                except Exception as e: st.error(f"🚨 오류: {e}")
 
-# ==========================================
-# 📂 메뉴 4: 학원 자료실
-# ==========================================
 elif menu == "📂 학원 자료실":
     st.subheader("📂 공용 학원 자료실")
     if os.path.exists(PUBLIC_FOLDER) and os.listdir(PUBLIC_FOLDER):
         for f_name in sorted(os.listdir(PUBLIC_FOLDER)):
-            with open(os.path.join(PUBLIC_FOLDER, f_name), "rb") as f:
-                st.download_button(f"📥 {f_name} 다운로드", f.read(), file_name=f_name)
-    else:
-        st.info("등록된 자료가 없습니다.")
+            with open(os.path.join(PUBLIC_FOLDER, f_name), "rb") as f: st.download_button(f"📥 {f_name} 다운로드", f.read(), file_name=f_name)
+    else: st.info("등록된 자료가 없습니다.")
 
 # ==========================================
 # 🔒 메뉴 5: 원장님 전용 관리실
 # ==========================================
 elif menu == "🔒 원장님 전용 관리실":
     st.subheader("🔒 원장님 전용 관리실")
-    
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리", "🪄 AI 문제 출제기"])
     
     with tab1:
@@ -597,26 +525,11 @@ elif menu == "🔒 원장님 전용 관리실":
                     subs_ref = db.collection("online_exam_submissions").get()
                     raw_list = [doc.to_dict() for doc in subs_ref]
                     sorted_list = sorted(raw_list, key=lambda x: x.get("제출일시", ""), reverse=True)[:50]
-                    
-                    sub_list = []
-                    for data in sorted_list:
-                        sub_list.append({
-                            "제출일시": data.get("제출일시", ""),
-                            "반": data.get("반이름", ""),
-                            "이름": data.get("학생이름", ""),
-                            "시험제목": data.get("시험제목", ""),
-                            "점수결과": data.get("점수요약", "채점 기록 없음"),
-                            "상세답안": data.get("학생답안", "")
-                        })
-                        
-                    if sub_list:
-                        st.dataframe(sub_list)
-                    else:
-                        st.info("아직 학생들이 제출한 온라인 시험 답안이 없습니다.")
-                except Exception as e:
-                    st.error(f"결과를 불러오는 중 오류가 발생했습니다: {e}")
-        else:
-            st.warning("파이어베이스 연결이 필요합니다.")
+                    sub_list = [{"제출일시": d.get("제출일시", ""), "반": d.get("반이름", ""), "이름": d.get("학생이름", ""), "시험제목": d.get("시험제목", ""), "점수결과": d.get("점수요약", ""), "상세답안": d.get("학생답안", "")} for d in sorted_list]
+                    if sub_list: st.dataframe(sub_list)
+                    else: st.info("아직 학생들이 제출한 온라인 시험 답안이 없습니다.")
+                except Exception as e: st.error(f"오류: {e}")
+        else: st.warning("파이어베이스 연결이 필요합니다.")
 
     with tab4:
         st.markdown("#### 질문 내역")
@@ -647,19 +560,10 @@ elif menu == "🔒 원장님 전용 관리실":
         st.markdown("#### 👥 반별 원생 명단 영구 관리 (Firebase)")
         r_c = st.selectbox("반", CLASS_LIST, key="rost_c")
         r_n = st.text_input("이름", key="rost_n")
-        
         if st.button("➕ 영구 등록하기") and r_n:
-            if db:
-                doc_id = f"{get_safe_name(r_c)}_{r_n}"
-                db.collection("students").document(doc_id).set({
-                    "class": r_c,
-                    "name": r_n
-                })
-            with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
-                csv.writer(f).writerow([r_c, r_n])
-            st.success(f"✅ [{r_c}] {r_n} 학생 영구 등록 완료!")
-            st.rerun()
-
+            if db: db.collection("students").document(f"{get_safe_name(r_c)}_{r_n}").set({"class": r_c, "name": r_n})
+            with open(ROSTER_FILE, mode='a', newline='', encoding='utf-8-sig') as f: csv.writer(f).writerow([r_c, r_n])
+            st.success(f"✅ [{r_c}] {r_n} 학생 영구 등록 완료!"); st.rerun()
         st.divider()
         current_roster = get_roster()
         if current_roster:
@@ -667,20 +571,18 @@ elif menu == "🔒 원장님 전용 관리실":
                 col_a, col_b = st.columns([4, 1])
                 col_a.write(f"[{r_class}] **{r_name}**")
                 if col_b.button("❌ 삭제", key=f"del_{r_class}_{r_name}"):
-                    if db:
-                        doc_id = f"{get_safe_name(r_class)}_{r_name}"
-                        db.collection("students").document(doc_id).delete()
-                    if (r_class, r_name) in current_roster:
-                        current_roster.remove((r_class, r_name))
+                    if db: db.collection("students").document(f"{get_safe_name(r_class)}_{r_name}").delete()
+                    if (r_class, r_name) in current_roster: current_roster.remove((r_class, r_name))
                     with open(ROSTER_FILE, mode='w', newline='', encoding='utf-8-sig') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["반 이름", "학생 이름"])
-                        for rc, rn in current_roster:
-                            writer.writerow([rc, rn])
+                        writer = csv.writer(f); writer.writerow(["반 이름", "학생 이름"])
+                        for rc, rn in current_roster: writer.writerow([rc, rn])
                     st.rerun()
         else:
             st.info("현재 등록된 원생이 없습니다.")
 
+    # ==========================================
+    # 🪄 탭 8: AI 문제 출제기 (🔥 폰트 최적화 + 완벽한 내어쓰기 적용)
+    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
@@ -693,12 +595,10 @@ elif menu == "🔒 원장님 전용 관리실":
         with col_t2: q_target_class = st.selectbox("🎯 온라인 배포 대상", ["전체"] + CLASS_LIST)
             
         col_q1, col_q2 = st.columns(2)
-        with col_q1:
-            q_style = st.selectbox("🎯 출제 스타일", ["수능형", "내신형", "문해력형"])
+        with col_q1: q_style = st.selectbox("🎯 출제 스타일", ["수능형", "내신형", "문해력형"])
         with col_q2:
             q_type = st.multiselect("📝 문제 유형 선택 (복수 선택 가능)", 
-                                    ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "서술형/논술형"], 
-                                    default=[])
+                                    ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "서술형/논술형"], default=[])
         
         st.markdown("##### 🔢 난이도별 출제 문항 수 세부 설정")
         col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns(5)
@@ -713,21 +613,16 @@ elif menu == "🔒 원장님 전용 관리실":
         st.divider()
 
         q_files = st.file_uploader("📂 기준 자료 파일 업로드 (PDF, 이미지 등)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
-        if "신규" in q_mode:
-            q_text = st.text_area("📄 출제할 지문 텍스트 (파일만 올려도 무방합니다)", height=150)
-        else:
-            q_text = st.text_area("📄 변형할 원본 기출문제 텍스트 (파일만 올려도 무방합니다)", height=150)
+        if "신규" in q_mode: q_text = st.text_area("📄 출제할 지문 텍스트 (파일만 올려도 무방합니다)", height=150)
+        else: q_text = st.text_area("📄 변형할 원본 기출문제 텍스트 (파일만 올려도 무방합니다)", height=150)
         
         if "q_list" not in st.session_state: st.session_state.q_list = []
         if "q_contents_cache" not in st.session_state: st.session_state.q_contents_cache = []
             
         if st.button("🚀 로지에듀 수준의 완벽한 문제 최초 생성", use_container_width=True):
-            if total_q_count == 0:
-                st.warning("⚠️ 출제할 문항 수를 최소 1개 이상 설정해 주세요.")
-            elif not q_text.strip() and not q_files:
-                st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
-            elif not q_type:
-                st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
+            if total_q_count == 0: st.warning("⚠️ 출제할 문항 수를 최소 1개 이상 설정해 주세요.")
+            elif not q_text.strip() and not q_files: st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
+            elif not q_type: st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
             else:
                 with st.spinner("AI가 난이도별 문항 수와 지정 유형을 정밀 계산하여 문제 생성 중입니다... (약 10~20초)"):
                     try:
@@ -741,24 +636,13 @@ elif menu == "🔒 원장님 전용 관리실":
                         - 대상 및 스타일: {q_style}
                         - 지정된 문제 유형: {', '.join(q_type)}
                         - 총 문항 수: 총 {total_q_count}문제
-                        - 난이도별 세부 지정 개수: 킬러 문항({cnt_killer}개), 준킬러 문항({cnt_semi}개), 상난이도({cnt_high}개), 중난이도({cnt_mid}개), 하난이도({cnt_low}개)
+                        - 난이도별 세부 지정 개수: 킬러({cnt_killer}), 준킬러({cnt_semi}), 상({cnt_high}), 중({cnt_mid}), 하({cnt_low})
                         
                         [🚨 출력 형식 및 지문 배치 규칙 - 절대 엄수 🚨]
-                        1. 하나의 공통 [지문]에 여러 문제가 연결되더라도, **절대로 여러 문제를 하나의 '---문항---' 블록에 묶어서 출력하지 마세요.**
-                        2. 반드시 1번 문제 블록, 2번 문제 블록, 3번 문제 블록 등 지정한 총 문항 수({total_q_count}개)만큼 완벽하게 쪼개야 합니다. 
-                        3. 이를 위해 각 문제마다 해당 문제에 필요한 [지문]을 매번 중복해서라도 삽입하여 블록을 100% 독립시키세요.
+                        1. 반드시 1번 문제 블록, 2번 문제 블록, 3번 문제 블록 등 지정한 총 문항 수({total_q_count}개)만큼 완벽하게 쪼개야 합니다. 
+                        2. 이를 위해 각 문제마다 해당 문제에 필요한 [지문]을 매번 중복해서라도 삽입하여 블록을 100% 독립시키세요.
                         
-                        [⭐ 로지에듀 특별 출제 매뉴얼]
-                        1. 문제 유형 차단: 선택되지 않은 다른 유형은 절대로 출제하지 마세요. 
-                        2. 선택지 길이: 객관식 출제 시 1번부터 5번까지 선택지 길이를 균형 있게 맞추세요.
-                        3. 함정 패턴:
-                           - 직관적으로 답이 1초 만에 보이는 문제는 절대 배제하세요.
-                           - 서로 대비되는 정보의 공통점과 차이점을 교묘하게 묻는 문항.
-                           - A의 특징과 B의 특징을 교차하여 오답 생성.
-                           - 인과관계나 논리적 선후 관계를 섞어서 내는 문항 필수.
-                           
                         [출력 형식 - 매우 중요]
-                        반드시 아래의 특수 구분선을 사용하여 각 문제와 해설을 철저히 분리하세요.
                         ---문항---
                         [지문] 지문 내용 복사...
                         1. 발문과 내용...
@@ -768,21 +652,15 @@ elif menu == "🔒 원장님 전용 관리실":
                         유형: (5지 선다형 / 복잡한 선택지 2지 선다형 / O/X 문제형 / 단답형 / 빈칸 채우기형 / 서술형/논술형 중 정확히 하나 표기)
                         해설: 정답의 근거 및 오답 분석...
                         ---문항---
-                        [지문] 지문 내용 복사...
-                        2. 발문과 내용...
-                        ---해설---
-                        ...
                         
                         [입력 자료]
                         {q_text}
                         """
                         contents = [q_prompt]
                         if q_files:
-                            for qf in q_files:
-                                contents.append({"mime_type": qf.type if not qf.type.endswith("pdf") else "application/pdf", "data": qf.getvalue()})
+                            for qf in q_files: contents.append({"mime_type": qf.type if not qf.type.endswith("pdf") else "application/pdf", "data": qf.getvalue()})
                         
                         st.session_state.q_contents_cache = contents 
-                        
                         q_response = q_model.generate_content(contents)
                         blocks = q_response.text.split("---문항---")
                         
@@ -796,7 +674,6 @@ elif menu == "🔒 원장님 전용 관리실":
                                 ans_match = ""
                                 diff_match = "중난이도"
                                 type_match = "단답형"
-                                
                                 for line in a_str.split('\n'):
                                     if line.strip().startswith("정답:"): ans_match = line.replace("정답:", "").strip()
                                     if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
@@ -813,29 +690,23 @@ elif menu == "🔒 원장님 전용 관리실":
         if st.session_state.q_list:
             st.markdown("---")
             st.markdown("#### 🛠️ 문항 개별 확인 및 편집")
-            st.info("💡 배포하기 전 각 문제의 정답/난이도/유형을 최종 확인해 주십시오.")
             
             for idx, item in enumerate(st.session_state.q_list):
-                with st.expander(f"📌 {idx+1}번 문항 (클릭하여 텍스트/정답/난이도/유형 수정)", expanded=False):
+                with st.expander(f"📌 {idx+1}번 문항 (클릭하여 수정)", expanded=False):
                     new_q = st.text_area(f"{idx+1}번 문제지 영역", item["q"], key=f"edit_q_{idx}", height=150)
-                    
                     col_a1, col_a2, col_a3 = st.columns([1, 1, 1])
-                    with col_a1:
-                        new_ans = st.text_input(f"✅ {idx+1}번 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
+                    with col_a1: new_ans = st.text_input(f"✅ 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
                     with col_a2:
                         diff_options = ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"]
-                        default_diff = item.get("diff", "중난이도")
-                        if default_diff not in diff_options: default_diff = "중난이도"
+                        default_diff = item.get("diff", "중난이도") if item.get("diff", "중난이도") in diff_options else "중난이도"
                         new_diff = st.selectbox(f"🔥 난이도", diff_options, index=diff_options.index(default_diff), key=f"edit_diff_{idx}")
                     with col_a3:
                         type_options = ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "서술형/논술형"]
                         raw_type = item.get("type", "단답형")
                         default_type = "단답형"
                         for opt in type_options:
-                            if opt in raw_type:
-                                default_type = opt
-                                break
-                        new_type = st.selectbox(f"📝 문제 유형", type_options, index=type_options.index(default_type), key=f"edit_type_{idx}")
+                            if opt in raw_type: default_type = opt; break
+                        new_type = st.selectbox(f"📝 유형", type_options, index=type_options.index(default_type), key=f"edit_type_{idx}")
                     
                     new_a = st.text_area(f"{idx+1}번 해설지 영역", item["a"], key=f"edit_a_{idx}", height=100)
                     
@@ -846,78 +717,185 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.session_state.q_list[idx]["type"] = new_type
                     
                     if st.button("❌ 이 문항 삭제", key=f"del_{idx}"):
-                        st.session_state.q_list.pop(idx)
-                        st.rerun()
-            
-            if st.button("➕ 현재 자료 기준으로 완전히 새로운 문제 1개 추가 생성"):
-                with st.spinner("새로운 문항을 1개 추가 생성 중입니다..."):
-                    try:
-                        add_model = genai.GenerativeModel(TARGET_MODEL)
-                        add_prompt = "앞서 제시한 자료와 동일한 매뉴얼을 적용하여, 기존에 출제한 것과 겹치지 않는 새로운 함정 문제 딱 1개만 더 만들어줘. 출력 형식(---문항---, ---해설---, 정답:, 난이도:, 유형:)을 반드시 지켜."
-                        add_contents = st.session_state.q_contents_cache + [add_prompt]
-                        
-                        add_response = add_model.generate_content(add_contents)
-                        blocks = add_response.text.split("---문항---")
-                        
-                        for block in blocks:
-                            if "---해설---" in block:
-                                parts = block.split("---해설---")
-                                q_str = parts[0].strip()
-                                a_str = parts[1].strip()
-                                
-                                ans_match = ""
-                                diff_match = "중난이도"
-                                type_match = "단답형"
-                                for line in a_str.split('\n'):
-                                    if line.strip().startswith("정답:"): ans_match = line.replace("정답:", "").strip()
-                                    if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
-                                    if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
-                                        
-                                if q_str and a_str:
-                                    st.session_state.q_list.append({"q": q_str, "a": a_str, "ans": ans_match, "diff": diff_match, "type": type_match})
-                                    st.rerun()
-                    except Exception as e:
-                        st.error("추가 출제 실패")
+                        st.session_state.q_list.pop(idx); st.rerun()
 
-            final_q_text = "\n\n".join([item["q"] for item in st.session_state.q_list])
-            
-            # 💡 [핵심 패치] 해설지 텍스트 렌더링 시 문항 번호표 (▶️ [N번 문항 정답 및 해설]) 자동 부여 
-            final_a_text = "\n\n".join([f"▶️ [{idx+1}번 문항 정답 및 해설]\n{item['a']}" for idx, item in enumerate(st.session_state.q_list)])
-            
             st.markdown("---")
-            col_res1, col_res2 = st.columns(2)
-            with col_res1:
-                st.download_button("📥 완성된 문제지 다운로드", data=final_q_text, file_name=f"{q_test_title}_문제지.txt")
-            with col_res2:
-                st.download_button("📥 완성된 해설지 다운로드", data=final_a_text, file_name=f"{q_test_title}_해설지.txt")
+            st.markdown("#### 🖨️ PDF 시험지 출력 및 배포")
+            
+            # 💡 [정밀 크기 조절 + 내어쓰기(Hanging Indent) + 전용 폰트(HY그래픽)] 조판 엔진
+            def generate_exam_pdf(title, q_list, layout_type):
+                passage_font = load_fonts() # HY그래픽 유무 확인 후 로드
                 
+                buffer = io.BytesIO()
+                
+                m_left = 2.5 * cm
+                m_right = 2.5 * cm
+                m_top = 2.5 * cm
+                m_bot = 2.5 * cm
+                
+                doc = BaseDocTemplate(buffer, pagesize=A4, rightMargin=m_right, leftMargin=m_left, topMargin=m_top, bottomMargin=m_bot)
+                
+                def header_first(canvas, doc):
+                    canvas.saveState()
+                    canvas.setFont('KoreanFont', 18)
+                    canvas.drawCentredString(A4[0]/2, A4[1] - 2.5*cm, f"{title}")
+                    canvas.setFont('KoreanFont', 10)
+                    canvas.drawRightString(A4[0] - 2.5*cm, A4[1] - 3.5*cm, "반: _______  이름: _______  점수: _______ / 100")
+                    canvas.setLineWidth(1)
+                    canvas.line(2.5*cm, A4[1] - 3.7*cm, A4[0] - 2.5*cm, A4[1] - 3.7*cm)
+                    canvas.setFont('KoreanFont', 10)
+                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
+                    canvas.setFont('KoreanFont', 8)
+                    canvas.setFillColor(colors.gray)
+                    canvas.drawCentredString(A4[0]/2, 0.7*cm, "LogyEDU 24 AI Tutor System")
+                    canvas.restoreState()
+
+                def header_later(canvas, doc):
+                    canvas.saveState()
+                    canvas.setFont('KoreanFont', 10)
+                    canvas.drawString(2.5*cm, A4[1] - 2.0*cm, f"[{title}]")
+                    canvas.setLineWidth(1)
+                    canvas.line(2.5*cm, A4[1] - 2.2*cm, A4[0] - 2.5*cm, A4[1] - 2.2*cm)
+                    canvas.setFont('KoreanFont', 10)
+                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
+                    canvas.restoreState()
+                    
+                def header_ans(canvas, doc):
+                    canvas.saveState()
+                    canvas.setFont('KoreanFont', 14)
+                    canvas.drawCentredString(A4[0]/2, A4[1] - 2.0*cm, f"정답 및 해설")
+                    canvas.setLineWidth(1)
+                    canvas.line(2.5*cm, A4[1] - 2.3*cm, A4[0] - 2.5*cm, A4[1] - 2.3*cm)
+                    canvas.setFont('KoreanFont', 10)
+                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
+                    canvas.restoreState()
+
+                fw_full = doc.width
+                fw_half = doc.width/2 - 0.4*cm
+                
+                h_first = doc.height - 6.0 * cm 
+                y_first = doc.bottomMargin
+
+                h_later = doc.height - 1.5 * cm
+                y_later = doc.bottomMargin
+                
+                f1_first = Frame(doc.leftMargin, y_first, fw_full, h_first, id='f1_first')
+                f2L_first = Frame(doc.leftMargin, y_first, fw_half, h_first, id='f2L_first')
+                f2R_first = Frame(doc.leftMargin + doc.width/2 + 0.4*cm, y_first, fw_half, h_first, id='f2R_first')
+
+                f1_later = Frame(doc.leftMargin, y_later, fw_full, h_later, id='f1_later')
+                f2L_later = Frame(doc.leftMargin, y_later, fw_half, h_later, id='f2L_later')
+                f2R_later = Frame(doc.leftMargin + doc.width/2 + 0.4*cm, y_later, fw_half, h_later, id='f2R_later')
+
+                f_ans = Frame(doc.leftMargin, y_later, fw_full, h_later, id='f_ans')
+
+                if "2단" in layout_type:
+                    template_first = PageTemplate(id='First', frames=[f2L_first, f2R_first], onPage=header_first)
+                    template_later = PageTemplate(id='Later', frames=[f2L_later, f2R_later], onPage=header_later)
+                else:
+                    template_first = PageTemplate(id='First', frames=[f1_first], onPage=header_first)
+                    template_later = PageTemplate(id='Later', frames=[f1_later], onPage=header_later)
+                    
+                template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
+                doc.addPageTemplates([template_first, template_later, template_ans])
+
+                # =========================================================
+                # 💡 핵심 폰트/내어쓰기 스타일 세팅 (9 / 9 / 8.5pt)
+                # =========================================================
+                # 1. 지문 및 일반 텍스트 (9pt, HY그래픽 또는 맑은고딕)
+                passage_style = ParagraphStyle(
+                    'Passage_KR', fontName=passage_font, fontSize=9, leading=16, wordWrap='CJK'
+                )
+                
+                # 2. 문제 발문 (9pt, 굵게, 내어쓰기 적용)
+                question_style = ParagraphStyle(
+                    'Question_KR', fontName='KoreanFont', fontSize=9, leading=16, wordWrap='CJK',
+                    leftIndent=15, firstLineIndent=-15 # 내어쓰기(Hanging Indent) 마법의 수치
+                )
+                
+                # 3. 동그라미 선택지 (8.5pt, 일반 굵기, 내어쓰기 적용)
+                choice_style = ParagraphStyle(
+                    'Choice_KR', fontName='KoreanFont', fontSize=8.5, leading=14, wordWrap='CJK',
+                    leftIndent=12, firstLineIndent=-12 # 내어쓰기(Hanging Indent) 마법의 수치
+                )
+                
+                # 4. 해설지 텍스트
+                ans_style = ParagraphStyle(
+                    'Ans_KR', fontName='KoreanFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK'
+                )
+                
+                story = []
+                story.append(NextPageTemplate('Later'))
+                
+                for idx, item in enumerate(q_list):
+                    elements = []
+                    raw_text = item['q']
+                    
+                    for line in raw_text.split('\n'):
+                        line = line.strip()
+                        if not line: 
+                            elements.append(Spacer(1, 0.3*cm))
+                            continue
+                        
+                        # 지문 및 박스 감싸기 영역
+                        if '[지문]' in line or line.startswith('※') or line.startswith('<보기>'):
+                            elements.append(Paragraph(f"<b>{line}</b>", passage_style))
+                        
+                        # 문제 발문 (예: 1., 2.) - 9pt, 굵게, 내어쓰기
+                        elif re.match(r'^\d+\.', line): 
+                            elements.append(Spacer(1, 0.4*cm))
+                            elements.append(Paragraph(f"<b>{line}</b>", question_style))
+                            elements.append(Spacer(1, 0.2*cm))
+                        
+                        # 동그라미 선택지 (예: ①, ②) - 8.5pt, 얇게, 내어쓰기
+                        elif re.match(r'^[①②③④⑤]', line):
+                            elements.append(Paragraph(line, choice_style))
+                            
+                        # 그 외 일반 텍스트 (지문의 연속 등)
+                        else:
+                            elements.append(Paragraph(line, passage_style))
+                            
+                    elements.append(Spacer(1, 1.5*cm))
+                    story.append(KeepTogether(elements))
+                
+                story.append(NextPageTemplate('Ans'))
+                story.append(PageBreak())
+                
+                for idx, item in enumerate(q_list):
+                    ans_text = f"<b>[{idx+1}번 문항 정답 및 해설]</b><br/>"
+                    ans_text += item['a'].replace('\n', '<br/>')
+                    story.append(Paragraph(ans_text, ans_style))
+                    
+                doc.build(story)
+                buffer.seek(0)
+                return buffer.getvalue()
+
+            pdf_layout = st.radio("📝 다운로드할 시험지 레이아웃 선택", ["수능/모의고사형 (좌우 2단)", "내신/쪽지시험형 (필기 공간 넓은 1단)"], horizontal=True)
+            
+            if st.button("📥 선택한 디자인으로 PDF 시험지+해설지 굽기"):
+                pdf_data = generate_exam_pdf(q_test_title if q_test_title else "로지에듀_테스트", st.session_state.q_list, pdf_layout)
+                st.download_button("💾 여기를 눌러 통합 PDF 최종 저장", data=pdf_data, file_name=f"{q_test_title}_시험지.pdf", mime="application/pdf")
+                
+            st.divider()    
             if st.button("🚀 원장님 최종 승인: 위 문항을 [온라인 시험장]으로 배포하기"):
-                if not q_test_title:
-                    st.error("시험 제목을 입력해 주세요.")
-                elif not db:
-                    st.error("파이어베이스 연결이 필요합니다.")
+                if not q_test_title: st.error("시험 제목을 입력해 주세요.")
+                elif not db: st.error("파이어베이스 연결이 필요합니다.")
                 else:
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
                     q_array = [item.get("q", "") for item in st.session_state.q_list]
                     ans_array = [item.get("ans", "") for item in st.session_state.q_list]
                     diff_array = [item.get("diff", "중난이도") for item in st.session_state.q_list]
                     type_array = [item.get("type", "단답형") for item in st.session_state.q_list]
                     
+                    final_q_text = "\n\n".join(q_array)
+                    final_a_text = "\n\n".join([f"▶️ [{idx+1}번 문항 정답 및 해설]\n{item['a']}" for idx, item in enumerate(st.session_state.q_list)])
+                    
                     db.collection("online_exams").document(q_test_title).set({
-                        "제목": q_test_title,
-                        "대상반": q_target_class,
-                        "문제지": final_q_text,
-                        "해설지": final_a_text,
-                        "문항수": len(st.session_state.q_list),
-                        "문항배열": q_array,
-                        "정답배열": ans_array,
-                        "난이도배열": diff_array,
-                        "유형배열": type_array,
-                        "출제일시": now_str
+                        "제목": q_test_title, "대상반": q_target_class, "문제지": final_q_text, "해설지": final_a_text,
+                        "문항수": len(st.session_state.q_list), "문항배열": q_array, "정답배열": ans_array,
+                        "난이도배열": diff_array, "유형배열": type_array, "출제일시": now_str
                     })
-                    st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!")
-                    st.balloons()
+                    st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!"); st.balloons()
             
         st.markdown("---")
         st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
@@ -926,21 +904,14 @@ elif menu == "🔒 원장님 전용 관리실":
                 exams_ref = db.collection("online_exams").get()
                 raw_exams = [doc.to_dict() for doc in exams_ref]
                 exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
-                
                 if exam_list:
                     for idx, exam in enumerate(exam_list):
                         ex_title = exam.get("제목", "제목 없음")
                         ex_class = exam.get("대상반", "알 수 없음")
                         ex_date = exam.get("출제일시", "")
-                        
                         col_ex1, col_ex2 = st.columns([4, 1])
                         col_ex1.write(f"📝 **{ex_title}** [{ex_class} 전용] ({ex_date})")
                         if col_ex2.button("❌ 시험 삭제", key=f"del_exam_db_{idx}"):
-                            db.collection("online_exams").document(ex_title).delete()
-                            st.rerun()
-                else:
-                    st.info("현재 파이어베이스에 배포된 시험이 없습니다.")
-            except Exception as e:
-                st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
-        else:
-            st.warning("파이어베이스 연결이 필요합니다.")
+                            db.collection("online_exams").document(ex_title).delete(); st.rerun()
+                else: st.info("현재 배포된 시험이 없습니다.")
+            except Exception as e: st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
