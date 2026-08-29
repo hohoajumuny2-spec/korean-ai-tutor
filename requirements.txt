@@ -7,3 +7,8 @@ pymupdf
 requests
 google-generativeai
 firebase-admin
+streamlit
+google-generativeai
+firebase-admin
+requests
+reportlab
