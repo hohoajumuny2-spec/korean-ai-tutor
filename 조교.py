@@ -581,7 +581,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 자료 섞임 방지 & 상단 여백 최적화)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 실시간 진행 상황판 추가 적용)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -624,11 +624,12 @@ elif menu == "🔒 원장님 전용 관리실":
             elif not q_text.strip() and not q_files: st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
             elif not q_type: st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
             else:
-                with st.spinner("AI가 난이도별 문항 수와 지정 유형을 정밀 계산하여 문제 생성 중입니다... (약 10~20초)"):
+                # 💡 핵심 1. 실시간 현황판(Status Board) 도입
+                with st.status("⏳ **AI 국최가 출제 프로세스를 가동합니다...**", expanded=True) as status:
                     try:
+                        st.write("🔍 1단계: 입력된 지문과 기준 자료를 정밀 분석 중입니다...")
                         q_model = genai.GenerativeModel(TARGET_MODEL)
                         
-                        # 💡 핵심 1. 과거 자료 섞임 원천 차단 강력 프롬프트 추가
                         q_prompt = f"""
                         당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
                         단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
@@ -679,8 +680,11 @@ elif menu == "🔒 원장님 전용 관리실":
                             for qf in q_files: contents.append({"mime_type": qf.type if not qf.type.endswith("pdf") else "application/pdf", "data": qf.getvalue()})
                         
                         st.session_state.q_contents_cache = contents 
+                        
+                        st.write("⚙️ 2단계: 난이도별 매력적인 오답 선지 및 문항을 설계 중입니다... (약 10~20초 소요)")
                         q_response = q_model.generate_content(contents)
                         
+                        st.write("📝 3단계: 논리적 오류 검수 및 최종 해설지를 조판 중입니다...")
                         blocks = q_response.text.split("===지문===")
                         parsed_list = []
                         for block in blocks:
@@ -714,8 +718,13 @@ elif menu == "🔒 원장님 전용 관리실":
                                         })
                                     
                         st.session_state.q_list = parsed_list
+                        
+                        # 💡 작업 완료 처리 (현황판 초록색으로 변경 및 닫힘)
+                        status.update(label="✅ 로지에듀 전용 문제 생성이 완벽하게 완료되었습니다!", state="complete", expanded=False)
                         st.success(f"✅ {len(parsed_list)}문제가 완벽히 그룹핑되어 출제되었습니다!")
+                        
                     except Exception as e:
+                        status.update(label="🚨 문제 생성 중 오류가 발생했습니다.", state="error", expanded=True)
                         st.error(f"🚨 출제 오류: {e}")
         
         if st.session_state.q_list:
@@ -761,7 +770,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 passage_font = load_fonts() 
                 buffer = io.BytesIO()
                 
-                # 💡 핵심 2. 상하좌우 여백을 A4 비율에 맞춰 정밀 조정
+                # 상하좌우 여백 2.5cm / 상단은 분리 적용
                 m_left = 2.5 * cm 
                 m_right = 2.5 * cm
                 m_top = 1.5 * cm   # 2페이지 이후 타이틀과 본문 간격을 맞추기 위해 상단 여백 축소
@@ -806,11 +815,11 @@ elif menu == "🔒 원장님 전용 관리실":
 
                 fw_full = doc.width; fw_half = doc.width/2 - 0.4*cm
                 
-                # 💡 핵심 3. 1페이지 빈 공간(h_first) 4cm 축소 / 2페이지 상단 여백(h_later) 1cm로 조정
-                h_first = doc.height - 2.5 * cm  # 기존보다 4cm 공간 확보
+                # 1페이지 상단 공간 조절 (4cm 축소) / 2페이지 상단 여백 (1cm 고정)
+                h_first = doc.height - 2.5 * cm  
                 y_first = doc.bottomMargin
                 
-                h_later = doc.height - 1.0 * cm  # 선과 텍스트 사이의 간격을 딱 1cm로 유지
+                h_later = doc.height - 1.0 * cm  
                 y_later = doc.bottomMargin
                 
                 f1_first = Frame(doc.leftMargin, y_first, fw_full, h_first, id='f1_first')
