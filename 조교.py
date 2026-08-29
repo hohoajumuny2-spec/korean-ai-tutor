@@ -581,7 +581,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 실시간 진행 상황판 추가 적용)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 실시간 스트리밍 타건 로직 탑재)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -624,12 +624,9 @@ elif menu == "🔒 원장님 전용 관리실":
             elif not q_text.strip() and not q_files: st.warning("⚠️ 출제/변형할 기준 자료(파일 또는 텍스트)를 넣어주세요.")
             elif not q_type: st.warning("⚠️ 문제 유형을 최소 1개 이상 선택해 주세요.")
             else:
-                # 💡 핵심 1. 실시간 현황판(Status Board) 도입
-                with st.status("⏳ **AI 국최가 출제 프로세스를 가동합니다...**", expanded=True) as status:
+                with st.status("⏳ **AI 국최 두뇌 가동 중... (아래 창에서 실시간 과정을 확인하세요)**", expanded=True) as status:
                     try:
-                        st.write("🔍 1단계: 입력된 지문과 기준 자료를 정밀 분석 중입니다...")
                         q_model = genai.GenerativeModel(TARGET_MODEL)
-                        
                         q_prompt = f"""
                         당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
                         단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
@@ -681,267 +678,18 @@ elif menu == "🔒 원장님 전용 관리실":
                         
                         st.session_state.q_contents_cache = contents 
                         
-                        st.write("⚙️ 2단계: 난이도별 매력적인 오답 선지 및 문항을 설계 중입니다... (약 10~20초 소요)")
-                        q_response = q_model.generate_content(contents)
+                        # 💡 핵심: 실시간 스트리밍 UI 박스 생성
+                        st.markdown("💻 **[실시간 문제 생성 터미널]**")
+                        stream_box = st.empty()
+                        full_generated_text = ""
                         
-                        st.write("📝 3단계: 논리적 오류 검수 및 최종 해설지를 조판 중입니다...")
-                        blocks = q_response.text.split("===지문===")
-                        parsed_list = []
-                        for block in blocks:
-                            if not block.strip(): continue
+                        # 모델의 스트리밍 응답 켜기 (stream=True)
+                        q_response = q_model.generate_content(contents, stream=True)
+                        
+                        for chunk in q_response:
+                            full_generated_text += chunk.text
+                            # 쏟아지는 글자들을 터미널 감성(markdown)으로 실시간 렌더링
+                            stream_box.markdown(f"```text\n{full_generated_text} ▌\n```")
                             
-                            parts = block.split("===문항===")
-                            if len(parts) > 0:
-                                passage_text = parts[0].strip()
-                                
-                                for q_block in parts[1:]:
-                                    if "===해설===" in q_block:
-                                        q_split = q_block.split("===해설===")
-                                        q_str = q_split[0].strip()
-                                        a_str = q_split[1].strip()
-                                        
-                                        ans_match = ""
-                                        diff_match = "중난이도"
-                                        type_match = "단답형"
-                                        for line in a_str.split('\n'):
-                                            if line.strip().startswith("정답:"): ans_match = line.replace("정답:", "").strip()
-                                            if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
-                                            if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
-                                        
-                                        parsed_list.append({
-                                            "passage": passage_text,
-                                            "q": q_str,
-                                            "a": a_str,
-                                            "ans": ans_match,
-                                            "diff": diff_match,
-                                            "type": type_match
-                                        })
-                                    
-                        st.session_state.q_list = parsed_list
-                        
-                        # 💡 작업 완료 처리 (현황판 초록색으로 변경 및 닫힘)
-                        status.update(label="✅ 로지에듀 전용 문제 생성이 완벽하게 완료되었습니다!", state="complete", expanded=False)
-                        st.success(f"✅ {len(parsed_list)}문제가 완벽히 그룹핑되어 출제되었습니다!")
-                        
-                    except Exception as e:
-                        status.update(label="🚨 문제 생성 중 오류가 발생했습니다.", state="error", expanded=True)
-                        st.error(f"🚨 출제 오류: {e}")
-        
-        if st.session_state.q_list:
-            st.markdown("---")
-            st.markdown("#### 🛠️ 문항 개별 확인 및 편집")
-            st.info("💡 동일한 지문을 묶어 쓰기 때문에, 하나의 지문 내용을 수정하면 같은 지문에 속한 다른 문제에도 반영될 수 있습니다.")
-            
-            for idx, item in enumerate(st.session_state.q_list):
-                with st.expander(f"📌 {idx+1}번 문항 (클릭하여 수정)", expanded=False):
-                    new_p = st.text_area(f"{idx+1}번 연결 지문 영역", item.get("passage", ""), key=f"edit_p_{idx}", height=120)
-                    new_q = st.text_area(f"{idx+1}번 문제 발문 영역", item["q"], key=f"edit_q_{idx}", height=120)
-                    
-                    col_a1, col_a2, col_a3 = st.columns([1, 1, 1])
-                    with col_a1: new_ans = st.text_input(f"✅ 정답", value=item.get("ans", ""), key=f"edit_ans_{idx}")
-                    with col_a2:
-                        diff_options = ["킬러 문항", "준킬러 문항", "상난이도", "중난이도", "하난이도"]
-                        default_diff = item.get("diff", "중난이도") if item.get("diff", "중난이도") in diff_options else "중난이도"
-                        new_diff = st.selectbox(f"🔥 난이도", diff_options, index=diff_options.index(default_diff), key=f"edit_diff_{idx}")
-                    with col_a3:
-                        type_options = ["5지 선다형", "복잡한 선택지 2지 선다형", "O/X 문제형", "단답형", "빈칸 채우기형", "서술형/논술형"]
-                        raw_type = item.get("type", "단답형")
-                        default_type = "단답형"
-                        for opt in type_options:
-                            if opt in raw_type: default_type = opt; break
-                        new_type = st.selectbox(f"📝 유형", type_options, index=type_options.index(default_type), key=f"edit_type_{idx}")
-                    
-                    new_a = st.text_area(f"{idx+1}번 해설지 영역", item["a"], key=f"edit_a_{idx}", height=100)
-                    
-                    st.session_state.q_list[idx]["passage"] = new_p
-                    st.session_state.q_list[idx]["q"] = new_q
-                    st.session_state.q_list[idx]["a"] = new_a
-                    st.session_state.q_list[idx]["ans"] = new_ans
-                    st.session_state.q_list[idx]["diff"] = new_diff
-                    st.session_state.q_list[idx]["type"] = new_type
-                    
-                    if st.button("❌ 이 문항 삭제", key=f"del_{idx}"):
-                        st.session_state.q_list.pop(idx); st.rerun()
-
-            st.markdown("---")
-            st.markdown("#### 🖨️ PDF 시험지 출력 및 배포")
-            
-            def generate_exam_pdf(title, q_list, layout_type):
-                passage_font = load_fonts() 
-                buffer = io.BytesIO()
-                
-                # 상하좌우 여백 2.5cm / 상단은 분리 적용
-                m_left = 2.5 * cm 
-                m_right = 2.5 * cm
-                m_top = 1.5 * cm   # 2페이지 이후 타이틀과 본문 간격을 맞추기 위해 상단 여백 축소
-                m_bot = 2.0 * cm
-                
-                doc = BaseDocTemplate(buffer, pagesize=A4, rightMargin=m_right, leftMargin=m_left, topMargin=m_top, bottomMargin=m_bot)
-                
-                def header_first(canvas, doc):
-                    canvas.saveState()
-                    canvas.setFont('KoreanFont', 18)
-                    canvas.drawCentredString(A4[0]/2, A4[1] - 2.0*cm, f"{title}")
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawRightString(A4[0] - 2.5*cm, A4[1] - 3.0*cm, "반: _______  이름: _______  점수: _______ / 100")
-                    canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 3.2*cm, A4[0] - 2.5*cm, A4[1] - 3.2*cm)
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
-                    canvas.setFont('KoreanFont', 8)
-                    canvas.setFillColor(colors.gray)
-                    canvas.drawCentredString(A4[0]/2, 0.7*cm, "LogyEDU 24 AI Tutor System")
-                    canvas.restoreState()
-
-                def header_later(canvas, doc):
-                    canvas.saveState()
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawString(2.5*cm, A4[1] - 1.2*cm, f"[{title}]")
-                    canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 1.5*cm, A4[0] - 2.5*cm, A4[1] - 1.5*cm)
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
-                    canvas.restoreState()
-                    
-                def header_ans(canvas, doc):
-                    canvas.saveState()
-                    canvas.setFont('KoreanFont', 14)
-                    canvas.drawCentredString(A4[0]/2, A4[1] - 1.5*cm, f"정답 및 해설")
-                    canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 1.8*cm, A4[0] - 2.5*cm, A4[1] - 1.8*cm)
-                    canvas.setFont('KoreanFont', 10)
-                    canvas.drawCentredString(A4[0]/2, 1.2*cm, f"- {doc.page} -")
-                    canvas.restoreState()
-
-                fw_full = doc.width; fw_half = doc.width/2 - 0.4*cm
-                
-                # 1페이지 상단 공간 조절 (4cm 축소) / 2페이지 상단 여백 (1cm 고정)
-                h_first = doc.height - 2.5 * cm  
-                y_first = doc.bottomMargin
-                
-                h_later = doc.height - 1.0 * cm  
-                y_later = doc.bottomMargin
-                
-                f1_first = Frame(doc.leftMargin, y_first, fw_full, h_first, id='f1_first')
-                f2L_first = Frame(doc.leftMargin, y_first, fw_half, h_first, id='f2L_first')
-                f2R_first = Frame(doc.leftMargin + doc.width/2 + 0.4*cm, y_first, fw_half, h_first, id='f2R_first')
-
-                f1_later = Frame(doc.leftMargin, y_later, fw_full, h_later, id='f1_later')
-                f2L_later = Frame(doc.leftMargin, y_later, fw_half, h_later, id='f2L_later')
-                f2R_later = Frame(doc.leftMargin + doc.width/2 + 0.4*cm, y_later, fw_half, h_later, id='f2R_later')
-
-                f_ans = Frame(doc.leftMargin, y_later, fw_full, h_later, id='f_ans')
-
-                if "2단" in layout_type:
-                    template_first = PageTemplate(id='First', frames=[f2L_first, f2R_first], onPage=header_first)
-                    template_later = PageTemplate(id='Later', frames=[f2L_later, f2R_later], onPage=header_later)
-                else:
-                    template_first = PageTemplate(id='First', frames=[f1_first], onPage=header_first)
-                    template_later = PageTemplate(id='Later', frames=[f1_later], onPage=header_later)
-                    
-                template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
-                doc.addPageTemplates([template_first, template_later, template_ans])
-
-                passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16, wordWrap='CJK')
-                question_style = ParagraphStyle('Question_KR', fontName='KoreanFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, firstLineIndent=-15)
-                choice_style = ParagraphStyle('Choice_KR', fontName='KoreanFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=12, firstLineIndent=-12)
-                ans_style = ParagraphStyle('Ans_KR', fontName='KoreanFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK')
-                
-                story = []
-                story.append(NextPageTemplate('Later'))
-                
-                previous_passage = ""
-                
-                for idx, item in enumerate(q_list):
-                    elements_group = []
-                    
-                    current_passage = item.get("passage", "").strip()
-                    if current_passage and current_passage != previous_passage:
-                        for p_line in current_passage.split('\n'):
-                            p_line = p_line.strip()
-                            if not p_line: 
-                                elements_group.append(Spacer(1, 0.2*cm))
-                                continue
-                            elements_group.append(Paragraph(f"<b>{p_line}</b>", passage_style))
-                        elements_group.append(Spacer(1, 0.6*cm))
-                        previous_passage = current_passage
-                        
-                    raw_text = item['q']
-                    for line in raw_text.split('\n'):
-                        line = line.strip()
-                        if not line: 
-                            elements_group.append(Spacer(1, 0.3*cm))
-                            continue
-                        
-                        if '<보기>' in line or line.startswith('※'):
-                            elements_group.append(Paragraph(f"<b>{line}</b>", passage_style))
-                        elif re.match(r'^\d+\.', line): 
-                            elements_group.append(Spacer(1, 0.4*cm))
-                            elements_group.append(Paragraph(f"<b>{line}</b>", question_style))
-                            elements_group.append(Spacer(1, 0.2*cm))
-                        elif re.match(r'^[①②③④⑤]', line):
-                            elements_group.append(Paragraph(line, choice_style))
-                        else:
-                            elements_group.append(Paragraph(line, passage_style))
-                            
-                    elements_group.append(Spacer(1, 1.5*cm))
-                    story.append(KeepTogether(elements_group))
-                
-                story.append(NextPageTemplate('Ans'))
-                story.append(PageBreak())
-                
-                for idx, item in enumerate(q_list):
-                    ans_text = f"<b>[{idx+1}번 문항 정답 및 해설]</b><br/>"
-                    ans_text += item['a'].replace('\n', '<br/>')
-                    story.append(Paragraph(ans_text, ans_style))
-                    
-                doc.build(story)
-                buffer.seek(0)
-                return buffer.getvalue()
-
-            pdf_layout = st.radio("📝 다운로드할 시험지 레이아웃 선택", ["수능/모의고사형 (좌우 2단)", "내신/쪽지시험형 (필기 공간 넓은 1단)"], horizontal=True)
-            
-            if st.button("📥 선택한 디자인으로 PDF 시험지+해설지 굽기"):
-                pdf_data = generate_exam_pdf(q_test_title if q_test_title else "로지에듀_테스트", st.session_state.q_list, pdf_layout)
-                st.download_button("💾 여기를 눌러 통합 PDF 최종 저장", data=pdf_data, file_name=f"{q_test_title}_시험지.pdf", mime="application/pdf")
-                
-            st.divider()    
-            if st.button("🚀 원장님 최종 승인: 위 문항을 [온라인 시험장]으로 배포하기"):
-                if not q_test_title: st.error("시험 제목을 입력해 주세요.")
-                elif not db: st.error("파이어베이스 연결이 필요합니다.")
-                else:
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    q_array_for_online = [f"{item.get('passage', '')}\n\n{item['q']}" for item in st.session_state.q_list]
-                    ans_array = [item.get("ans", "") for item in st.session_state.q_list]
-                    diff_array = [item.get("diff", "중난이도") for item in st.session_state.q_list]
-                    type_array = [item.get("type", "단답형") for item in st.session_state.q_list]
-                    
-                    final_q_text = "\n\n".join(q_array_for_online)
-                    final_a_text = "\n\n".join([f"▶️ [{idx+1}번 문항 정답 및 해설]\n{item['a']}" for idx, item in enumerate(st.session_state.q_list)])
-                    
-                    db.collection("online_exams").document(q_test_title).set({
-                        "제목": q_test_title, "대상반": q_target_class, "문제지": final_q_text, "해설지": final_a_text,
-                        "문항수": len(st.session_state.q_list), "문항배열": q_array_for_online, "정답배열": ans_array,
-                        "난이도배열": diff_array, "유형배열": type_array, "출제일시": now_str
-                    })
-                    st.success(f"✅ '{q_test_title}' 시험이 [{q_target_class}] 반 온라인 시험장으로 배포되었습니다!"); st.balloons()
-            
-        st.markdown("---")
-        st.markdown("#### 🗑️ 배포된 온라인 시험 관리 (조회 및 삭제)")
-        if db:
-            try:
-                exams_ref = db.collection("online_exams").get()
-                raw_exams = [doc.to_dict() for doc in exams_ref]
-                exam_list = sorted(raw_exams, key=lambda x: x.get("출제일시", ""), reverse=True)
-                if exam_list:
-                    for idx, exam in enumerate(exam_list):
-                        ex_title = exam.get("제목", "제목 없음")
-                        ex_class = exam.get("대상반", "알 수 없음")
-                        ex_date = exam.get("출제일시", "")
-                        col_ex1, col_ex2 = st.columns([4, 1])
-                        col_ex1.write(f"📝 **{ex_title}** [{ex_class} 전용] ({ex_date})")
-                        if col_ex2.button("❌ 시험 삭제", key=f"del_exam_db_{idx}"):
-                            db.collection("online_exams").document(ex_title).delete(); st.rerun()
-                else: st.info("현재 배포된 시험이 없습니다.")
-            except Exception as e: st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
+                        # 작성이 모두 끝나면 커서(▌) 제거
+                        stream_box.markdown(f"```text\n{full_generated_text}\n
