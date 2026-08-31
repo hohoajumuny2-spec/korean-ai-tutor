@@ -31,7 +31,7 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 기본 바탕체(명조) 폰트 세팅
+# 📄 PDF 조판 엔진 및 수능 표준 바탕체(명조) 세팅
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
@@ -45,21 +45,20 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
-    # 💡 기본 바탕체(명조) 세팅
+    # 💡 바탕체(명조) 다운로드
     base_font_path = "NanumMyeongjo.ttf"
     if not os.path.exists(base_font_path):
         url = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Regular.ttf"
         urllib.request.urlretrieve(url, base_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
-    # 💡 기본 바탕체(명조) 볼드 세팅
+    # 💡 바탕체(명조) 굵은 글씨 다운로드
     bold_font_path = "NanumMyeongjoBold.ttf"
     if not os.path.exists(bold_font_path):
         url_bold = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Bold.ttf"
         urllib.request.urlretrieve(url_bold, bold_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont-Bold', bold_font_path))
     
-    # 폰트 패밀리로 묶어 <b> 태그 사용 시 에러 방지
     pdfmetrics.registerFontFamily('BatangFont', normal='BatangFont', bold='BatangFont-Bold')
         
     return 'BatangFont'
@@ -617,7 +616,7 @@ elif menu == "⏳ 실시간 모의고사":
                         
                         if submit_btn:
                             if int(time.time() * 1000) > end_timestamp_ms:
-                                st.error("🚨 제한 시간이 초과되어 답안을 제출할 수 없습니다! 원장님께 문의하세요.")
+                                st.error("🚨 제한 시간이 초 초과되어 답안을 제출할 수 없습니다! 원장님께 문의하세요.")
                             else:
                                 unanswered = [str(idx+1) for idx, a in enumerate(student_answers) if a is None or (isinstance(a, str) and not a.strip())]
                                 if unanswered: st.error(f"⚠️ 풀지 않은 문항: **{', '.join(unanswered)}번**")
@@ -821,7 +820,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 내어쓰기 태그에 폰트 강제 지정 완료)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 버그 퇴치 및 완벽 내어쓰기 조판)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -874,7 +873,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         [🚨 치명적 오류 방지 3대 절대 규칙 - 위반 시 처벌 🚨]
                         1. 마크다운 강조 금지: 텍스트에 별표 두 개(**)는 절대 사용하지 마세요. 강조가 필요하면 반드시 작은따옴표('')를 쓰세요.
                         2. 지문 1개당 '최대 5문제' 강제: 한 지문 아래에 6개 이상의 문제를 연달아 쓰면 시스템이 파괴됩니다. 5번 문제가 끝나면 무조건 ===지문=== 을 다시 적고 6번 문제를 출제하세요.
-                        3. 선택지 기호 강제: 5지 선다형의 각 보기는 무조건 맨 앞에 원문자(①, ②, ③, ④, ⑤) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰면 절대 안 됩니다.
+                        3. 선택지 동그라미 기호 강제: 5지 선다형의 각 보기는 무조건 맨 앞에 원문자(①, ②, ③, ④, ⑤) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰면 절대 안 됩니다.
                         
                         [🚨 철저한 자료 독립 원칙 🚨]
                         과거에 출제했던 내용이나 배경지식을 섞지 마세요. 오직 **[입력 자료]** 내용 안에서만 출제하세요.
@@ -1097,11 +1096,12 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 핵심 2. 내어쓰기 태그(bullet)에 강제로 'BatangFont' 지정 (기호 증발 완벽 방지)
-                passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK')
-                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, bulletIndent=0, bulletFontName='BatangFont')
-                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0, bulletFontName='BatangFont')
-                ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK')
+                # 💡 핵심: wordWrap='CJK'를 삭제하여 한글 기호 증발 버그 원천 차단!
+                # 💡 그리고 bullet 태그를 쓰지 않고, 수학적 내어쓰기(firstLineIndent=-15)를 사용하여 기호 실종 방지!
+                passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16)
+                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, leftIndent=15, firstLineIndent=-15)
+                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, leftIndent=15, firstLineIndent=-15)
+                ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15)
                 
                 story = []
                 story.append(NextPageTemplate('Later'))
@@ -1132,17 +1132,18 @@ elif menu == "🔒 원장님 전용 관리실":
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
                         m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
+                        # 💡 bullet 태그를 제거하고 단순 텍스트로 합쳐서 수학적 내어쓰기 발동!
                         if m_q:
                             b_text = safe_text(m_q.group(1))
                             content = safe_text(m_q.group(2))
-                            para_text = f"<bullet><b>{b_text}</b></bullet><b>{content}</b>"
+                            para_text = f"<b>{b_text}</b> {content}"
                             elements_group.append(Spacer(1, 0.4*cm))
                             elements_group.append(Paragraph(para_text, question_style))
                             elements_group.append(Spacer(1, 0.2*cm))
                         elif m_c:
                             b_text = safe_text(m_c.group(1))
                             content = safe_text(m_c.group(2))
-                            para_text = f"<bullet>{b_text}</bullet>{content}"
+                            para_text = f"{b_text} {content}"
                             elements_group.append(Paragraph(para_text, choice_style))
                         elif line.startswith('※') or '<보기>' in line or '[지문]' in line or '■' in line:
                             elements_group.append(Paragraph(f"<b>{safe_text(line)}</b>", passage_style))
