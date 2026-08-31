@@ -31,7 +31,7 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 네이버 공식 '풀버전' 바탕체 세팅
+# 📄 PDF 조판 엔진 및 네이버 공식 바탕체(명조) 세팅
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
@@ -45,14 +45,14 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
-    # 💡 핵심 해결책: 기호가 삭제된 구글 폰트를 버리고, 네이버 공식 '풀버전' TTF 직결 다운로드
+    # 💡 네이버 공식 풀버전 바탕체(나눔명조) 다운로드
     base_font_path = "NanumMyeongjoFull.ttf"
     if not os.path.exists(base_font_path):
         url = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjo.ttf"
         urllib.request.urlretrieve(url, base_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
-    # 💡 굵은 글씨 풀버전 세팅
+    # 💡 굵은 글씨 풀버전 다운로드
     bold_font_path = "NanumMyeongjoBoldFull.ttf"
     if not os.path.exists(bold_font_path):
         url_bold = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjoBold.ttf"
@@ -820,7 +820,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 기호 보존 마스터)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 폰트 옵션 100% 삭제 버그 완벽 제어판)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -954,7 +954,6 @@ elif menu == "🔒 원장님 전용 관리실":
                                             if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
                                             if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
                                         
-                                        # 최강 보정 엔진: 선택지 번호 누락 시 강제 주입
                                         if "5지" in type_match or "선다" in type_match or "객관" in type_match or bool(re.match(r'^[1-5]$', ans_match.strip())):
                                             q_lines = q_str.split('\n')
                                             valid_lines = [(i, l) for i, l in enumerate(q_lines) if l.strip()]
@@ -1097,7 +1096,7 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 핵심 2. 기호 증발의 주범인 wordWrap 옵션 삭제! 수학적 들여쓰기 강제 고정
+                # 💡 핵심: 글자 증발 버그 원인인 wordWrap='CJK' 완전 제거 완료!
                 passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=9, leading=16)
                 question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, leftIndent=15, firstLineIndent=-15)
                 choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, leftIndent=15, firstLineIndent=-15)
@@ -1118,7 +1117,6 @@ elif menu == "🔒 원장님 전용 관리실":
                             if not p_line: 
                                 elements_group.append(Spacer(1, 0.2*cm))
                                 continue
-                            # 💡 escape 처리로 <보기> 등의 태그 증발 방지
                             elements_group.append(Paragraph(safe_text(p_line), passage_style))
                         elements_group.append(Spacer(1, 0.6*cm))
                         previous_passage = current_passage
@@ -1133,7 +1131,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
                         m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
-                        # 💡 bullet 태그를 제거하고 단순 텍스트로 합친 후 CSS적인 indent 마법 적용
+                        # 💡 bullet 태그를 제거하고 수학적 공간 들여쓰기(firstLineIndent=-15) 마법 사용
                         if m_q:
                             b_text = safe_text(m_q.group(1))
                             content = safe_text(m_q.group(2))
