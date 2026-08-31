@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components 
 import os
 import sys
 import subprocess
@@ -6,12 +7,13 @@ import csv
 import requests
 import json
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 import io
-from xml.sax.saxutils import escape  # 💡 글자 증발 방지용 보호막
+from xml.sax.saxutils import escape  
 
 # ==========================================
-# 🚨 서버 필수 부품 강제 설치 (PDF 패키지 reportlab 추가)
+# 🚨 서버 필수 부품 강제 설치
 # ==========================================
 @st.cache_resource
 def ensure_dependencies():
@@ -43,14 +45,12 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
-    # 💡 핵심 1: 완벽한 기호 지원을 위해 표준 바탕체(나눔명조) 다운로드
     base_font_path = "NanumMyeongjo.ttf"
     if not os.path.exists(base_font_path):
         url = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Regular.ttf"
         urllib.request.urlretrieve(url, base_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
-    # 💡 핵심 2: 굵은 글씨 증발 방지를 위해 볼드체 전용 폰트 함께 묶기
     bold_font_path = "NanumMyeongjoBold.ttf"
     if not os.path.exists(bold_font_path):
         url_bold = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Bold.ttf"
@@ -100,13 +100,12 @@ def send_telegram_alert(message):
         except Exception:
             pass
 
-# 💡 AI 출력물 1차 정제 및 기호 보호막 함수
 def clean_ai_text(text):
     text = text.replace("**", "'")
     return text
 
 def safe_text(text):
-    return escape(text) # <보기> 등의 글자 증발 원천 차단
+    return escape(text)
 
 # 파일/폴더 자동 세팅
 log_file_path = "학생질문_모니터링_기록.csv"
@@ -203,7 +202,7 @@ if student_class == "논술" and student_name == "최준용":
     if admin_pw == "2024":
         is_admin = True
         st.success("✅ 원장님, 환영합니다! 스텔스 관리자 모드가 활성화되었습니다.")
-        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "✍️ AI 요약 첨삭", "📝 AI 국최 논술 첨삭", "📂 학원 자료실"]
+        menu_options = ["🔒 원장님 전용 관리실", "💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "⏳ 실시간 모의고사", "✍️ AI 요약 첨삭", "📝 AI 국최 논술 첨삭", "📂 학원 자료실"]
     elif admin_pw:
         st.error("❌ 비밀번호가 틀렸습니다.")
         st.stop()
@@ -216,7 +215,7 @@ if not is_admin:
         st.error("🚨 등록되지 않은 원생입니다. 반과 이름이 정확한지 확인하시거나 학원에 문의해 주세요.")
         st.stop()
     
-    menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "✍️ AI 요약 첨삭"]
+    menu_options = ["💬 24시간 AI 튜터", "📝 과제 파일 제출", "💯 OMR 자동 채점", "💻 온라인 시험장", "⏳ 실시간 모의고사", "✍️ AI 요약 첨삭"]
     if student_class == "논술":
         menu_options.append("📝 AI 국최 논술 첨삭")
     menu_options.append("📂 학원 자료실")
@@ -324,11 +323,11 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2~7 (생략 없이 유지)
+# 📝 메뉴 2: 과제 제출 (DB 연동 최적화)
 # ==========================================
 elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
-    st.info("💡 푼 과제를 제출해야 해당 반의 정답지 락(Lock)이 해제됩니다.")
+    st.info("💡 푼 과제를 제출해야 해당 반의 정답지 락(Lock)이 해제됩니다. 원장님께 즉시 알림이 전송됩니다.")
     hw_files = st.file_uploader("📸 과제 사진/PDF 업로드", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     hw_session_key = f"hw_submitted_{safe_class}"
     if hw_session_key not in st.session_state: st.session_state[hw_session_key] = False
@@ -340,12 +339,22 @@ elif menu == "📝 과제 파일 제출":
             save_path = os.path.join(HW_FOLDER, f"[{safe_class}] {student_name}_{hw.name}")
             with open(save_path, "wb") as f: f.write(hw.getbuffer())
             file_names.append(hw.name)
+            
         with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
             csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
+            
+        # 💡 원장님 실시간 관제소로 제출 현황 쏘기
         if db:
-            db.collection("homework_logs").add({"제출일시": now_str, "반이름": student_class, "학생이름": student_name, "제출파일명": ", ".join(file_names)})
+            db.collection("homework_logs").add({
+                "제출일시": now_str, 
+                "반이름": student_class, 
+                "학생이름": student_name, 
+                "제출파일명": ", ".join(file_names)
+            })
+            
         st.session_state[hw_session_key] = True
-        st.balloons(); st.success("✅ 제출 완료! 락이 해제되었습니다.")
+        st.balloons()
+        st.success("✅ 제출 완료! 원장님께 제출 정보가 실시간으로 등록되었습니다. 락이 해제됩니다.")
 
     if st.session_state[hw_session_key] or is_admin:
         st.subheader("🔓 공식 해설지")
@@ -354,6 +363,9 @@ elif menu == "📝 과제 파일 제출":
     else:
         st.warning("⚠️ 과제를 제출해야 정답이 보입니다.")
 
+# ==========================================
+# 💯 메뉴 3: OMR 자동 채점 (학생용 상세 카드 & DB 연동)
+# ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
     all_omr_data = load_omr_answers() if os.path.exists(OMR_ANS_DB) else []
@@ -365,22 +377,68 @@ elif menu == "💯 OMR 자동 채점":
         if selected_task != "선택하세요":
             c_ans = class_omr_tasks[selected_task].split(",")
             t_q = len(c_ans)
+            
             with st.form("omr_form"):
-                s_ans = [st.text_input(f"{i+1}번") for i in range(t_q)]
-                if st.form_submit_button("🚀 자동 채점하기"):
-                    wrongs = [f"{i+1}번(내답:{s_ans[i]})" for i in range(t_q) if s_ans[i].strip().lower() != c_ans[i].strip().lower()]
+                s_ans = [st.text_input(f"{i+1}번 문항") for i in range(t_q)]
+                if st.form_submit_button("🚀 자동 채점 및 결과 전송"):
+                    detailed_results = []
+                    wrongs = []
+                    for i in range(t_q):
+                        s_val = s_ans[i].strip().lower()
+                        c_val = c_ans[i].strip().lower()
+                        
+                        if not s_val: s_val = "미입력"
+                        
+                        if s_val != c_val:
+                            wrongs.append(f"{i+1}번(내답:{s_val}->정답:{c_val})")
+                            detailed_results.append(f"❌ **{i+1}번:** 내가 적은 답 `[{s_val}]` ➔ **정답 `[{c_val}]`**")
+                        else:
+                            detailed_results.append(f"✅ **{i+1}번:** 정답 `[{s_val}]`")
+                            
                     score = int(((t_q - len(wrongs)) / t_q) * 100) if t_q else 0
                     st.session_state[f"score_{omr_session_key}"] = score
                     st.session_state[f"wrongs_{omr_session_key}"] = wrongs
-                    st.success("채점 완료!")
+                    st.session_state[f"details_{omr_session_key}"] = detailed_results
+                    
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # 💡 원장님 실시간 관제소로 OMR 결과 완벽 전송
+                    with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
+                        csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{score}점", ", ".join(wrongs)])
+                    
+                    if db:
+                        db.collection("omr_submissions").add({
+                            "제출일시": now_str,
+                            "반이름": student_class,
+                            "학생이름": student_name,
+                            "과제명": selected_task,
+                            "점수": f"{score}점",
+                            "틀린문항": ", ".join(wrongs) if wrongs else "없음 (만점)",
+                            "상세답안": " | ".join([f"{i+1}번:{s_ans[i]}" for i in range(t_q)])
+                        })
+                    st.success("✅ 채점 완료! 원장님께 채점 결과가 실시간으로 전송되었습니다.")
+            
+            # 💡 학생을 위한 직관적이고 상세한 성적표 UI
             if f"score_{omr_session_key}" in st.session_state:
-                st.info(f"**점수:** {st.session_state[f'score_{omr_session_key}']}점")
-                st.error(f"**틀린 문항:** {', '.join(st.session_state[f'wrongs_{omr_session_key}'])}")
+                st.divider()
+                st.markdown(f"### 🏆 최종 점수: **{st.session_state[f'score_{omr_session_key}']}점**")
+                
+                if st.session_state[f"wrongs_{omr_session_key}"]:
+                    st.error(f"**🚨 틀린 문항 요약:** {', '.join(st.session_state[f'wrongs_{omr_session_key}'])}")
+                else:
+                    st.info("🎉 훌륭합니다! 모든 문제를 맞혔습니다.")
+                    
+                with st.expander("🔍 내 문항별 상세 채점 결과 확인", expanded=True):
+                    for detail in st.session_state[f"details_{omr_session_key}"]:
+                        st.markdown(detail)
     else:
         st.warning("등록된 OMR 과제가 없습니다.")
 
+# ==========================================
+# 💻 메뉴 6: 온라인 시험장 (자율 응시용)
+# ==========================================
 elif menu == "💻 온라인 시험장":
-    st.subheader(f"💻 [{student_class}] 온라인 시험장")
+    st.subheader(f"💻 [{student_class}] 자율 온라인 시험장")
     if db:
         docs = db.collection("online_exams").get()
         av_exams = [d.to_dict() for d in docs if d.to_dict().get("대상반") in ["전체", student_class]]
@@ -388,68 +446,222 @@ elif menu == "💻 온라인 시험장":
             s_ex = st.selectbox("📝 응시할 시험 선택", ["선택하세요"] + [ex["제목"] for ex in av_exams])
             if s_ex != "선택하세요":
                 c_ex = next(e for e in av_exams if e["제목"] == s_ex)
+                
                 q_cnt = c_ex.get("문항수", 5)
                 c_answers = c_ex.get("정답배열", [])
                 c_diffs = c_ex.get("난이도배열", [])
                 c_types = c_ex.get("유형배열", [])
                 q_array = c_ex.get("문항배열", [])
+                
                 st.info("💡 문항을 읽고 바로 밑의 버튼을 누르거나 빈칸을 채우세요. 단 한 문항이라도 비워두면 제출되지 않습니다.")
                 st.divider()
                 
                 with st.form("ol_form"):
                     student_answers = []
                     actual_q_cnt = len(q_array) if q_array else q_cnt
+                    
                     if q_array:
                         for idx, q_text in enumerate(q_array):
                             st.markdown(f"#### 📌 **[{idx+1}번 문항]**")
                             st.markdown(q_text)
+                            
                             q_type = c_types[idx] if idx < len(c_types) else "단답형"
-                            if "5지" in q_type or "객관식" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            elif "O/X" in q_type.upper() or "오엑스" in q_type: ans = st.radio(f"👉 정답 선택", ["O", "X"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            elif "2지" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
-                            else: ans = st.text_input(f"✍️ 정답 입력", key=f"ol_ans_{idx}")
-                            student_answers.append(ans); st.markdown("---")
+                            
+                            if "5지" in q_type or "객관식" in q_type:
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            elif "O/X" in q_type.upper() or "오엑스" in q_type:
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["O", "X"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            elif "2지" in q_type:
+                                ans = st.radio(f"👉 {idx+1}번 정답 선택", ["1", "2"], index=None, key=f"ol_ans_{idx}", horizontal=True)
+                            else:
+                                ans = st.text_input(f"✍️ {idx+1}번 정답 직접 입력 (주관식)", key=f"ol_ans_{idx}")
+                                
+                            student_answers.append(ans)
+                            st.markdown("---")
                     else:
-                        st.warning("⚠️ 과거 시험지입니다.")
-                        st.markdown(c_ex.get("문제지", "")); st.divider()
+                        st.warning("⚠️ 이 시험지는 이전 버전에 출제된 과거 시험지입니다. 원장님께서 새 시스템으로 재출제해 주시면 문항별 분리 OMR로 응시할 수 있습니다.")
+                        st.markdown(c_ex.get("문제지", ""))
+                        st.divider()
                         for idx in range(q_cnt):
                             ans = st.text_input(f"✍️ {idx+1}번 정답 입력", key=f"ol_ans_{idx}")
                             student_answers.append(ans)
                                 
                     st.markdown("<br>", unsafe_allow_html=True)
                     submit_btn = st.form_submit_button("🚀 모든 답안 작성 완료 및 최종 제출", use_container_width=True)
+                    
                     if submit_btn:
-                        unanswered = [str(idx+1) for idx, a in enumerate(student_answers) if a is None or (isinstance(a, str) and not a.strip())]
-                        if unanswered: st.error(f"⚠️ 풀지 않은 문항: **{', '.join(unanswered)}번**")
+                        unanswered = []
+                        for idx, a in enumerate(student_answers):
+                            if a is None or (isinstance(a, str) and not a.strip()):
+                                unanswered.append(str(idx+1))
+                                
+                        if unanswered:
+                            st.error(f"⚠️ 아직 풀지 않은 문항이 있습니다: **{', '.join(unanswered)}번**\n\n모든 문항의 답을 체크하거나 입력해야 정상적으로 제출됩니다. 위로 올려 빈칸을 채워주세요.")
                         else:
                             total_correct = 0
-                            stats = {"킬러 문항": {"O": 0, "총": 0}, "준킬러 문항": {"O": 0, "총": 0}, "상난이도": {"O": 0, "총": 0}, "중난이도": {"O": 0, "총": 0}, "하난이도": {"O": 0, "총": 0}}
+                            stats = {
+                                "킬러 문항": {"O": 0, "총": 0},
+                                "준킬러 문항": {"O": 0, "총": 0},
+                                "상난이도": {"O": 0, "총": 0},
+                                "중난이도": {"O": 0, "총": 0},
+                                "하난이도": {"O": 0, "총": 0},
+                            }
+                            
                             student_ans_str = []
                             for idx, s_a in enumerate(student_answers):
                                 s_val = str(s_a).strip()
                                 c_val = c_answers[idx].strip() if idx < len(c_answers) else ""
                                 d_val = c_diffs[idx] if idx < len(c_diffs) else "중난이도"
-                                if d_val in stats: stats[d_val]["총"] += 1
+                                
+                                if d_val in stats:
+                                    stats[d_val]["총"] += 1
+                                    
                                 is_correct = False
                                 if s_val and c_val and s_val.lower() == c_val.lower():
-                                    is_correct = True; total_correct += 1
-                                    if d_val in stats: stats[d_val]["O"] += 1
+                                    is_correct = True
+                                    total_correct += 1
+                                    if d_val in stats:
+                                        stats[d_val]["O"] += 1
+                                        
                                 student_ans_str.append(f"{idx+1}번: {s_val} ({'O' if is_correct else 'X'})")
+                                
                             ans_text = " | ".join(student_ans_str)
-                            if not c_answers: score_summary = "수동 채점 필요 (과거 시험지)"
-                            else: score_summary = f"총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
+                            
+                            if not c_answers:
+                                score_summary = "수동 채점 필요 (과거 시험지)"
+                            else:
+                                score_summary = f"총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']} | 준킬러: {stats['준킬러 문항']['O']}/{stats['준킬러 문항']['총']} | 상: {stats['상난이도']['O']}/{stats['상난이도']['총']} | 중: {stats['중난이도']['O']}/{stats['중난이도']['총']} | 하: {stats['하난이도']['O']}/{stats['하난이도']['총']}"
                             
                             db.collection("online_exam_submissions").add({
-                                "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "반이름": student_class, "학생이름": student_name, 
-                                "시험제목": s_ex, "학생답안": ans_text, "점수요약": score_summary
+                                "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "반이름": student_class, 
+                                "학생이름": student_name, 
+                                "시험제목": s_ex, 
+                                "학생답안": ans_text,
+                                "점수요약": score_summary
                             })
-                            st.session_state[f"ol_done_{s_ex}"] = True; st.session_state[f"ol_score_{s_ex}"] = score_summary
-                            st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!"); st.rerun()
+                            st.session_state[f"ol_done_{s_ex}"] = True
+                            st.session_state[f"ol_score_{s_ex}"] = score_summary
+                            st.success("✅ 원장님께 답안이 성공적으로 제출되었습니다!")
+                            st.rerun()
                         
                 if st.session_state.get(f"ol_done_{s_ex}") or is_admin:
-                    st.divider(); st.markdown("### 🏆 내 채점 결과"); st.info(f"**{st.session_state.get(f'ol_score_{s_ex}', '확인 완료')}**")
-                    st.markdown("### 💡 공식 해설지"); st.markdown(c_ex["해설지"])
-        else: st.warning("현재 응시 가능한 시험이 없습니다.")
+                    st.divider()
+                    st.markdown("### 🏆 내 채점 결과")
+                    st.info(f"**{st.session_state.get(f'ol_score_{s_ex}', '확인 완료')}**")
+                    st.markdown("### 💡 공식 해설지")
+                    st.markdown(c_ex["해설지"])
+        else:
+            st.warning("현재 응시 가능한 시험이 없습니다.")
+
+# ==========================================
+# ⏳ 메뉴 9: 실시간 모의고사 (타이머 압박 훈련)
+# ==========================================
+elif menu == "⏳ 실시간 모의고사":
+    st.subheader(f"⏳ [{student_class}] 실시간 모의고사")
+    if db:
+        live_ref = db.collection("live_exams").document(f"live_{student_class}").get()
+        if not live_ref.exists:
+            live_ref = db.collection("live_exams").document("live_전체").get()
+            
+        if live_ref.exists:
+            live_data = live_ref.to_dict()
+            end_timestamp_ms = live_data.get("end_timestamp", 0)
+            current_ms = int(time.time() * 1000)
+            
+            if current_ms < end_timestamp_ms:
+                exam_title = live_data.get("exam_title", "")
+                st.info(f"🔥 원장님께서 **[{exam_title}]** 실시간 모의고사를 시작하셨습니다! 제한 시간 내에 반드시 제출하세요.")
+                
+                timer_html = f"""
+                <div style="text-align:center; padding:15px; background-color:#ff4b4b; color:white; border-radius:10px; margin-bottom:20px;">
+                    <h2 style="margin:0; font-family:sans-serif;">⏳ 남은 시간: <span id="time">계산 중...</span></h2>
+                </div>
+                <script>
+                    var countDownDate = {end_timestamp_ms};
+                    var x = setInterval(function() {{
+                        var now = new Date().getTime();
+                        var distance = countDownDate - now;
+                        var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                        var seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                        
+                        document.getElementById("time").innerHTML = minutes + "분 " + seconds + "초";
+                        
+                        if (distance < 0) {{
+                            clearInterval(x);
+                            document.getElementById("time").innerHTML = "🚨 시험 강제 종료!";
+                            document.getElementById("time").parentElement.style.backgroundColor = "black";
+                        }}
+                    }}, 1000);
+                </script>
+                """
+                components.html(timer_html, height=80)
+                
+                ex_doc = db.collection("online_exams").document(exam_title).get()
+                if ex_doc.exists:
+                    c_ex = ex_doc.to_dict()
+                    q_cnt = c_ex.get("문항수", 5)
+                    c_answers = c_ex.get("정답배열", [])
+                    c_diffs = c_ex.get("난이도배열", [])
+                    c_types = c_ex.get("유형배열", [])
+                    q_array = c_ex.get("문항배열", [])
+                    
+                    with st.form("live_form"):
+                        student_answers = []
+                        actual_q_cnt = len(q_array) if q_array else q_cnt
+                        
+                        if q_array:
+                            for idx, q_text in enumerate(q_array):
+                                st.markdown(f"#### 📌 **[{idx+1}번 문항]**")
+                                st.markdown(q_text)
+                                q_type = c_types[idx] if idx < len(c_types) else "단답형"
+                                if "5지" in q_type or "객관식" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2", "3", "4", "5"], index=None, key=f"live_ans_{idx}", horizontal=True)
+                                elif "O/X" in q_type.upper() or "오엑스" in q_type: ans = st.radio(f"👉 정답 선택", ["O", "X"], index=None, key=f"live_ans_{idx}", horizontal=True)
+                                elif "2지" in q_type: ans = st.radio(f"👉 정답 선택", ["1", "2"], index=None, key=f"live_ans_{idx}", horizontal=True)
+                                else: ans = st.text_input(f"✍️ 정답 입력", key=f"live_ans_{idx}")
+                                student_answers.append(ans); st.markdown("---")
+                                    
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        submit_btn = st.form_submit_button("🚀 실시간 답안 최종 제출", use_container_width=True)
+                        
+                        if submit_btn:
+                            if int(time.time() * 1000) > end_timestamp_ms:
+                                st.error("🚨 제한 시간이 초과되어 답안을 제출할 수 없습니다! 원장님께 문의하세요.")
+                            else:
+                                unanswered = [str(idx+1) for idx, a in enumerate(student_answers) if a is None or (isinstance(a, str) and not a.strip())]
+                                if unanswered: st.error(f"⚠️ 풀지 않은 문항: **{', '.join(unanswered)}번**")
+                                else:
+                                    total_correct = 0
+                                    stats = {"킬러 문항": {"O": 0, "총": 0}, "준킬러 문항": {"O": 0, "총": 0}, "상난이도": {"O": 0, "총": 0}, "중난이도": {"O": 0, "총": 0}, "하난이도": {"O": 0, "총": 0}}
+                                    student_ans_str = []
+                                    for idx, s_a in enumerate(student_answers):
+                                        s_val = str(s_a).strip()
+                                        c_val = c_answers[idx].strip() if idx < len(c_answers) else ""
+                                        d_val = c_diffs[idx] if idx < len(c_diffs) else "중난이도"
+                                        if d_val in stats: stats[d_val]["총"] += 1
+                                        is_correct = False
+                                        if s_val and c_val and s_val.lower() == c_val.lower():
+                                            is_correct = True; total_correct += 1
+                                            if d_val in stats: stats[d_val]["O"] += 1
+                                        student_ans_str.append(f"{idx+1}번: {s_val} ({'O' if is_correct else 'X'})")
+                                    ans_text = " | ".join(student_ans_str)
+                                    score_summary = f"[LIVE] 총점: {total_correct}/{actual_q_cnt} | 킬러: {stats['킬러 문항']['O']}/{stats['킬러 문항']['총']}"
+                                    
+                                    db.collection("online_exam_submissions").add({
+                                        "제출일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " (LIVE)", "반이름": student_class, "학생이름": student_name, 
+                                        "시험제목": exam_title, "학생답안": ans_text, "점수요약": score_summary
+                                    })
+                                    st.session_state[f"live_done_{exam_title}"] = True
+                                    st.success("✅ 실시간 모의고사 제출이 완료되었습니다! 훌륭합니다.")
+                                    st.rerun()
+                                    
+                if st.session_state.get(f"live_done_{exam_title}"):
+                    st.divider(); st.markdown("### 🏆 내 채점 결과"); st.info("정상적으로 제출되었습니다. 해설지는 원장님께서 별도로 공개하십니다.")
+            else:
+                st.error("🚨 현재 배포된 실시간 모의고사의 제한 시간이 종료되었습니다.")
+        else:
+            st.info("현재 원장님께서 시작하신 실시간 모의고사가 없습니다.")
+    else: st.warning("파이어베이스 연결이 필요합니다.")
 
 elif menu == "✍️ AI 요약 첨삭":
     st.subheader(f"✍️ [{student_class}] AI 요약 첨삭")
@@ -497,7 +709,7 @@ elif menu == "📂 학원 자료실":
 # ==========================================
 elif menu == "🔒 원장님 전용 관리실":
     st.subheader("🔒 원장님 전용 관리실")
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 채점 현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리", "🪄 AI 문제 출제기"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["💯 OMR 세팅", "🔑 반별 해설지 등록", "📝 과제/채점 통합현황", "📊 질문 내역", "📚 해설지 누적", "📂 공개 자료실", "👥 명단 관리", "🪄 AI 문제 출제기", "⏳ 실시간 관제소"])
     
     with tab1:
         st.markdown("#### 💯 반별 OMR 자동 채점 정답 세팅")
@@ -522,24 +734,52 @@ elif menu == "🔒 원장님 전용 관리실":
             if db: db.collection("ai_knowledge").document(f"class_{get_safe_name(ans_cls)}").set({"text": new_ans})
             st.success("✅ 배포 완료!")
 
+    # 💡 [핵심 3] 원장님 전용 3단 통합 관제소 대폭 업그레이드
     with tab3:
-        st.markdown("#### 📝 오프라인 과제 및 OMR 채점 기록")
-        if os.path.exists(score_log_path): st.download_button("📥 OMR 채점 엑셀 다운로드", open(score_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "OMR기록.csv")
-        if os.path.exists(hw_log_path): st.download_button("📥 과제 제출 엑셀 다운로드", open(hw_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "과제기록.csv")
-
-        st.divider()
-        st.markdown("#### 💻 파이어베이스 실시간 [온라인 시험 제출 현황판]")
+        st.markdown("#### 📊 실시간 과제 및 채점 통합 관제소")
+        st.info("💡 파이어베이스 DB와 실시간으로 연동되어 학생들의 과제 제출, OMR 채점, 온라인 시험 결과를 즉시 직관적으로 확인할 수 있습니다.")
+        
+        if st.button("🔄 최신 데이터 전체 불러오기 (새로고침)"):
+            pass # 버튼을 누르면 streamlit이 즉시 리런되므로 최신 DB를 다시 긁어옵니다.
+        
         if db:
-            if st.button("🔄 최신 학생 제출 결과 불러오기"):
-                try:
-                    subs_ref = db.collection("online_exam_submissions").get()
-                    raw_list = [doc.to_dict() for doc in subs_ref]
-                    sorted_list = sorted(raw_list, key=lambda x: x.get("제출일시", ""), reverse=True)[:50]
-                    sub_list = [{"제출일시": d.get("제출일시", ""), "반": d.get("반이름", ""), "이름": d.get("학생이름", ""), "시험제목": d.get("시험제목", ""), "점수결과": d.get("점수요약", ""), "상세답안": d.get("학생답안", "")} for d in sorted_list]
-                    if sub_list: st.dataframe(sub_list)
-                    else: st.info("아직 학생들이 제출한 온라인 시험 답안이 없습니다.")
-                except Exception as e: st.error(f"오류: {e}")
-        else: st.warning("파이어베이스 연결이 필요합니다.")
+            st.markdown("##### 📂 1. 과제 파일 제출 현황")
+            try:
+                hw_ref = db.collection("homework_logs").get()
+                hw_list = [d.to_dict() for d in hw_ref]
+                hw_list = sorted(hw_list, key=lambda x: x.get("제출일시", ""), reverse=True)
+                if hw_list: st.dataframe(hw_list, use_container_width=True)
+                else: st.info("아직 제출된 과제가 없습니다.")
+            except Exception as e: st.error(f"오류: {e}")
+            
+            st.markdown("##### 💯 2. OMR (오프라인 과제) 채점 현황")
+            try:
+                omr_ref = db.collection("omr_submissions").get()
+                omr_list = [d.to_dict() for d in omr_ref]
+                omr_list = sorted(omr_list, key=lambda x: x.get("제출일시", ""), reverse=True)
+                if omr_list: st.dataframe(omr_list, use_container_width=True)
+                else: st.info("아직 OMR 채점 기록이 없습니다.")
+            except Exception as e: st.error(f"오류: {e}")
+            
+            st.markdown("##### 💻 3. 온라인 (자율/실시간) 모의고사 채점 현황")
+            try:
+                subs_ref = db.collection("online_exam_submissions").get()
+                sub_list = [d.to_dict() for d in subs_ref]
+                sub_list = sorted(sub_list, key=lambda x: x.get("제출일시", ""), reverse=True)
+                if sub_list: st.dataframe(sub_list, use_container_width=True)
+                else: st.info("아직 온라인 모의고사 제출 기록이 없습니다.")
+            except Exception as e: st.error(f"오류: {e}")
+            
+        else:
+            st.warning("🚨 파이어베이스 연결이 필요합니다.")
+            
+        st.divider()
+        st.markdown("##### 📥 오프라인 엑셀 백업 다운로드")
+        col_bk1, col_bk2 = st.columns(2)
+        with col_bk1:
+            if os.path.exists(score_log_path): st.download_button("📥 OMR 채점 기록 다운로드", open(score_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "OMR기록.csv")
+        with col_bk2:
+            if os.path.exists(hw_log_path): st.download_button("📥 과제 제출 기록 다운로드", open(hw_log_path, "r", encoding='utf-8-sig').read().encode('utf-8-sig'), "과제기록.csv")
 
     with tab4:
         st.markdown("#### 질문 내역")
@@ -590,9 +830,6 @@ elif menu == "🔒 원장님 전용 관리실":
         else:
             st.info("현재 등록된 원생이 없습니다.")
 
-    # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 폰트 패밀리 완비, 최강 선택지 주입 엔진)
-    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
@@ -699,7 +936,6 @@ elif menu == "🔒 원장님 전용 관리실":
                             display_text = clean_ai_text(full_generated_text)
                             stream_box.markdown(display_text + " ▌")
                             
-                        # 스트리밍 종료 후 전체 텍스트 정제
                         full_generated_text = clean_ai_text(full_generated_text)
                         stream_box.markdown(full_generated_text)
                         
@@ -726,18 +962,15 @@ elif menu == "🔒 원장님 전용 관리실":
                                             if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
                                             if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
                                         
-                                        # 💡 핵심 2. 최강 보정 엔진: AI가 기호를 빼먹었어도 선택지 무조건 강제 주입
                                         if "5지" in type_match or "선다" in type_match or "객관" in type_match or bool(re.match(r'^[1-5]$', ans_match.strip())):
                                             q_lines = q_str.split('\n')
                                             valid_lines = [(i, l) for i, l in enumerate(q_lines) if l.strip()]
                                             
-                                            # 발문 최소 1줄 + 보기 5줄 = 6줄 이상일 때 마지막 5줄을 강제로 낚아챔
                                             if len(valid_lines) >= 6: 
                                                 for i in range(5):
                                                     real_idx = valid_lines[-5 + i][0]
                                                     text_line = valid_lines[-5 + i][1].strip()
                                                     
-                                                    # 맨 앞이 동그라미(①~⑤)가 아니면 무조건 강제로 덮어씌움
                                                     if not re.match(r'^[①②③④⑤]', text_line):
                                                         clean_l = re.sub(r'^[\-\*\d\)\.\]\[\<>]+\s*', '', text_line)
                                                         q_lines[real_idx] = f"{['①', '②', '③', '④', '⑤'][i]} {clean_l}"
@@ -802,8 +1035,8 @@ elif menu == "🔒 원장님 전용 관리실":
                 passage_font = load_fonts() 
                 buffer = io.BytesIO()
                 
-                m_left = 2.5 * cm 
-                m_right = 2.5 * cm
+                m_left = 2.0 * cm 
+                m_right = 2.0 * cm
                 m_top = 1.0 * cm   
                 m_bot = 1.5 * cm
                 
@@ -814,9 +1047,9 @@ elif menu == "🔒 원장님 전용 관리실":
                     canvas.setFont('BatangFont-Bold', 18)
                     canvas.drawCentredString(A4[0]/2, A4[1] - 1.5*cm, f"{title}")
                     canvas.setFont('BatangFont', 10)
-                    canvas.drawRightString(A4[0] - 2.5*cm, A4[1] - 2.5*cm, "반: _______  이름: _______  점수: _______ / 100")
+                    canvas.drawRightString(A4[0] - 2.0*cm, A4[1] - 2.5*cm, "반: _______  이름: _______  점수: _______ / 100")
                     canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 2.7*cm, A4[0] - 2.5*cm, A4[1] - 2.7*cm)
+                    canvas.line(2.0*cm, A4[1] - 2.7*cm, A4[0] - 2.0*cm, A4[1] - 2.7*cm)
                     canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
                     canvas.setFont('BatangFont', 8)
@@ -827,9 +1060,9 @@ elif menu == "🔒 원장님 전용 관리실":
                 def header_later(canvas, doc):
                     canvas.saveState()
                     canvas.setFont('BatangFont', 10)
-                    canvas.drawString(2.5*cm, A4[1] - 0.7*cm, f"[{title}]")
+                    canvas.drawString(2.0*cm, A4[1] - 0.7*cm, f"[{title}]")
                     canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 0.9*cm, A4[0] - 2.5*cm, A4[1] - 0.9*cm)
+                    canvas.line(2.0*cm, A4[1] - 0.9*cm, A4[0] - 2.0*cm, A4[1] - 0.9*cm)
                     canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
                     canvas.restoreState()
@@ -839,17 +1072,15 @@ elif menu == "🔒 원장님 전용 관리실":
                     canvas.setFont('BatangFont-Bold', 14)
                     canvas.drawCentredString(A4[0]/2, A4[1] - 1.0*cm, f"정답 및 해설")
                     canvas.setLineWidth(1)
-                    canvas.line(2.5*cm, A4[1] - 1.3*cm, A4[0] - 2.5*cm, A4[1] - 1.3*cm)
+                    canvas.line(2.0*cm, A4[1] - 1.3*cm, A4[0] - 2.0*cm, A4[1] - 1.3*cm)
                     canvas.setFont('BatangFont', 10)
                     canvas.drawCentredString(A4[0]/2, 0.7*cm, f"- {doc.page} -")
                     canvas.restoreState()
 
                 fw_full = doc.width; fw_half = doc.width/2 - 0.4*cm
                 
-                # 💡 핵심 3. 1페이지 상단 공간 약 4cm 더 위로 올려서 콤팩트하게 적용
-                h_first = doc.height - 1.5 * cm  
+                h_first = doc.height - 2.5 * cm  
                 y_first = doc.bottomMargin
-                
                 h_later = doc.height 
                 y_later = doc.bottomMargin
                 
@@ -873,7 +1104,6 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 폰트 바탕체로 완전 변경 및 내어쓰기 간격 15pt로 대폭 확대
                 passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16, wordWrap='CJK')
                 question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, bulletIndent=0)
                 choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0)
@@ -905,7 +1135,6 @@ elif menu == "🔒 원장님 전용 관리실":
                             elements_group.append(Spacer(1, 0.3*cm))
                             continue
                         
-                        # 내어쓰기(bullet) 처리를 위한 태그 조판 로직
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
                         m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
@@ -987,3 +1216,54 @@ elif menu == "🔒 원장님 전용 관리실":
                             db.collection("online_exams").document(ex_title).delete(); st.rerun()
                 else: st.info("현재 배포된 시험이 없습니다.")
             except Exception as e: st.error(f"시험 목록을 불러오는 중 오류가 발생했습니다: {e}")
+
+    with tab9:
+        st.markdown("#### ⏳ 실시간 모의고사 관제소")
+        st.info("💡 파이어베이스에 배포된 온라인 시험지를 선택하여 실시간 타이머와 함께 학생들에게 전송합니다.")
+        
+        if db:
+            exams_ref = db.collection("online_exams").get()
+            raw_exams = [doc.to_dict() for doc in exams_ref]
+            if raw_exams:
+                exam_titles = [e.get("제목", "제목 없음") for e in raw_exams]
+                
+                sel_live_exam = st.selectbox("🎯 실시간으로 전송할 시험 선택", ["선택하세요"] + exam_titles)
+                sel_live_class = st.selectbox("🎯 응시 대상 반 선택", ["전체"] + CLASS_LIST)
+                sel_live_time = st.number_input("⏱️ 제한 시간 설정 (분)", min_value=1, max_value=180, value=45)
+                
+                if st.button("🚀 실시간 모의고사 강제 시작!", use_container_width=True):
+                    if sel_live_exam != "선택하세요":
+                        end_ms = int((datetime.now() + timedelta(minutes=sel_live_time)).timestamp() * 1000)
+                        
+                        db.collection("live_exams").document(f"live_{sel_live_class}").set({
+                            "exam_title": sel_live_exam,
+                            "target_class": sel_live_class,
+                            "end_timestamp": end_ms,
+                            "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        st.success(f"✅ [{sel_live_class}] 반 학생들에게 '{sel_live_exam}' 실시간 모의고사 전송을 완료했습니다! (제한 시간: {sel_live_time}분)")
+                    else:
+                        st.error("⚠️ 시험을 선택해 주세요.")
+            else:
+                st.warning("배포된 온라인 시험지가 없습니다. [AI 문제 출제기]에서 먼저 시험지를 배포해 주세요.")
+                
+            st.divider()
+            st.markdown("#### 🚨 현재 진행 중인 실시간 모의고사 강제 종료")
+            live_ref = db.collection("live_exams").get()
+            active_lives = [doc for doc in live_ref]
+            
+            if active_lives:
+                for doc in active_lives:
+                    data = doc.to_dict()
+                    target = data.get('target_class', '')
+                    title = data.get('exam_title', '')
+                    
+                    col_live1, col_live2 = st.columns([4, 1])
+                    col_live1.write(f"⏳ **[{target}]** 반: {title} (진행 중)")
+                    if col_live2.button("❌ 즉시 종료 (회수)", key=f"kill_{target}"):
+                        db.collection("live_exams").document(doc.id).delete()
+                        st.rerun()
+            else:
+                st.info("현재 진행 중인 실시간 모의고사가 없습니다.")
+        else:
+            st.warning("파이어베이스 연결이 필요합니다.")
