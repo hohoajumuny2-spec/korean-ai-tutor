@@ -31,7 +31,7 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 바탕체(명조) 폰트 세팅
+# 📄 PDF 조판 엔진 및 기본 바탕체(명조) 폰트 세팅
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
@@ -45,18 +45,21 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
+    # 💡 기본 바탕체(명조) 세팅
     base_font_path = "NanumMyeongjo.ttf"
     if not os.path.exists(base_font_path):
         url = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Regular.ttf"
         urllib.request.urlretrieve(url, base_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
+    # 💡 기본 바탕체(명조) 볼드 세팅
     bold_font_path = "NanumMyeongjoBold.ttf"
     if not os.path.exists(bold_font_path):
         url_bold = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Bold.ttf"
         urllib.request.urlretrieve(url_bold, bold_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont-Bold', bold_font_path))
     
+    # 폰트 패밀리로 묶어 <b> 태그 사용 시 에러 방지
     pdfmetrics.registerFontFamily('BatangFont', normal='BatangFont', bold='BatangFont-Bold')
         
     return 'BatangFont'
@@ -323,7 +326,7 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2: 과제 제출 (DB 연동 최적화)
+# 📝 메뉴 2~7
 # ==========================================
 elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
@@ -343,7 +346,6 @@ elif menu == "📝 과제 파일 제출":
         with open(hw_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
             csv.writer(f).writerow([now_str, student_class, student_name, ", ".join(file_names)])
             
-        # 💡 원장님 실시간 관제소로 제출 현황 쏘기
         if db:
             db.collection("homework_logs").add({
                 "제출일시": now_str, 
@@ -363,9 +365,6 @@ elif menu == "📝 과제 파일 제출":
     else:
         st.warning("⚠️ 과제를 제출해야 정답이 보입니다.")
 
-# ==========================================
-# 💯 메뉴 3: OMR 자동 채점 (학생용 상세 카드 & DB 연동)
-# ==========================================
 elif menu == "💯 OMR 자동 채점":
     st.subheader(f"💯 [{student_class}] OMR 자동 채점")
     all_omr_data = load_omr_answers() if os.path.exists(OMR_ANS_DB) else []
@@ -402,7 +401,6 @@ elif menu == "💯 OMR 자동 채점":
                     
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
-                    # 💡 원장님 실시간 관제소로 OMR 결과 완벽 전송
                     with open(score_log_path, mode='a', newline='', encoding='utf-8-sig') as f:
                         csv.writer(f).writerow([now_str, student_class, student_name, selected_task, f"{score}점", ", ".join(wrongs)])
                     
@@ -418,7 +416,6 @@ elif menu == "💯 OMR 자동 채점":
                         })
                     st.success("✅ 채점 완료! 원장님께 채점 결과가 실시간으로 전송되었습니다.")
             
-            # 💡 학생을 위한 직관적이고 상세한 성적표 UI
             if f"score_{omr_session_key}" in st.session_state:
                 st.divider()
                 st.markdown(f"### 🏆 최종 점수: **{st.session_state[f'score_{omr_session_key}']}점**")
@@ -434,9 +431,6 @@ elif menu == "💯 OMR 자동 채점":
     else:
         st.warning("등록된 OMR 과제가 없습니다.")
 
-# ==========================================
-# 💻 메뉴 6: 온라인 시험장 (자율 응시용)
-# ==========================================
 elif menu == "💻 온라인 시험장":
     st.subheader(f"💻 [{student_class}] 자율 온라인 시험장")
     if db:
@@ -554,9 +548,6 @@ elif menu == "💻 온라인 시험장":
         else:
             st.warning("현재 응시 가능한 시험이 없습니다.")
 
-# ==========================================
-# ⏳ 메뉴 9: 실시간 모의고사 (타이머 압박 훈련)
-# ==========================================
 elif menu == "⏳ 실시간 모의고사":
     st.subheader(f"⏳ [{student_class}] 실시간 모의고사")
     if db:
@@ -734,13 +725,12 @@ elif menu == "🔒 원장님 전용 관리실":
             if db: db.collection("ai_knowledge").document(f"class_{get_safe_name(ans_cls)}").set({"text": new_ans})
             st.success("✅ 배포 완료!")
 
-    # 💡 [핵심 3] 원장님 전용 3단 통합 관제소 대폭 업그레이드
     with tab3:
         st.markdown("#### 📊 실시간 과제 및 채점 통합 관제소")
         st.info("💡 파이어베이스 DB와 실시간으로 연동되어 학생들의 과제 제출, OMR 채점, 온라인 시험 결과를 즉시 직관적으로 확인할 수 있습니다.")
         
         if st.button("🔄 최신 데이터 전체 불러오기 (새로고침)"):
-            pass # 버튼을 누르면 streamlit이 즉시 리런되므로 최신 DB를 다시 긁어옵니다.
+            pass 
         
         if db:
             st.markdown("##### 📂 1. 과제 파일 제출 현황")
@@ -830,6 +820,9 @@ elif menu == "🔒 원장님 전용 관리실":
         else:
             st.info("현재 등록된 원생이 없습니다.")
 
+    # ==========================================
+    # 🪄 탭 8: AI 문제 출제기 (🔥 내어쓰기 태그에 폰트 강제 지정 완료)
+    # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
         st.info("💡 각 난이도별 출제 수량을 지정하세요. 선택하신 문제 유형으로만 엄격하게 출제됩니다.")
@@ -881,7 +874,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         [🚨 치명적 오류 방지 3대 절대 규칙 - 위반 시 처벌 🚨]
                         1. 마크다운 강조 금지: 텍스트에 별표 두 개(**)는 절대 사용하지 마세요. 강조가 필요하면 반드시 작은따옴표('')를 쓰세요.
                         2. 지문 1개당 '최대 5문제' 강제: 한 지문 아래에 6개 이상의 문제를 연달아 쓰면 시스템이 파괴됩니다. 5번 문제가 끝나면 무조건 ===지문=== 을 다시 적고 6번 문제를 출제하세요.
-                        3. 선택지 동그라미 기호 강제: 5지 선다형의 각 보기는 무조건 맨 앞에 원문자(①, ②, ③, ④, ⑤) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰면 절대 안 됩니다.
+                        3. 선택지 기호 강제: 5지 선다형의 각 보기는 무조건 맨 앞에 원문자(①, ②, ③, ④, ⑤) 기호를 붙여서 출력하세요. 기호 없이 내용만 쓰면 절대 안 됩니다.
                         
                         [🚨 철저한 자료 독립 원칙 🚨]
                         과거에 출제했던 내용이나 배경지식을 섞지 마세요. 오직 **[입력 자료]** 내용 안에서만 출제하세요.
@@ -1104,9 +1097,10 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16, wordWrap='CJK')
-                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, bulletIndent=0)
-                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0)
+                # 💡 핵심 2. 내어쓰기 태그(bullet)에 강제로 'BatangFont' 지정 (기호 증발 완벽 방지)
+                passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK')
+                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, wordWrap='CJK', leftIndent=15, bulletIndent=0, bulletFontName='BatangFont')
+                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, wordWrap='CJK', leftIndent=15, bulletIndent=0, bulletFontName='BatangFont')
                 ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15, wordWrap='CJK')
                 
                 story = []
