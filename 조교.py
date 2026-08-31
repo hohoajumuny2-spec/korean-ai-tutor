@@ -31,34 +31,25 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 캐시 강제 리셋(v4) 폰트 세팅
+# 📄 PDF 조판 엔진 및 PDF 내장 아시아 폰트(CID) 세팅 (🔥 기호 증발 원천 차단)
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont # 💡 인터넷 다운로드를 버리고 완벽한 내장 폰트 사용
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
-# 💡 캐시 오류를 부수기 위해 함수명을 load_fonts_v4 로 강제 변경
 @st.cache_resource
-def load_fonts_v4():
-    import urllib.request
+def load_fonts_v5():
+    # 💡 반쪽짜리 인터넷 폰트(TTF) 다운로드 방식을 전면 폐기
+    # PDF 공식 규격인 한글 내장 폰트를 사용하여 ①, ㉠ 기호 증발을 100% 차단합니다.
+    pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium')) # 수능 표준 바탕(명조)체
+    pdfmetrics.registerFont(UnicodeCIDFont('HYGothic-Medium'))    # 강조용 고딕체
     
-    base_font_path = "NanumMyeongjoFull.ttf"
-    if not os.path.exists(base_font_path):
-        url = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjo.ttf"
-        urllib.request.urlretrieve(url, base_font_path)
-    pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
-    
-    bold_font_path = "NanumMyeongjoBoldFull.ttf"
-    if not os.path.exists(bold_font_path):
-        url_bold = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjoBold.ttf"
-        urllib.request.urlretrieve(url_bold, bold_font_path)
-    pdfmetrics.registerFont(TTFont('BatangFont-Bold', bold_font_path))
-    
-    pdfmetrics.registerFontFamily('BatangFont', normal='BatangFont', bold='BatangFont-Bold')
+    # 일반 글씨는 바탕체, 굵은 글씨는 고딕체로 나오도록 패밀리 구성
+    pdfmetrics.registerFontFamily('BatangFont', normal='HYSMyeongJo-Medium', bold='HYGothic-Medium')
         
     return 'BatangFont'
 
@@ -101,7 +92,7 @@ def send_telegram_alert(message):
         except Exception:
             pass
 
-# 💡 강제 텍스트 정제 엔진 (별표 삭제 및 [1] -> ① 강제 치환)
+# 💡 강제 텍스트 정제 엔진
 def clean_ai_text(text):
     text = text.replace("**", "") # 별표 완전 멸종
     text = text.replace("[1]", "①")
@@ -110,7 +101,7 @@ def clean_ai_text(text):
     text = text.replace("[4]", "④")
     text = text.replace("[5]", "⑤")
     
-    # AI가 1) 형식으로 잘못 내뱉을 경우도 강제 치환
+    # 꼼수 기호 강제 치환
     text = re.sub(r'^1\)\s*', '① ', text, flags=re.MULTILINE)
     text = re.sub(r'^2\)\s*', '② ', text, flags=re.MULTILINE)
     text = re.sub(r'^3\)\s*', '③ ', text, flags=re.MULTILINE)
@@ -710,7 +701,7 @@ elif menu == "🔒 원장님 전용 관리실":
                     st.rerun()
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 버그 차단 & 강제 통제 마스터판)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 마지막 기회: 결점 제로 엔진)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -757,15 +748,15 @@ elif menu == "🔒 원장님 전용 관리실":
                     try:
                         q_model = genai.GenerativeModel(TARGET_MODEL)
                         
-                        # 💡 핵심: 마크다운 멸종, [1] 포맷 강제
+                        # 💡 핵심 1. AI 꼼수 차단 프롬프트 (별표 멸종 및 [1] 포맷 강제 지정)
                         q_prompt = f"""
                         당신은 최상위권 학생들을 지도하는 '로지에듀 국어학원'의 수석 출제 위원입니다. 
                         단 하나의 논리적 오류나 복수 정답 논란이 없는 완벽한 문제를 출제하세요.
                         
                         [🚨 치명적 오류 방지 3대 절대 규칙 - 위반 시 처벌 🚨]
-                        1. 마크다운 기호 금지: 텍스트에 별표 기호(*)는 절대로 단 한 개도 쓰지 마세요. 강조할 때는 반드시 작은따옴표('')만 쓰세요.
-                        2. 문제 개수 제한: 지문 1개당 문제는 '최대 5개'까지만 내세요. 6번째 문제부터는 무조건 ===지문=== 을 통째로 다시 적은 후 출제하세요.
-                        3. 선택지 숫자 강제 포맷: 객관식 보기는 절대로 기호 없이 쓰면 안 됩니다. 반드시 맨 앞에 [1], [2], [3], [4], [5] 형태로 숫자를 괄호로 감싸서 적으세요. (이후 파이썬이 동그라미 기호로 자동 변환합니다.)
+                        1. 마크다운 기호 사용 금지: 텍스트에 별표(*) 기호는 절대로 단 1개도 쓰지 마세요. 강조가 필요하면 무조건 작은따옴표('')만 쓰세요.
+                        2. 지문당 문항 수 강제 제한: 지문 1개에 연결되는 문제는 '최대 5개'를 절대 초과할 수 없습니다. 6번째 문제부터는 무조건 ===지문=== 을 통째로 다시 복사해서 새로 적고 문제를 내세요.
+                        3. 선택지 번호 포맷 고정: 5지 선다형의 각 보기는 무조건 맨 앞에 [1], [2], [3], [4], [5] 형태로 대괄호 숫자를 적어서 출력하세요. ① 같은 기호를 직접 쓰거나 기호 없이 글만 쓰면 절대 안 됩니다.
                         
                         [🚨 철저한 자료 독립 원칙 🚨]
                         과거에 출제했던 내용이나 배경지식을 섞지 마세요. 오직 **[입력 자료]** 내용 안에서만 출제하세요.
@@ -778,7 +769,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         
                         [지문 및 문항 배치 규칙]
                         1. 지문의 첫 줄에는 반드시 "■ 다음을 읽고 물음에 답하시오."를 기재하세요.
-                        2. 특수 구분선(===지문===, ===문항===, ===해설===)을 반드시 사용하세요.
+                        2. 특수 구분선(===지문===, ===문항===, ===해설===)을 반드시 사용하여 데이터를 분리하세요.
                         
                         [출력 형식]
                         ===지문===
@@ -816,11 +807,10 @@ elif menu == "🔒 원장님 전용 관리실":
                         
                         for chunk in q_response:
                             full_generated_text += chunk.text
-                            # 💡 스트리밍 렌더링 중에도 즉각 치환
                             display_text = clean_ai_text(full_generated_text)
                             stream_box.markdown(display_text + " ▌")
                             
-                        # 최종 데이터 텍스트 완전 치환 확정
+                        # 💡 스트리밍 종료 후 전체 텍스트 [1] -> ① 강제 100% 치환
                         full_generated_text = clean_ai_text(full_generated_text)
                         stream_box.markdown(full_generated_text)
                         
@@ -846,6 +836,22 @@ elif menu == "🔒 원장님 전용 관리실":
                                             if line.strip().startswith("정답:"): ans_match = line.replace("정답:", "").strip()
                                             if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
                                             if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
+                                        
+                                        # 💡 핵심 2. 최후의 번호 주입 보정 엔진
+                                        if "5지" in type_match or "선다" in type_match or "객관" in type_match or bool(re.match(r'^[1-5]$', ans_match.strip())):
+                                            q_lines = q_str.split('\n')
+                                            valid_lines = [(i, l) for i, l in enumerate(q_lines) if l.strip()]
+                                            
+                                            if len(valid_lines) >= 6: 
+                                                for i in range(5):
+                                                    real_idx = valid_lines[-5 + i][0]
+                                                    text_line = valid_lines[-5 + i][1].strip()
+                                                    
+                                                    # 맨 앞이 동그라미(①~⑤)가 아니면 무조건 강제로 덮어씌움
+                                                    if not re.match(r'^[①②③④⑤]', text_line):
+                                                        clean_l = re.sub(r'^[\-\*\d\)\.\]\[\<>]+\s*', '', text_line)
+                                                        q_lines[real_idx] = f"{['①', '②', '③', '④', '⑤'][i]} {clean_l}"
+                                            q_str = '\n'.join(q_lines)
                                         
                                         parsed_list.append({
                                             "passage": passage_text,
@@ -903,9 +909,11 @@ elif menu == "🔒 원장님 전용 관리실":
             st.markdown("#### 🖨️ PDF 시험지 출력 및 배포")
             
             def generate_exam_pdf(title, q_list, layout_type):
-                passage_font = load_fonts_v4() # 💡 캐시 강제 리셋을 위해 _v4 함수 호출
+                # 💡 핵심 3. 파일 캐시 강제 리셋을 위해 v5 로드 함수 호출
+                passage_font = load_fonts_v5() 
                 buffer = io.BytesIO()
                 
+                # 💡 PDF 여백 추가 안쪽 당김 (테두리 짤림 완전 방지)
                 m_left = 2.0 * cm 
                 m_right = 2.0 * cm
                 m_top = 1.0 * cm   
@@ -975,38 +983,38 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 핵심 2. 글자 증발 버그의 원인(wordWrap='CJK') 완전 삭제 
-                # 💡 핵심 3. 완벽한 수학적 들여쓰기로 테두리 짤림 방지 (leftIndent 15 -> 20 늘림)
-                passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=9, leading=16)
-                question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, leftIndent=20, firstLineIndent=-15)
-                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, leftIndent=20, firstLineIndent=-15)
-                ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15)
+                # 💡 핵심 4. 버그의 주범인 wordWrap='CJK' 완전 삭제 및 폰트 사이즈 10pt 확장
+                passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=10, leading=16)
+                question_style = ParagraphStyle('Question_KR', fontName='BatangFont-Bold', fontSize=10, leading=16, leftIndent=15, firstLineIndent=-15)
+                choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=9.5, leading=15, leftIndent=15, firstLineIndent=-15)
+                ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=10, leading=16, spaceAfter=15)
                 
                 story = []
                 story.append(NextPageTemplate('Later'))
                 
-                # 💡 핵심 4. 파이썬이 강제로 지문을 5개마다 쪼개버리는 하드코딩 엔진 추가
+                # 💡 핵심 5. 파이썬이 출력 전에도 지문이 5문제를 초과하면 강제로 쪼개버림 (무적의 지문 5개 물리 방어막)
                 previous_passage = ""
-                questions_since_last_passage = 0
+                questions_in_current_passage = 0
                 
                 for idx, item in enumerate(q_list):
                     elements_group = []
                     
                     current_passage = item.get("passage", "").strip()
-                    if current_passage:
-                        # 지문 내용이 바뀌었거나, 같은 지문이라도 5문제를 꽉 채웠으면 무조건 지문을 다시 찍어냄!
-                        if current_passage != previous_passage or questions_since_last_passage >= 5:
-                            for p_line in current_passage.split('\n'):
-                                p_line = p_line.strip()
-                                if not p_line: 
-                                    elements_group.append(Spacer(1, 0.2*cm))
-                                    continue
-                                elements_group.append(Paragraph(safe_text(p_line), passage_style))
-                            elements_group.append(Spacer(1, 0.6*cm))
-                            previous_passage = current_passage
-                            questions_since_last_passage = 0
-                            
-                    questions_since_last_passage += 1
+                    
+                    # 지문이 다르거나, 한 지문에 5문제를 다 채웠으면 무조건 지문을 새로 출력함!
+                    if current_passage and (current_passage != previous_passage or questions_in_current_passage >= 5):
+                        for p_line in current_passage.split('\n'):
+                            p_line = p_line.strip()
+                            if not p_line: 
+                                elements_group.append(Spacer(1, 0.2*cm))
+                                continue
+                            # 💡 escape 보호막으로 <보기> 등의 태그 증발 원천 차단
+                            elements_group.append(Paragraph(safe_text(p_line), passage_style))
+                        elements_group.append(Spacer(1, 0.6*cm))
+                        previous_passage = current_passage
+                        questions_in_current_passage = 0 # 0개부터 다시 카운트 시작
+                        
+                    questions_in_current_passage += 1 # 문제 1개 추가
                         
                     raw_text = item['q']
                     for line in raw_text.split('\n'):
@@ -1018,10 +1026,11 @@ elif menu == "🔒 원장님 전용 관리실":
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
                         m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
+                        # 💡 bullet 태그를 제거하고 수학적 공간 들여쓰기(firstLineIndent=-15) 마법 사용
                         if m_q:
                             b_text = safe_text(m_q.group(1))
                             content = safe_text(m_q.group(2))
-                            para_text = f"<b>{b_text}</b> {content}"
+                            para_text = f"{b_text} {content}"
                             elements_group.append(Spacer(1, 0.4*cm))
                             elements_group.append(Paragraph(para_text, question_style))
                             elements_group.append(Spacer(1, 0.2*cm))
