@@ -31,7 +31,7 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ==========================================
-# 📄 PDF 조판 엔진 및 수능 표준 바탕체(명조) 세팅
+# 📄 PDF 조판 엔진 및 네이버 공식 '풀버전' 바탕체 세팅
 # ==========================================
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, KeepTogether, NextPageTemplate, PageBreak
 from reportlab.lib.pagesizes import A4
@@ -45,17 +45,17 @@ from reportlab.lib.units import cm
 def load_fonts():
     import urllib.request
     
-    # 💡 바탕체(명조) 다운로드
-    base_font_path = "NanumMyeongjo.ttf"
+    # 💡 핵심 해결책: 기호가 삭제된 구글 폰트를 버리고, 네이버 공식 '풀버전' TTF 직결 다운로드
+    base_font_path = "NanumMyeongjoFull.ttf"
     if not os.path.exists(base_font_path):
-        url = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Regular.ttf"
+        url = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjo.ttf"
         urllib.request.urlretrieve(url, base_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont', base_font_path))
     
-    # 💡 바탕체(명조) 굵은 글씨 다운로드
-    bold_font_path = "NanumMyeongjoBold.ttf"
+    # 💡 굵은 글씨 풀버전 세팅
+    bold_font_path = "NanumMyeongjoBoldFull.ttf"
     if not os.path.exists(bold_font_path):
-        url_bold = "https://github.com/google/fonts/raw/main/ofl/nanummyeongjo/NanumMyeongjo-Bold.ttf"
+        url_bold = "https://hangeul.pstatic.net/hangeul_static/webfont/NanumMyeongjo/NanumMyeongjoBold.ttf"
         urllib.request.urlretrieve(url_bold, bold_font_path)
     pdfmetrics.registerFont(TTFont('BatangFont-Bold', bold_font_path))
     
@@ -325,7 +325,7 @@ if menu == "💬 24시간 AI 튜터":
     st.link_button("🚨 '찐' 국최 원장님께 직접 질문하기", "https://open.kakao.com/o/sERIEkKi")
 
 # ==========================================
-# 📝 메뉴 2~7
+# 📝 메뉴 2~7 
 # ==========================================
 elif menu == "📝 과제 파일 제출":
     st.subheader(f"📝 [{student_class}] 과제 파일 제출")
@@ -616,7 +616,7 @@ elif menu == "⏳ 실시간 모의고사":
                         
                         if submit_btn:
                             if int(time.time() * 1000) > end_timestamp_ms:
-                                st.error("🚨 제한 시간이 초 초과되어 답안을 제출할 수 없습니다! 원장님께 문의하세요.")
+                                st.error("🚨 제한 시간이 초과되어 답안을 제출할 수 없습니다! 원장님께 문의하세요.")
                             else:
                                 unanswered = [str(idx+1) for idx, a in enumerate(student_answers) if a is None or (isinstance(a, str) and not a.strip())]
                                 if unanswered: st.error(f"⚠️ 풀지 않은 문항: **{', '.join(unanswered)}번**")
@@ -820,7 +820,7 @@ elif menu == "🔒 원장님 전용 관리실":
             st.info("현재 등록된 원생이 없습니다.")
 
     # ==========================================
-    # 🪄 탭 8: AI 문제 출제기 (🔥 버그 퇴치 및 완벽 내어쓰기 조판)
+    # 🪄 탭 8: AI 문제 출제기 (🔥 기호 보존 마스터)
     # ==========================================
     with tab8:
         st.markdown("#### 🪄 로지에듀 전용 AI 문제 출제기")
@@ -894,7 +894,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         ■ 다음을 읽고 물음에 답하시오.
                         (지문 내용 전체...)
                         ===문항===
-                        1. 발문과 내용...
+                        1. 발문과 내용... (㉠ 같은 기호 자유롭게 사용)
                         ① 선택지 1
                         ② 선택지 2
                         ③ 선택지 3
@@ -954,6 +954,7 @@ elif menu == "🔒 원장님 전용 관리실":
                                             if line.strip().startswith("난이도:"): diff_match = line.replace("난이도:", "").strip()
                                             if line.strip().startswith("유형:"): type_match = line.replace("유형:", "").strip()
                                         
+                                        # 최강 보정 엔진: 선택지 번호 누락 시 강제 주입
                                         if "5지" in type_match or "선다" in type_match or "객관" in type_match or bool(re.match(r'^[1-5]$', ans_match.strip())):
                                             q_lines = q_str.split('\n')
                                             valid_lines = [(i, l) for i, l in enumerate(q_lines) if l.strip()]
@@ -1096,9 +1097,8 @@ elif menu == "🔒 원장님 전용 관리실":
                 template_ans = PageTemplate(id='Ans', frames=[f_ans], onPage=header_ans)
                 doc.addPageTemplates([template_first, template_later, template_ans])
 
-                # 💡 핵심: wordWrap='CJK'를 삭제하여 한글 기호 증발 버그 원천 차단!
-                # 💡 그리고 bullet 태그를 쓰지 않고, 수학적 내어쓰기(firstLineIndent=-15)를 사용하여 기호 실종 방지!
-                passage_style = ParagraphStyle('Passage_KR', fontName=passage_font, fontSize=9, leading=16)
+                # 💡 핵심 2. 기호 증발의 주범인 wordWrap 옵션 삭제! 수학적 들여쓰기 강제 고정
+                passage_style = ParagraphStyle('Passage_KR', fontName='BatangFont', fontSize=9, leading=16)
                 question_style = ParagraphStyle('Question_KR', fontName='BatangFont', fontSize=9, leading=16, leftIndent=15, firstLineIndent=-15)
                 choice_style = ParagraphStyle('Choice_KR', fontName='BatangFont', fontSize=8.5, leading=14, leftIndent=15, firstLineIndent=-15)
                 ans_style = ParagraphStyle('Ans_KR', fontName='BatangFont', fontSize=9, leading=16, spaceAfter=15)
@@ -1118,6 +1118,7 @@ elif menu == "🔒 원장님 전용 관리실":
                             if not p_line: 
                                 elements_group.append(Spacer(1, 0.2*cm))
                                 continue
+                            # 💡 escape 처리로 <보기> 등의 태그 증발 방지
                             elements_group.append(Paragraph(safe_text(p_line), passage_style))
                         elements_group.append(Spacer(1, 0.6*cm))
                         previous_passage = current_passage
@@ -1132,7 +1133,7 @@ elif menu == "🔒 원장님 전용 관리실":
                         m_q = re.match(r'^(\d+\.)\s+(.*)', line)
                         m_c = re.match(r'^([①②③④⑤])\s+(.*)', line)
                         
-                        # 💡 bullet 태그를 제거하고 단순 텍스트로 합쳐서 수학적 내어쓰기 발동!
+                        # 💡 bullet 태그를 제거하고 단순 텍스트로 합친 후 CSS적인 indent 마법 적용
                         if m_q:
                             b_text = safe_text(m_q.group(1))
                             content = safe_text(m_q.group(2))
