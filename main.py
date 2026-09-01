@@ -32,13 +32,25 @@ if firebase_key_str:
     except Exception as e:
         print("Firebase Error:", e)
 
-# AI 세팅 (키 이름 상관없이 작동)
+# AI 세팅 (자동 모델 탐색 엔진 탑재)
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 404 에러의 원인 해결: 가장 안정적인 'gemini-pro'로 완벽 교체
-    model = genai.GenerativeModel('gemini-pro')
+    try:
+        # 💡 404 에러 원천 차단: 구글에 현재 사용 가능한 모델 명단을 요청해서 자동으로 연결
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                valid_models.append(m.name.replace("models/", ""))
+        
+        if valid_models:
+            # gemini-1.5-flash가 있으면 최우선, 없으면 허용된 첫 번째 모델 자동 선택
+            target_model = next((m for m in valid_models if '1.5-flash' in m), valid_models[0])
+            model = genai.GenerativeModel(target_model)
+            print(f"✅ AI 연결 성공: {target_model}")
+    except Exception as e:
+        print("AI 초기화 실패:", e)
 
 class AuthRequest(BaseModel):
     student_class: str
@@ -75,12 +87,12 @@ def authenticate(req: AuthRequest):
 
 @app.post("/api/chat")
 def chat_with_ai(req: ChatRequest):
-    if model is None: return {"success": False, "reply": "AI 연결 오류"}
+    if model is None: return {"success": False, "reply": "AI 연결 오류. 렌더 서버가 구글 모델을 찾지 못했습니다."}
     try:
         res = model.generate_content(req.prompt)
         return {"success": True, "reply": res.text}
     except Exception as e:
-        return {"success": False, "reply": str(e)}
+        return {"success": False, "reply": f"AI 응답 오류: {str(e)}"}
 
 @app.get("/api/admin/students")
 def get_students():
@@ -108,7 +120,6 @@ def submit_omr(req: OMRRequest):
     })
     return {"success": True, "score": score, "wrongs": wrongs}
 
-# 💡 자체 내장된 네이티브 문제 출제 엔진
 @app.post("/api/admin/generate")
 async def generate_questions(
     q_mode: str = Form(...),
@@ -150,7 +161,6 @@ async def generate_questions(
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
-# 💡 생성된 문제를 DB 시험장으로 쏘아주는 파서
 @app.post("/api/admin/deploy_exam")
 def deploy_generated_exam(req: DeployExamRequest):
     if db is None: return {"success": False, "detail": "DB 연결 오류"}
