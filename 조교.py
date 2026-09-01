@@ -12,19 +12,6 @@ from datetime import datetime, timedelta
 import io
 from xml.sax.saxutils import escape  
 
-# ==========================================
-# 🚨 서버 필수 부품 강제 설치
-# ==========================================
-@st.cache_resource
-def ensure_dependencies():
-    try:
-        import google.generativeai
-        import firebase_admin
-        import reportlab
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "requests", "google-generativeai", "firebase-admin", "reportlab"])
-
-ensure_dependencies()
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials
@@ -37,13 +24,12 @@ from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont # 💡 인터넷 다운로드를 버리고 완벽한 내장 폰트 사용
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont 
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
 @st.cache_resource
 def load_fonts_v5():
-    # 💡 반쪽짜리 인터넷 폰트(TTF) 다운로드 방식을 전면 폐기
     # PDF 공식 규격인 한글 내장 폰트를 사용하여 ①, ㉠ 기호 증발을 100% 차단합니다.
     pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium')) # 수능 표준 바탕(명조)체
     pdfmetrics.registerFont(UnicodeCIDFont('HYGothic-Medium'))    # 강조용 고딕체
