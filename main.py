@@ -32,7 +32,7 @@ if firebase_key_str:
     except Exception as e:
         print("Firebase Error:", e)
 
-# AI 모델: 서버가 에러창에서 대놓고 요구한 'gemini-3.6-flash'로 영구 고정
+# AI 설정
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 model = None
 if gemini_key:
@@ -51,13 +51,6 @@ class ChatRequest(BaseModel):
     student_name: str
     prompt: str
 
-class OMRRequest(BaseModel):
-    school: str
-    grade: str
-    student_name: str
-    task_name: str
-    answers: list
-
 class DeployExamRequest(BaseModel):
     title: str
     target_group: str
@@ -65,6 +58,20 @@ class DeployExamRequest(BaseModel):
 
 class BulkStudentRequest(BaseModel):
     students: list
+
+# 💡 실시간 모의고사용 데이터 규격
+class ExamSetupRequest(BaseModel):
+    title: str
+    time_limit: int
+    pdf_data: str
+    answer_key: str
+
+class ExamSubmitRequest(BaseModel):
+    school: str
+    grade: str
+    student_name: str
+    title: str
+    answers: list
 
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
@@ -123,53 +130,32 @@ def add_students_bulk(req: BulkStudentRequest):
     batch.commit()
     return {"success": True}
 
-@app.delete("/api/admin/student/{name}")
-def delete_student(name: str):
-    if db is None: return {"success": False}
-    db.collection("students").document(name).delete()
-    return {"success": True}
-
 @app.get("/api/admin/reports")
 def get_reports():
     if db is None: return {"success": False, "reports": []}
     return {"success": True, "reports": [d.to_dict() for d in db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(50).stream()]}
 
-@app.post("/api/omr/submit")
-def submit_omr(req: OMRRequest):
-    if db is None: return {"success": False, "detail": "DB 오류"}
-    score = 100
-    wrongs = []
-    for i, ans in enumerate(req.answers):
-        if not ans.strip():
-            score -= 20; wrongs.append(i+1)
-    if score < 0: score = 0
-    db.collection("reports").add({
-        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "student_name": req.student_name, "school": req.school, "grade": req.grade,
-        "task_name": req.task_name, "type": "OMR 채점", "score": score, "wrongs": wrongs
-    })
-    return {"success": True, "score": score, "wrongs": wrongs}
-
-# 💡 AI 지식베이스 추가 로직 업그레이드 (PDF 문서 읽기 지원)
+# 💡 수정: 여러 개의 파일을 한 번에 처리하도록 List 적용
 @app.post("/api/admin/knowledge")
 async def add_knowledge(
     title: str = Form(...), 
     content: str = Form(""), 
-    file: Optional[UploadFile] = File(None)
+    files: Optional[List[UploadFile]] = File(None)
 ):
     if db is None: return {"success": False, "detail": "DB 연결 오류"}
     
     final_content = content
-    if file and file.filename:
-        try:
-            file_bytes = await file.read()
-            mime_type = file.content_type or "application/pdf"
-            # AI가 첨부문서를 통째로 읽어서 텍스트로 변환하여 덧붙임
-            res = model.generate_content(["이 문서의 모든 텍스트 내용과 핵심 지식을 빠짐없이 추출해서 정리해줘.", {"mime_type": mime_type, "data": file_bytes}])
-            final_content += f"\n\n[첨부문서 분석 내용]\n{res.text}"
-        except Exception as e:
-            return {"success": False, "detail": f"파일 분석 오류: {str(e)}"}
-            
+    if files:
+        for file in files:
+            if file.filename:
+                try:
+                    file_bytes = await file.read()
+                    mime_type = file.content_type or "application/pdf"
+                    res = model.generate_content(["이 문서의 모든 텍스트 내용과 핵심 지식을 빠짐없이 추출해서 정리해줘.", {"mime_type": mime_type, "data": file_bytes}])
+                    final_content += f"\n\n[첨부문서({file.filename}) 분석 내용]\n{res.text}"
+                except Exception as e:
+                    print(f"파일 분석 오류: {e}")
+                    
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
 
@@ -240,20 +226,13 @@ def deploy_generated_exam(req: DeployExamRequest):
                     ans, diff, typ = "", "중난이도", "단답형"
                     for line in a_str.split('\n'):
                         if line.startswith("정답:"): ans = line.replace("정답:", "").strip()
-                        if line.startswith("난이도:"): diff = line.replace("난이도:", "").strip()
-                        if line.startswith("유형:"): typ = line.replace("유형:", "").strip()
-                    
                     q_arr.append(f"{passage}\n\n{q_str}")
                     ans_arr.append(ans)
-                    diff_arr.append(diff)
-                    type_arr.append(typ)
                     a_arr.append(f"▶️ 정답 및 해설\n{a_str}")
 
     db.collection("online_exams").document(req.title).set({
         "제목": req.title, "대상반": req.target_group,
         "문제지": "\n\n".join(q_arr), "해설지": "\n\n".join(a_arr),
-        "문항수": len(q_arr), "문항배열": q_arr, "정답배열": ans_arr,
-        "난이도배열": diff_arr, "유형배열": type_arr,
         "출제일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     
@@ -262,5 +241,68 @@ def deploy_generated_exam(req: DeployExamRequest):
         "content": f"문제:\n{chr(10).join(q_arr)}\n\n해설:\n{chr(10).join(a_arr)}",
         "created_at": datetime.now()
     })
-    
     return {"success": True}
+
+# 💡 실시간 모의고사 개설 (원장님 -> DB 저장)
+@app.post("/api/admin/set_exam")
+def set_exam(req: ExamSetupRequest):
+    if db:
+        db.collection("settings").document("current_exam").set({
+            "title": req.title,
+            "time_limit": req.time_limit,
+            "pdf_data": req.pdf_data,
+            "answer_key": req.answer_key,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+    return {"success": True}
+
+# 💡 실시간 모의고사 입장 (학생 -> DB 호출)
+@app.get("/api/exam/current")
+def get_current_exam():
+    if db:
+        doc = db.collection("settings").document("current_exam").get()
+        if doc.exists:
+            return {"success": True, "exam": doc.to_dict()}
+    return {"success": False, "detail": "현재 열려있는 실시간 모의고사가 없습니다."}
+
+# 💡 실시간 모의고사 제출 (정답 비교 및 채점)
+@app.post("/api/exam/submit")
+def submit_exam(req: ExamSubmitRequest):
+    if db is None: return {"success": False}
+    doc = db.collection("settings").document("current_exam").get()
+    score = 0
+    wrongs = []
+    
+    if doc.exists:
+        data = doc.to_dict()
+        # 원장님이 입력한 정답(예: 3,1,4,2)을 배열로 변환
+        correct_answers = [ans.strip() for ans in data.get("answer_key", "").split(",") if ans.strip()]
+        total = len(correct_answers)
+        correct_count = 0
+        
+        # 학생 답안과 정답 비교
+        for i in range(min(len(req.answers), total)):
+            if str(req.answers[i]).strip() == str(correct_answers[i]).strip():
+                correct_count += 1
+            else:
+                wrongs.append(i+1)
+        
+        # 제출 안 한 나머지 문제 틀림 처리
+        if len(req.answers) < total:
+            for i in range(len(req.answers), total):
+                wrongs.append(i+1)
+
+        if total > 0: score = int((correct_count / total) * 100)
+    
+    # 성적 장부에 기록
+    db.collection("reports").add({
+        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "student_name": req.student_name,
+        "school": req.school,
+        "grade": req.grade,
+        "task_name": req.title,
+        "type": "실시간 모의고사",
+        "score": score,
+        "wrongs": wrongs
+    })
+    return {"success": True, "score": score, "wrongs": wrongs}
