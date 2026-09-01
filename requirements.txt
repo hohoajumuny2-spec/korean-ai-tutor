@@ -1,5 +1,6 @@
-streamlit
-google-generativeai
+fastapi
+uvicorn
+pydantic
 firebase-admin
-reportlab
-requests
+google-generativeai
+python-multipart
