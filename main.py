@@ -34,17 +34,12 @@ if firebase_key_str:
     except Exception as e:
         print("Firebase Error:", e)
 
+# 💡 확실한 정답: 서버가 에러창에서 대놓고 요구한 'gemini-3.6-flash'로 영구 고정
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    try:
-        valid_models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        if valid_models:
-            target_model = next((m for m in valid_models if '1.5-flash' in m), valid_models[0])
-            model = genai.GenerativeModel(target_model)
-    except Exception as e:
-        print("AI 초기화 실패:", e)
+    model = genai.GenerativeModel('gemini-3.6-flash')
 
 # ==========================================
 # 데이터 모델
@@ -105,7 +100,6 @@ def authenticate(req: AuthRequest):
 def chat_with_ai(req: ChatRequest):
     if model is None: return {"success": False, "reply": "AI 연결 오류."}
     
-    # 💡 4번 기능: AI가 학습한 원장님의 자료를 먼저 검색하여 프롬프트에 주입
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
@@ -195,7 +189,6 @@ async def generate_questions(
     if model is None: return {"success": False, "detail": "AI 연결 안 됨"}
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     
-    # 💡 1번 기능: 요청하신 5단계 난이도별 출제 알고리즘 완벽 반영
     prompt = f"""
     당신은 로지에듀 국어학원의 수석 출제 위원입니다. 주어진 텍스트를 바탕으로 완벽한 문제를 출제하세요.
 
@@ -263,7 +256,6 @@ def deploy_generated_exam(req: DeployExamRequest):
                     type_arr.append(typ)
                     a_arr.append(f"▶️ 정답 및 해설\n{a_str}")
 
-    # 온라인 시험장에 배포
     db.collection("online_exams").document(req.title).set({
         "제목": req.title, "대상반": req.target_group,
         "문제지": "\n\n".join(q_arr), "해설지": "\n\n".join(a_arr),
@@ -272,7 +264,6 @@ def deploy_generated_exam(req: DeployExamRequest):
         "출제일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     
-    # 💡 4번 기능: 출제한 문제를 AI가 자동으로 '학습(지식베이스)'하도록 저장
     db.collection("knowledge").add({
         "title": f"[기출] {req.title}",
         "content": f"문제:\n{chr(10).join(q_arr)}\n\n해설:\n{chr(10).join(a_arr)}",
