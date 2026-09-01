@@ -40,10 +40,12 @@ else:
     db = None
 
 # 2. 구글 제미나이(AI) 연결 설정
-gemini_key = os.environ.get("GEMINI_API_KEY")
+# 💡 수정됨: GOOGLE_API_KEY 또는 GEMINI_API_KEY 어떤 이름이든 무조건 찾아내도록 변경
+gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 💡 핵심 수정: 에러를 뿜던 모델 대신 가장 안정적인 1.0-pro 모델로 완벽 교체
+    model = genai.GenerativeModel('gemini-1.0-pro')
 else:
     model = None
 
@@ -103,7 +105,7 @@ def authenticate(req: AuthRequest):
 @app.post("/api/chat")
 def chat_with_ai(req: ChatRequest):
     if model is None:
-        return {"success": False, "reply": "AI가 연결되지 않았습니다."}
+        return {"success": False, "reply": "AI가 연결되지 않았습니다. 렌더 서버 환경변수에 GOOGLE_API_KEY를 확인하세요."}
     try:
         response = model.generate_content(req.prompt)
         return {"success": True, "reply": response.text}
