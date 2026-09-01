@@ -40,12 +40,11 @@ else:
     db = None
 
 # 2. 구글 제미나이(AI) 연결 설정
-# 💡 수정됨: GOOGLE_API_KEY 또는 GEMINI_API_KEY 어떤 이름이든 무조건 찾아내도록 변경
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 핵심 수정: 에러를 뿜던 모델 대신 가장 안정적인 1.0-pro 모델로 완벽 교체
-    model = genai.GenerativeModel('gemini-1.0-pro')
+    # 💡 404 에러 해결: 구글이 100% 인식하는 'gemini-pro' 모델로 고정
+    model = genai.GenerativeModel('gemini-pro')
 else:
     model = None
 
