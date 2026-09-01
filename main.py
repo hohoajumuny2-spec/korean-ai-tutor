@@ -37,7 +37,8 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 💡 404 에러의 원인 해결: 가장 안정적인 'gemini-pro'로 완벽 교체
+    model = genai.GenerativeModel('gemini-pro')
 
 class AuthRequest(BaseModel):
     student_class: str
@@ -107,7 +108,7 @@ def submit_omr(req: OMRRequest):
     })
     return {"success": True, "score": score, "wrongs": wrongs}
 
-# 💡 새롭게 추가된 네이티브 문제 출제 엔진
+# 💡 자체 내장된 네이티브 문제 출제 엔진
 @app.post("/api/admin/generate")
 async def generate_questions(
     q_mode: str = Form(...),
