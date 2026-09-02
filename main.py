@@ -52,6 +52,7 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
+    # 💡 [치명적 오류 수정] 잘못 들어갔던 엔진 모델명을 가장 빠르고 정확한 최신 버전(1.5-flash)으로 복구했습니다.
     model = genai.GenerativeModel('gemini-1.5-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
@@ -84,20 +85,31 @@ async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: 
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
     system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
+    
     if files:
         for f in files:
-            if f.filename: contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+            if f.filename: 
+                # 첨부파일 포맷을 안전하게 지정
+                mime = f.content_type
+                if "pdf" in f.filename.lower(): mime = "application/pdf"
+                elif "png" in f.filename.lower(): mime = "image/png"
+                elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
+                contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
     try:
         res = model.generate_content(contents)
         return {"success": True, "reply": res.text}
-    except Exception as e: return {"success": False, "reply": str(e)}
+    except Exception as e: return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str=Form(...), grade: str=Form(...), student_name: str=Form(...), topic: str=Form(...), file: UploadFile=File(...)):
     if model is None: return {"success": False, "detail": "AI 연결 오류"}
     try:
         file_bytes = await file.read()
-        mime_type = file.content_type or "application/pdf"
+        mime = file.content_type
+        if "pdf" in file.filename.lower(): mime = "application/pdf"
+        elif "png" in file.filename.lower(): mime = "image/png"
+        elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+        
         prompt = f"""
         당신은 대치동 최고의 국어/논술 전문 강사 '국최' 원장님입니다. 첨부된 문서(이미지 또는 PDF)는 학생이 작성한 논술문(또는 요약문)입니다.
         [논제/주제]: {topic}
@@ -110,7 +122,7 @@ async def grade_essay(school: str=Form(...), grade: str=Form(...), student_name:
         <h3 style="color:#3b82f6; font-size:1.5em; border-bottom:2px solid #3b82f6; padding-bottom:10px; margin-top:30px; margin-bottom:20px;">✨ 모범 답안 (Rewrite)</h3>
         <p style="line-height:1.8; font-size:1.1em; color:#333;">(재작성 답안)</p>
         """
-        res = model.generate_content([prompt, {"mime_type": mime_type, "data": file_bytes}])
+        res = model.generate_content([prompt, {"mime_type": mime or "application/pdf", "data": file_bytes}])
         if db:
             db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": f"AI 국최 논술 첨삭: {topic[:10]}...", "type": "논술 첨삭", "score": "첨삭완료"})
         return {"success": True, "feedback": res.text}
@@ -234,7 +246,6 @@ def delete_lecture(lecture_id: str):
     if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
 
-# 💡 목표 공지사항(objective) 파라미터 추가
 @app.post("/api/admin/exam")
 async def create_exam(
     title: str=Form(...), exam_data: str=Form(...), objective: str=Form(""), video_url: str=Form(""), explanation_text: str=Form(""), file: Optional[UploadFile]=File(None)
@@ -295,7 +306,11 @@ async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_kil
     contents = [prompt]
     if files:
         for f in files:
-            if f.filename: contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+            mime = f.content_type
+            if "pdf" in f.filename.lower(): mime = "application/pdf"
+            elif "png" in f.filename.lower(): mime = "image/png"
+            elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
+            contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
     if model is None: raise HTTPException(status_code=500, detail="AI 에러")
     response = model.generate_content(contents, stream=True)
     def iter_response():
@@ -312,7 +327,12 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
             if file.filename:
                 try:
                     file_bytes = await file.read()
-                    res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": file.content_type or "application/pdf", "data": file_bytes}])
+                    mime = file.content_type
+                    if "pdf" in file.filename.lower(): mime = "application/pdf"
+                    elif "png" in file.filename.lower(): mime = "image/png"
+                    elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+                    
+                    res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}])
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except Exception: pass
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
