@@ -30,8 +30,7 @@ app.add_middleware(
 @app.get("/uploads/{folder}/{filename}")
 def get_upload_file(folder: str, filename: str):
     filepath = f"uploads/{folder}/{filename}"
-    if os.path.exists(filepath):
-        return FileResponse(filepath)
+    if os.path.exists(filepath): return FileResponse(filepath)
     raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
 firebase_key_str = os.environ.get("FIREBASE_KEY")
@@ -40,11 +39,9 @@ if firebase_key_str:
     try:
         cred_dict = json.loads(firebase_key_str)
         cred = credentials.Certificate(cred_dict)
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
+        if not firebase_admin._apps: firebase_admin.initialize_app(cred)
         db = firestore.client()
-    except Exception as e:
-        print("Firebase Error:", e)
+    except Exception as e: print("Firebase Error:", e)
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 model = None
@@ -58,14 +55,10 @@ class AuthRequest(BaseModel):
     student_name: str
     admin_password: str = ""
 
-class BulkStudentRequest(BaseModel):
-    students: list
-
-# 💡 개별 학생 등록용 모델
-class SingleStudentRequest(BaseModel):
-    school: str
-    grade: str
-    name: str
+class BulkStudentRequest(BaseModel): students: list
+class SingleStudentRequest(BaseModel): school: str; grade: str; name: str
+class LectureRequest(BaseModel): title: str; desc: str; video_url: str
+class ExamSubmitRequest(BaseModel): school: str; grade: str; student_name: str; title: str; answers: list
 
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
@@ -77,15 +70,11 @@ def authenticate(req: AuthRequest):
     doc = db.collection("students").document(req.student_name).get()
     if doc.exists:
         data = doc.to_dict()
-        if data.get("school") == req.school and data.get("grade") == req.grade:
-            return {"success": True, "is_admin": False}
+        if data.get("school") == req.school and data.get("grade") == req.grade: return {"success": True, "is_admin": False}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
 @app.post("/api/chat")
-async def chat_with_ai(
-    school: str = Form(""), grade: str = Form(""), student_name: str = Form(""),
-    prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)
-):
+async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: str=Form(""), prompt: str=Form(...), files: Optional[List[UploadFile]]=File(None)):
     if model is None: return {"success": False, "reply": "AI 연결 오류."}
     knowledge_base = ""
     if db:
@@ -95,14 +84,58 @@ async def chat_with_ai(
     contents = [system_prompt]
     if files:
         for f in files:
-            if f.filename:
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+            if f.filename: contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
     try:
         res = model.generate_content(contents)
         return {"success": True, "reply": res.text}
-    except Exception as e:
-        return {"success": False, "reply": str(e)}
+    except Exception as e: return {"success": False, "reply": str(e)}
 
+@app.post("/api/essay/grade")
+async def grade_essay(
+    school: str = Form(...), grade: str = Form(...), student_name: str = Form(...),
+    topic: str = Form(...), file: UploadFile = File(...)
+):
+    if model is None: return {"success": False, "detail": "AI 연결 오류"}
+    try:
+        file_bytes = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+        
+        prompt = f"""
+        당신은 대치동 최고의 국어/논술 전문 강사 최준용 원장님입니다.
+        첨부된 이미지는 학생이 손글씨로 직접 작성한 논술문(또는 요약문)입니다.
+        
+        [논제/주제]: {topic}
+        
+        다음 4가지 형식에 맞춰 학생에게 직접 말하듯 다정하면서도 예리하게 첨삭해 주세요.
+        
+        1. 📝 작성 내용 (텍스트 변환)
+        - 학생의 손글씨를 그대로 타이핑해 줍니다. (판독이 도저히 불가능한 글자는 [판독 불가]로 표기하세요)
+        
+        2. 📊 총평 및 점수
+        - 논리성, 표현력, 맞춤법, 주제 적합성을 종합하여 100점 만점으로 점수를 매기고, 전체적인 총평을 작성해 주세요.
+        
+        3. 🔍 상세 첨삭 (문장별 교정)
+        - 어색한 문장, 맞춤법 오류, 논리적 비약이 있는 부분을 콕 집어서 어떻게 고쳐야 할지 설명해 주세요.
+        
+        4. ✨ 모범 답안
+        - 원장님의 세련되고 완벽한 문장력으로 해당 논제에 대한 모범 답안을 재작성(Rewrite)하여 제시해 주세요.
+        """
+        res = model.generate_content([prompt, {"mime_type": mime_type, "data": file_bytes}])
+        
+        if db:
+            db.collection("reports").add({
+                "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "student_name": student_name, "school": school, "grade": grade,
+                "task_name": f"논술/요약 첨삭: {topic[:10]}...", "type": "논술 첨삭", "score": "첨삭완료"
+            })
+            
+        return {"success": True, "feedback": res.text}
+    except Exception as e:
+        return {"success": False, "detail": str(e)}
+
+# ==========================================
+# 💡 학생 명단 조회, 등록 및 삭제 API
+# ==========================================
 @app.get("/api/admin/students")
 def get_students():
     if db is None: return {"success": False, "students": []}
@@ -118,14 +151,17 @@ def add_students_bulk(req: BulkStudentRequest):
     batch.commit()
     return {"success": True}
 
-# 💡 개별 학생 수동 등록 API
 @app.post("/api/admin/student")
 def add_single_student(req: SingleStudentRequest):
     if db is None: return {"success": False}
     db.collection("students").document(req.name).set({"school": req.school, "grade": req.grade})
     return {"success": True}
 
-# 💡 누적 통계를 위해 리포트 호출 한도를 늘림
+@app.delete("/api/admin/student/{name}")
+def delete_student(name: str):
+    if db: db.collection("students").document(name).delete()
+    return {"success": True}
+
 @app.get("/api/admin/reports")
 def get_reports():
     if db is None: return {"success": False, "reports": []}
@@ -150,7 +186,7 @@ def get_homeworks():
     return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in docs]}
 
 @app.post("/api/homework/submit")
-async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), file: UploadFile = File(...)):
+async def submit_homework(school: str=Form(...), grade: str=Form(...), student_name: str=Form(...), title: str=Form(...), file: UploadFile=File(...)):
     if db is None: return {"success": False}
     filename = f"{uuid.uuid4()}_{file.filename}"
     with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
@@ -160,7 +196,7 @@ async def submit_homework(school: str = Form(...), grade: str = Form(...), stude
     return {"success": True, "answer_text": ans_data.get("answer_text", ""), "answer_file": ans_data.get("answer_file", "")}
 
 @app.post("/api/admin/board")
-async def create_board_post(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
+async def create_board_post(title: str=Form(...), desc: str=Form(""), file: Optional[UploadFile]=File(None)):
     if db is None: return {"success": False}
     file_url = ""
     if file and file.filename:
@@ -181,11 +217,6 @@ def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
-class LectureRequest(BaseModel):
-    title: str
-    desc: str
-    video_url: str
-
 @app.post("/api/admin/lecture")
 def create_lecture(req: LectureRequest):
     if db is None: return {"success": False}
@@ -198,7 +229,6 @@ def get_lectures():
     docs = db.collection("lectures").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "lectures": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 해설 강의 삭제 API 추가
 @app.delete("/api/admin/lecture/{lecture_id}")
 def delete_lecture(lecture_id: str):
     if db: db.collection("lectures").document(lecture_id).delete()
@@ -206,11 +236,7 @@ def delete_lecture(lecture_id: str):
 
 @app.post("/api/admin/exam")
 async def create_exam(
-    title: str = Form(...), 
-    exam_data: str = Form(...),
-    video_url: str = Form(""),
-    explanation_text: str = Form(""),
-    file: Optional[UploadFile] = File(None)
+    title: str=Form(...), exam_data: str=Form(...), video_url: str=Form(""), explanation_text: str=Form(""), file: Optional[UploadFile]=File(None)
 ):
     if db is None: return {"success": False}
     pdf_url = ""
@@ -218,11 +244,9 @@ async def create_exam(
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/exams/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         pdf_url = f"/uploads/exams/{filename}"
-
     db.collection("exams").document(title).set({
         "title": title, "exam_data": exam_data, "pdf_url": pdf_url, 
-        "video_url": video_url, "explanation_text": explanation_text,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     return {"success": True}
 
@@ -237,23 +261,13 @@ def delete_exam(title: str):
     if db: db.collection("exams").document(title).delete()
     return {"success": True}
 
-class ExamSubmitRequest(BaseModel):
-    school: str
-    grade: str
-    student_name: str
-    title: str
-    answers: list
-
 @app.post("/api/exam/submit")
 def submit_exam(req: ExamSubmitRequest):
     if db is None: return {"success": False}
     doc = db.collection("exams").document(req.title).get()
     
-    actual_score = 0
-    wrong_by_diff = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}
-    wrongs = []
-    missed_ab_score = 0
-    missed_c_score = 0
+    actual_score = 0; wrong_by_diff = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}
+    wrongs = []; missed_ab_score = 0; missed_c_score = 0
     
     if doc.exists:
         data = doc.to_dict()
@@ -266,13 +280,10 @@ def submit_exam(req: ExamSubmitRequest):
             score = int(q.get("score", 0))
             diff = q.get("diff", "C")
             
-            if student_ans == correct_ans and student_ans != "":
-                actual_score += score
+            if student_ans == correct_ans and student_ans != "": actual_score += score
             else:
                 wrongs.append(i+1)
-                if diff in wrong_by_diff:
-                    wrong_by_diff[diff] += 1
-                
+                if diff in wrong_by_diff: wrong_by_diff[diff] += 1
                 if diff in ["A", "B"]: missed_ab_score += score
                 elif diff == "C": missed_c_score += score
                     
@@ -286,21 +297,16 @@ def submit_exam(req: ExamSubmitRequest):
     })
     
     return {
-        "success": True, 
-        "score": actual_score, 
-        "wrongs": wrongs,
-        "wrong_by_diff": wrong_by_diff,
-        "potential_ab": potential_ab,
-        "potential_abc": potential_abc,
-        "video_url": data.get("video_url", ""),
-        "explanation_text": data.get("explanation_text", "")
+        "success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff,
+        "potential_ab": potential_ab, "potential_abc": potential_abc,
+        "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")
     }
 
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
-    q_mode: str = Form(...), q_types: str = Form(...),
-    cnt_killer: int = Form(0), cnt_semi: int = Form(0), cnt_high: int = Form(0), cnt_mid: int = Form(0), cnt_low: int = Form(0),
-    q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
+    q_mode: str=Form(...), q_types: str=Form(...),
+    cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0),
+    q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
@@ -316,7 +322,7 @@ async def generate_stream(
     return StreamingResponse(iter_response(), media_type="text/plain")
 
 @app.post("/api/admin/knowledge")
-async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
+async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     if db is None: return {"success": False}
     final_content = content
     if files:
