@@ -30,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 💡 텔레그램 알림 발송 엔진
+# 💡 텔레그램 알림 엔진
 def send_telegram_msg(text: str):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -43,7 +43,7 @@ def send_telegram_msg(text: str):
     except Exception as e:
         print("Telegram Error:", e)
 
-# 💡 웹소켓 (실시간 라이브 통신) 매니저
+# 💡 실시간 라이브 통신 (웹소켓)
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -74,7 +74,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            await manager.broadcast(data, room_id) # 원장님의 필기/메시지를 학생들에게 실시간 전송
+            await manager.broadcast(data, room_id)
     except WebSocketDisconnect:
         manager.disconnect(websocket, room_id)
 
@@ -100,7 +100,8 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # 💡 404 에러 수정을 위한 최신 모델명 강제 지정
+    model = genai.GenerativeModel('gemini-3.6-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
@@ -128,7 +129,6 @@ def authenticate(req: AuthRequest):
 async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: str=Form(""), prompt: str=Form(...), files: Optional[List[UploadFile]]=File(None)):
     if model is None: return {"success": False, "reply": "AI 연결 오류."}
     
-    # 💡 학생 질문 발생 시 텔레그램 알림 전송
     send_telegram_msg(f"💬 [질문 도착]\n- 학생: {school} {grade} {student_name}\n- 질문: {prompt}")
 
     knowledge_base = ""
@@ -301,11 +301,10 @@ def delete_lecture(lecture_id: str):
     if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
 
-# 💡 특정 학생 지정을 위한 allowed_students 배열 추가
 @app.post("/api/admin/exam")
 async def create_exam(
     title: str=Form(...), exam_data: str=Form(...), objective: str=Form(""), 
-    allowed_students: str=Form("all"), # 콤마로 구분된 학생 이름
+    allowed_students: str=Form("all"),
     video_url: str=Form(""), explanation_text: str=Form(""), file: Optional[UploadFile]=File(None)
 ):
     if db is None: return {"success": False}
@@ -363,7 +362,6 @@ def submit_exam(req: ExamSubmitRequest):
     
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 AI 쌍둥이 문제 생성 엔진
 @app.post("/api/exam/twin")
 async def generate_twin(req: TwinRequest):
     if model is None: return {"success": False}
