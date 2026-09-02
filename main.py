@@ -3,7 +3,9 @@ import json
 import shutil
 import uuid
 import mimetypes
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+import urllib.request
+import urllib.parse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +30,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 💡 텔레그램 알림 발송 엔진
+def send_telegram_msg(text: str):
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id: return
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print("Telegram Error:", e)
+
+# 💡 웹소켓 (실시간 라이브 통신) 매니저
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections = {}
+
+    async def connect(self, websocket: WebSocket, room_id: str):
+        await websocket.accept()
+        if room_id not in self.active_connections:
+            self.active_connections[room_id] = []
+        self.active_connections[room_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, room_id: str):
+        if room_id in self.active_connections:
+            try:
+                self.active_connections[room_id].remove(websocket)
+            except ValueError: pass
+
+    async def broadcast(self, message: str, room_id: str):
+        if room_id in self.active_connections:
+            for connection in self.active_connections[room_id]:
+                try: await connection.send_text(message)
+                except: pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/exam/{room_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str):
+    await manager.connect(websocket, room_id)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.broadcast(data, room_id) # 원장님의 필기/메시지를 학생들에게 실시간 전송
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, room_id)
+
 @app.get("/uploads/{folder}/{filename}")
 def get_upload_file(folder: str, filename: str):
     filepath = f"uploads/{folder}/{filename}"
@@ -42,18 +92,15 @@ if firebase_key_str:
     try:
         cred_dict = json.loads(firebase_key_str)
         cred = credentials.Certificate(cred_dict)
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
+        if not firebase_admin._apps: firebase_admin.initialize_app(cred)
         db = firestore.client()
-    except Exception as e:
-        print("Firebase Error:", e)
+    except Exception as e: print("Firebase Error:", e)
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 구글 API 에러 메시지의 요구사항에 맞춰 최신 버전인 3.6-flash로 강제 업데이트
-    model = genai.GenerativeModel('gemini-3.6-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
@@ -62,6 +109,7 @@ class UpdateStudentRequest(BaseModel): old_name: str; new_name: str; school: str
 class BulkDeleteRequest(BaseModel): names: list
 class LectureRequest(BaseModel): title: str; desc: str; video_url: str
 class ExamSubmitRequest(BaseModel): school: str; grade: str; student_name: str; title: str; answers: list
+class TwinRequest(BaseModel): diff: str; score: int
 
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
@@ -79,6 +127,10 @@ def authenticate(req: AuthRequest):
 @app.post("/api/chat")
 async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: str=Form(""), prompt: str=Form(...), files: Optional[List[UploadFile]]=File(None)):
     if model is None: return {"success": False, "reply": "AI 연결 오류."}
+    
+    # 💡 학생 질문 발생 시 텔레그램 알림 전송
+    send_telegram_msg(f"💬 [질문 도착]\n- 학생: {school} {grade} {student_name}\n- 질문: {prompt}")
+
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
@@ -124,6 +176,8 @@ async def grade_essay(school: str=Form(...), grade: str=Form(...), student_name:
         res = model.generate_content([prompt, {"mime_type": mime or "application/pdf", "data": file_bytes}])
         if db:
             db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": f"AI 국최 논술 첨삭: {topic[:10]}...", "type": "논술 첨삭", "score": "첨삭완료"})
+        
+        send_telegram_msg(f"📝 [논술/요약 제출]\n- 학생: {school} {grade} {student_name}\n- 논제: {topic}")
         return {"success": True, "feedback": res.text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
@@ -203,6 +257,8 @@ async def submit_homework(school: str=Form(...), grade: str=Form(...), student_n
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": f"/{filepath}"})
     doc = db.collection("homeworks").document(title).get()
     ans_data = doc.to_dict() if doc.exists else {}
+    
+    send_telegram_msg(f"📚 [일반 과제 제출]\n- 학생: {school} {grade} {student_name}\n- 과제명: {title}")
     return {"success": True, "answer_text": ans_data.get("answer_text", ""), "answer_file": ans_data.get("answer_file", "")}
 
 @app.post("/api/admin/board")
@@ -245,9 +301,12 @@ def delete_lecture(lecture_id: str):
     if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
 
+# 💡 특정 학생 지정을 위한 allowed_students 배열 추가
 @app.post("/api/admin/exam")
 async def create_exam(
-    title: str=Form(...), exam_data: str=Form(...), objective: str=Form(""), video_url: str=Form(""), explanation_text: str=Form(""), file: Optional[UploadFile]=File(None)
+    title: str=Form(...), exam_data: str=Form(...), objective: str=Form(""), 
+    allowed_students: str=Form("all"), # 콤마로 구분된 학생 이름
+    video_url: str=Form(""), explanation_text: str=Form(""), file: Optional[UploadFile]=File(None)
 ):
     if db is None: return {"success": False}
     pdf_url = ""
@@ -256,9 +315,12 @@ async def create_exam(
         filepath = f"uploads/exams/{filename}"
         with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         pdf_url = f"/{filepath}"
+    
+    student_list = [s.strip() for s in allowed_students.split(",")] if allowed_students != "all" else ["all"]
+        
     db.collection("exams").document(title).set({
-        "title": title, "exam_data": exam_data, "objective": objective, "pdf_url": pdf_url, 
-        "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "title": title, "exam_data": exam_data, "objective": objective, "allowed_students": student_list,
+        "pdf_url": pdf_url, "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     return {"success": True}
 
@@ -296,7 +358,20 @@ def submit_exam(req: ExamSubmitRequest):
     potential_ab = actual_score + missed_ab_score
     potential_abc = potential_ab + missed_c_score
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "모의고사", "score": actual_score, "wrongs": wrongs})
+    
+    send_telegram_msg(f"🏆 [모의고사 제출]\n- 학생: {req.school} {req.grade} {req.student_name}\n- 시험명: {req.title}\n- 점수: {actual_score}점")
+    
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
+
+# 💡 AI 쌍둥이 문제 생성 엔진
+@app.post("/api/exam/twin")
+async def generate_twin(req: TwinRequest):
+    if model is None: return {"success": False}
+    prompt = f"국어 모의고사에서 난이도 '{req.diff}' 수준의 {req.score}점짜리 수능형 객관식 국어 문제를 1개 즉석에서 출제해주세요. 문제와 함께 상세한 해설을 적어주세요."
+    try:
+        res = model.generate_content([prompt])
+        return {"success": True, "twin_data": res.text}
+    except: return {"success": False}
 
 @app.post("/api/admin/generate_stream")
 async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0), q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
