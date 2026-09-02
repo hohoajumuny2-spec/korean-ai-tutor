@@ -52,8 +52,8 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 구글 최신 AI 모델 엔진으로 업그레이드하여 404 오류 해결
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # 💡 구글 API 에러 메시지의 요구사항에 맞춰 최신 버전인 3.6-flash로 강제 업데이트
+    model = genai.GenerativeModel('gemini-3.6-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
