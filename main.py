@@ -52,8 +52,8 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 [치명적 오류 수정] 잘못 들어갔던 엔진 모델명을 가장 빠르고 정확한 최신 버전(1.5-flash)으로 복구했습니다.
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 💡 구글 최신 AI 모델 엔진으로 업그레이드하여 404 오류 해결
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
@@ -89,7 +89,6 @@ async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: 
     if files:
         for f in files:
             if f.filename: 
-                # 첨부파일 포맷을 안전하게 지정
                 mime = f.content_type
                 if "pdf" in f.filename.lower(): mime = "application/pdf"
                 elif "png" in f.filename.lower(): mime = "image/png"
