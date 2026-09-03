@@ -418,7 +418,7 @@ def delete_question(q_id: str):
     if db: db.collection("question_banks").document(q_id).delete()
     return {"success": True}
 
-# 💡 정답 및 해설 강제 작성 프롬프트 추가
+# 💡 정밀 출제 시 지문과 보기 디자인을 위한 강제 식별자 지침 추가
 @app.post("/api/admin/generate_stream")
 async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0), q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
@@ -431,9 +431,11 @@ async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_kil
 4. 문항 번호는 반드시 '1.', '2.', '3.' 형식으로만 시작하세요. ('[문항 01]' 형태 절대 금지)
 5. 선택지는 반드시 '①', '②', '③', '④', '⑤' 기호로 시작하세요.
 6. 이상한 수식 기호나 LaTeX 형식(\$, \\ 등)을 절대 쓰지 마세요. '±5%'처럼 한글과 일반 기호만 사용하세요.
-7. 모든 문제 출제가 끝난 후, 맨 마지막에 반드시 '[정답 및 해설]' 영역을 작성하세요.
-8. '[정답 및 해설]' 바로 아래에는 '[정답표]' 영역을 만들어 '1. ③, 2. ①...' 처럼 모든 문항의 정답을 한눈에 볼 수 있게 먼저 제시하세요.
-9. 정답표 제시 후 '[상세 해설]' 영역을 만들어 각 문항별로 정답과 그 이유를 구체적으로 설명하세요.
+7. 제시문(지문)이 필요한 경우, 지문의 시작은 반드시 '[지문]' 이라는 문구로 시작하고, 끝날 때는 줄바꿈을 해주세요.
+8. 보기 상자가 필요한 경우 반드시 '<보기>'라는 문구로 시작하세요.
+9. 모든 문제 출제가 끝난 후, 맨 마지막에 반드시 '[정답 및 해설]' 영역을 작성하세요.
+10. '[정답 및 해설]' 바로 아래에는 '[정답표]' 영역을 만들어 '1. ③, 2. ①...' 처럼 모든 문항의 정답을 한눈에 볼 수 있게 먼저 제시하세요.
+11. 정답표 제시 후 '[상세 해설]' 영역을 만들어 각 문항별로 정답과 그 이유를 구체적으로 설명하세요.
 
 [입력자료]
 {q_text}"""
