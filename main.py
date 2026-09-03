@@ -98,14 +98,16 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 치명적 오류 수정: 공식 지원 모델인 1.5-flash로 롤백
     model = genai.GenerativeModel('gemini-1.5-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
 class SingleStudentRequest(BaseModel): school: str; grade: str; name: str
-class UpdateStudentRequest(BaseModel): old_name: str; new_name: str; school: str; grade: str
-class BulkDeleteRequest(BaseModel): names: list
+
+# 💡 동명이인 식별을 위한 old_id 변수 추가
+class UpdateStudentRequest(BaseModel): old_id: str; new_name: str; school: str; grade: str
+class BulkDeleteRequest(BaseModel): ids: list
+
 class LectureRequest(BaseModel): title: str; desc: str; video_url: str
 class ExamSubmitRequest(BaseModel): school: str; grade: str; student_name: str; title: str; answers: list
 class TwinRequest(BaseModel): diff: str; score: int
@@ -118,10 +120,20 @@ def health_check(): return {"status": "ok"}
 def authenticate(req: AuthRequest):
     if req.admin_password == "1234": return {"success": True, "is_admin": True}
     if db is None: raise HTTPException(status_code=500, detail="DB 오류")
-    doc = db.collection("students").document(req.student_name).get()
+    
+    # 💡 3단 콤보 안전 로그인 로직
+    new_doc_id = f"{req.school}_{req.grade}_{req.student_name}"
+    doc = db.collection("students").document(new_doc_id).get()
     if doc.exists:
-        data = doc.to_dict()
-        if data.get("school") == req.school and data.get("grade") == req.grade: return {"success": True, "is_admin": False}
+        return {"success": True, "is_admin": False}
+        
+    # 구버전 호환 (이름만으로 저장된 기존 데이터 처리용)
+    old_doc = db.collection("students").document(req.student_name).get()
+    if old_doc.exists:
+        data = old_doc.to_dict()
+        if data.get("school") == req.school and data.get("grade") == req.grade:
+            return {"success": True, "is_admin": False}
+            
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
 @app.post("/api/inquiry")
@@ -206,44 +218,52 @@ async def grade_essay(school: str=Form(...), grade: str=Form(...), student_name:
 @app.get("/api/admin/students")
 def get_students():
     if db is None: return {"success": False, "students": []}
-    return {"success": True, "students": [{"student_name": d.id, **d.to_dict()} for d in db.collection("students").stream()]}
+    students = []
+    for d in db.collection("students").stream():
+        data = d.to_dict()
+        # 💡 구버전(이름만 저장) 호환성 유지
+        name = data.get("student_name", d.id) 
+        students.append({
+            "id": d.id, 
+            "school": data.get("school", ""), 
+            "grade": data.get("grade", ""), 
+            "student_name": name
+        })
+    return {"success": True, "students": students}
 
 @app.post("/api/admin/student/bulk")
 def add_students_bulk(req: BulkStudentRequest):
     if db is None: return {"success": False}
     batch = db.batch()
     for s in req.students:
-        doc_ref = db.collection("students").document(s.get("name"))
-        batch.set(doc_ref, {"school": s.get("school"), "grade": s.get("grade")})
+        doc_id = f"{s.get('school')}_{s.get('grade')}_{s.get('name')}"
+        doc_ref = db.collection("students").document(doc_id)
+        batch.set(doc_ref, {"school": s.get("school"), "grade": s.get("grade"), "student_name": s.get("name")})
     batch.commit()
     return {"success": True}
 
 @app.post("/api/admin/student")
 def add_single_student(req: SingleStudentRequest):
     if db is None: return {"success": False}
-    db.collection("students").document(req.name).set({"school": req.school, "grade": req.grade})
+    doc_id = f"{req.school}_{req.grade}_{req.name}"
+    db.collection("students").document(doc_id).set({"school": req.school, "grade": req.grade, "student_name": req.name})
     return {"success": True}
 
 @app.post("/api/admin/student/update")
 def update_student(req: UpdateStudentRequest):
     if db is None: return {"success": False}
-    if req.old_name != req.new_name: db.collection("students").document(req.old_name).delete()
-    db.collection("students").document(req.new_name).set({"school": req.school, "grade": req.grade})
+    db.collection("students").document(req.old_id).delete()
+    new_id = f"{req.school}_{req.grade}_{req.new_name}"
+    db.collection("students").document(new_id).set({"school": req.school, "grade": req.grade, "student_name": req.new_name})
     return {"success": True}
 
 @app.post("/api/admin/student/delete_bulk")
 def delete_students_bulk(req: BulkDeleteRequest):
     if db is None: return {"success": False}
     batch = db.batch()
-    for name in req.names:
-        doc_ref = db.collection("students").document(name)
-        batch.delete(doc_ref)
+    for doc_id in req.ids:
+        batch.delete(db.collection("students").document(doc_id))
     batch.commit()
-    return {"success": True}
-
-@app.delete("/api/admin/student/{name}")
-def delete_student(name: str):
-    if db: db.collection("students").document(name).delete()
     return {"success": True}
 
 @app.get("/api/admin/reports")
@@ -256,7 +276,6 @@ def get_reports():
 async def create_homework(title: str=Form(...), desc: str=Form(""), answer_text: str=Form(""), answer_file: Optional[UploadFile]=File(None)):
     if db is None: return {"success": False}
     ans_url = ""
-    # 💡 파일명 한글 깨짐 및 에러 영구 차단을 위한 UUID 단독 파일명 변환 로직 적용
     if answer_file and answer_file.filename:
         ext = os.path.splitext(answer_file.filename)[1]
         safe_filename = f"{uuid.uuid4().hex}{ext}"
@@ -340,7 +359,6 @@ async def create_exam(
 ):
     if db is None: return {"success": False}
     pdf_url = ""
-    # 💡 한글 파일명 오류를 영구 차단하는 안전 변환 로직
     if file and file.filename:
         ext = os.path.splitext(file.filename)[1]
         safe_filename = f"{uuid.uuid4().hex}{ext}"
@@ -484,7 +502,7 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
-    docs = collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in docs]}
 
 @app.delete("/api/admin/knowledge/{kb_id}")
