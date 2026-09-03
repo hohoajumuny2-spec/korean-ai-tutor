@@ -98,7 +98,8 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-3.6-flash')
+    # 💡 치명적 오류 수정: 공식 지원 모델인 1.5-flash로 롤백
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
@@ -255,9 +256,11 @@ def get_reports():
 async def create_homework(title: str=Form(...), desc: str=Form(""), answer_text: str=Form(""), answer_file: Optional[UploadFile]=File(None)):
     if db is None: return {"success": False}
     ans_url = ""
+    # 💡 파일명 한글 깨짐 및 에러 영구 차단을 위한 UUID 단독 파일명 변환 로직 적용
     if answer_file and answer_file.filename:
-        filename = f"{uuid.uuid4()}_{answer_file.filename}"
-        filepath = f"uploads/homeworks/{filename}"
+        ext = os.path.splitext(answer_file.filename)[1]
+        safe_filename = f"{uuid.uuid4().hex}{ext}"
+        filepath = f"uploads/homeworks/{safe_filename}"
         with open(filepath, "wb") as buffer: shutil.copyfileobj(answer_file.file, buffer)
         ans_url = f"/{filepath}"
     db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -277,8 +280,9 @@ def delete_homework(title: str):
 @app.post("/api/homework/submit")
 async def submit_homework(school: str=Form(...), grade: str=Form(...), student_name: str=Form(...), title: str=Form(...), file: UploadFile=File(...)):
     if db is None: return {"success": False}
-    filename = f"{uuid.uuid4()}_{file.filename}"
-    filepath = f"uploads/homeworks/{filename}"
+    ext = os.path.splitext(file.filename)[1]
+    safe_filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = f"uploads/homeworks/{safe_filename}"
     with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": f"/{filepath}"})
     doc = db.collection("homeworks").document(title).get()
@@ -292,8 +296,9 @@ async def create_board_post(title: str=Form(...), desc: str=Form(""), file: Opti
     if db is None: return {"success": False}
     file_url = ""
     if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        filepath = f"uploads/board/{filename}"
+        ext = os.path.splitext(file.filename)[1]
+        safe_filename = f"{uuid.uuid4().hex}{ext}"
+        filepath = f"uploads/board/{safe_filename}"
         with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         file_url = f"/{filepath}"
     db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -335,9 +340,11 @@ async def create_exam(
 ):
     if db is None: return {"success": False}
     pdf_url = ""
+    # 💡 한글 파일명 오류를 영구 차단하는 안전 변환 로직
     if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        filepath = f"uploads/exams/{filename}"
+        ext = os.path.splitext(file.filename)[1]
+        safe_filename = f"{uuid.uuid4().hex}{ext}"
+        filepath = f"uploads/exams/{safe_filename}"
         with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         pdf_url = f"/{filepath}"
     
@@ -418,7 +425,6 @@ def delete_question(q_id: str):
     if db: db.collection("question_banks").document(q_id).delete()
     return {"success": True}
 
-# 💡 정밀 출제 시 지문과 보기 디자인을 위한 강제 식별자 지침 추가
 @app.post("/api/admin/generate_stream")
 async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0), q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
@@ -478,7 +484,7 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
-    docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    docs = collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in docs]}
 
 @app.delete("/api/admin/knowledge/{kb_id}")
