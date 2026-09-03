@@ -108,6 +108,7 @@ class BulkDeleteRequest(BaseModel): names: list
 class LectureRequest(BaseModel): title: str; desc: str; video_url: str
 class ExamSubmitRequest(BaseModel): school: str; grade: str; student_name: str; title: str; answers: list
 class TwinRequest(BaseModel): diff: str; score: int
+class QuestionArchiveRequest(BaseModel): title: str; content: str
 
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
@@ -396,7 +397,28 @@ async def generate_twin(req: TwinRequest):
         return {"success": True, "twin_data": res.text}
     except: return {"success": False}
 
-# 💡 마크다운 및 괄호 문항번호 금지, LaTeX 금지 등 초정밀 프롬프트 전면 수정
+# 💡 출제 보관함 저장 라우터
+@app.post("/api/admin/questions")
+def save_question(req: QuestionArchiveRequest):
+    if db:
+        db.collection("question_banks").add({
+            "title": req.title,
+            "content": req.content,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+    return {"success": True}
+
+@app.get("/api/admin/questions")
+def get_questions():
+    if db is None: return {"success": False, "questions": []}
+    docs = db.collection("question_banks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    return {"success": True, "questions": [{"id": d.id, **d.to_dict()} for d in docs]}
+
+@app.delete("/api/admin/questions/{q_id}")
+def delete_question(q_id: str):
+    if db: db.collection("question_banks").document(q_id).delete()
+    return {"success": True}
+
 @app.post("/api/admin/generate_stream")
 async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0), q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
@@ -415,11 +437,12 @@ async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_kil
     contents = [prompt]
     if files:
         for f in files:
-            mime = f.content_type
-            if "pdf" in f.filename.lower(): mime = "application/pdf"
-            elif "png" in f.filename.lower(): mime = "image/png"
-            elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
-            contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
+            if f.filename:
+                mime = f.content_type
+                if "pdf" in f.filename.lower(): mime = "application/pdf"
+                elif "png" in f.filename.lower(): mime = "image/png"
+                elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
+                contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
     if model is None: raise HTTPException(status_code=500, detail="AI 에러")
     response = model.generate_content(contents, stream=True)
     def iter_response():
