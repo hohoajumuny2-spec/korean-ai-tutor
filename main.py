@@ -390,16 +390,28 @@ def submit_exam(req: ExamSubmitRequest):
 @app.post("/api/exam/twin")
 async def generate_twin(req: TwinRequest):
     if model is None: return {"success": False}
-    prompt = f"국어 모의고사에서 난이도 '{req.diff}' 수준의 {req.score}점짜리 수능형 객관식 국어 문제를 1개 즉석에서 출제해주세요. 문제와 함께 상세한 해설을 적어주세요."
+    prompt = f"국어 모의고사에서 난이도 '{req.diff}' 수준의 {req.score}점짜리 수능형 객관식 국어 문제를 1개 즉석에서 출제해주세요. 절대 마크다운(**, # 등)이나 LaTeX 기호를 쓰지 말고 평문으로 깔끔하게 작성하세요. 문항 번호는 '1.', 선택지는 '①'로 통일하세요."
     try:
         res = model.generate_content([prompt])
         return {"success": True, "twin_data": res.text}
     except: return {"success": False}
 
+# 💡 마크다운 및 괄호 문항번호 금지, LaTeX 금지 등 초정밀 프롬프트 전면 수정
 @app.post("/api/admin/generate_stream")
 async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_killer: int=Form(0), cnt_semi: int=Form(0), cnt_high: int=Form(0), cnt_mid: int=Form(0), cnt_low: int=Form(0), q_text: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
+    prompt = f"""당신은 대치동 로지에듀 국어학원 수석 출제 위원입니다. 입력된 자료를 바탕으로 다음 조건에 맞춰 완벽한 수능형 국어 문제를 출제하세요.
+
+[출제 조건]
+1. 총 문항 수: {total}문항 (유형: {q_types})
+2. 절대 마크다운 기호(#, **, *, -, 등)를 사용하지 마세요. 순수 텍스트로만 출력하세요.
+3. 지문에 '[1문단]', '[2문단]' 같은 단락 표시 기호를 절대 넣지 마세요.
+4. 문항 번호는 반드시 '1.', '2.', '3.' 형식으로만 시작하세요. ('[문항 01]' 형태 절대 금지)
+5. 선택지는 반드시 '①', '②', '③', '④', '⑤' 기호로 시작하세요.
+6. 이상한 수식 기호나 LaTeX 형식(\$, \\ 등)을 절대 쓰지 마세요. '±5%'처럼 한글과 일반 기호만 사용하세요.
+
+[입력자료]
+{q_text}"""
     contents = [prompt]
     if files:
         for f in files:
@@ -435,7 +447,6 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
 
-# 💡 지식 자료 목록 확인 및 삭제
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
