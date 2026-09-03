@@ -474,7 +474,6 @@ async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_kil
             if chunk.text: yield chunk.text
     return StreamingResponse(iter_response(), media_type="text/plain")
 
-# 💡 지식 자료(Knowledge) 저장 시 datetime 포맷 직렬화 오류 완벽 수정 적용
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     if db is None: return {"success": False}
@@ -492,6 +491,8 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
                     res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}])
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except Exception: pass
+    
+    # 💡 치명적 버그 수정: datetime 포맷 안전 적용 (데이터 증발 방지)
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
