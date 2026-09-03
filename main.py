@@ -122,7 +122,6 @@ def authenticate(req: AuthRequest):
         if data.get("school") == req.school and data.get("grade") == req.grade: return {"success": True, "is_admin": False}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
-# 💡 문의사항 엔드포인트 수정 (DB 영구 저장 및 텔레그램 알림 동시 진행)
 @app.post("/api/inquiry")
 async def submit_inquiry(school: str=Form("미로그인"), grade: str=Form(""), student_name: str=Form("알수없음"), content: str=Form(...)):
     msg = f"📞 [학원 문의사항 도착]\n- 발신자: {school} {grade} {student_name}\n- 문의내용: {content}"
@@ -269,7 +268,6 @@ def get_homeworks():
     docs = db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 과제 삭제 엔진 추가
 @app.delete("/api/admin/homework/{title}")
 def delete_homework(title: str):
     if db: db.collection("homeworks").document(title).delete()
@@ -306,7 +304,6 @@ def get_board():
     docs = db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "posts": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 공지사항(게시판) 삭제 엔진 유지
 @app.delete("/api/admin/board/{post_id}")
 def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
@@ -436,4 +433,16 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except Exception: pass
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
+    return {"success": True}
+
+# 💡 지식 자료 목록 확인 및 삭제
+@app.get("/api/knowledge")
+def get_knowledge():
+    if db is None: return {"success": False, "knowledge": []}
+    docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in docs]}
+
+@app.delete("/api/admin/knowledge/{kb_id}")
+def delete_knowledge(kb_id: str):
+    if db: db.collection("knowledge").document(kb_id).delete()
     return {"success": True}
