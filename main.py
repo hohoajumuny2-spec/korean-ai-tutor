@@ -30,7 +30,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 💡 텔레그램 알림 엔진
 def send_telegram_msg(text: str):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -43,7 +42,6 @@ def send_telegram_msg(text: str):
     except Exception as e:
         print("Telegram Error:", e)
 
-# 💡 실시간 라이브 통신 (웹소켓)
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -100,7 +98,6 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 💡 404 에러 수정을 위한 최신 모델명 강제 지정
     model = genai.GenerativeModel('gemini-3.6-flash')
 
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
@@ -125,9 +122,29 @@ def authenticate(req: AuthRequest):
         if data.get("school") == req.school and data.get("grade") == req.grade: return {"success": True, "is_admin": False}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
+# 💡 문의사항 엔드포인트 수정 (DB 영구 저장 및 텔레그램 알림 동시 진행)
+@app.post("/api/inquiry")
+async def submit_inquiry(school: str=Form("미로그인"), grade: str=Form(""), student_name: str=Form("알수없음"), content: str=Form(...)):
+    msg = f"📞 [학원 문의사항 도착]\n- 발신자: {school} {grade} {student_name}\n- 문의내용: {content}"
+    send_telegram_msg(msg)
+    if db:
+        db.collection("inquiries").add({"school": school, "grade": grade, "student_name": student_name, "content": content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return {"success": True}
+
+@app.get("/api/inquiries")
+def get_inquiries():
+    if db is None: return {"success": False, "inquiries": []}
+    docs = db.collection("inquiries").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    return {"success": True, "inquiries": [{"id": d.id, **d.to_dict()} for d in docs]}
+
+@app.delete("/api/admin/inquiry/{inq_id}")
+def delete_inquiry(inq_id: str):
+    if db: db.collection("inquiries").document(inq_id).delete()
+    return {"success": True}
+
 @app.post("/api/chat")
 async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: str=Form(""), prompt: str=Form(...), files: Optional[List[UploadFile]]=File(None)):
-    if model is None: return {"success": False, "reply": "AI 연결 오류."}
+    if model is None: return StreamingResponse(iter(["AI 연결 오류."]), media_type="text/plain")
     
     send_telegram_msg(f"💬 [질문 도착]\n- 학생: {school} {grade} {student_name}\n- 질문: {prompt}")
 
@@ -135,7 +152,7 @@ async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: 
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
-    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
+    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 학생에게 친절하고 명쾌하게 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
     
     if files:
@@ -147,9 +164,13 @@ async def chat_with_ai(school: str=Form(""), grade: str=Form(""), student_name: 
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
     try:
-        res = model.generate_content(contents)
-        return {"success": True, "reply": res.text}
-    except Exception as e: return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
+        response = model.generate_content(contents, stream=True)
+        def iter_response():
+            for chunk in response:
+                if chunk.text: yield chunk.text
+        return StreamingResponse(iter_response(), media_type="text/plain")
+    except Exception as e: 
+        return StreamingResponse(iter([f"AI 분석 중 오류가 발생했습니다: {str(e)}"]), media_type="text/plain")
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str=Form(...), grade: str=Form(...), student_name: str=Form(...), topic: str=Form(...), file: UploadFile=File(...)):
@@ -248,6 +269,12 @@ def get_homeworks():
     docs = db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in docs]}
 
+# 💡 과제 삭제 엔진 추가
+@app.delete("/api/admin/homework/{title}")
+def delete_homework(title: str):
+    if db: db.collection("homeworks").document(title).delete()
+    return {"success": True}
+
 @app.post("/api/homework/submit")
 async def submit_homework(school: str=Form(...), grade: str=Form(...), student_name: str=Form(...), title: str=Form(...), file: UploadFile=File(...)):
     if db is None: return {"success": False}
@@ -279,6 +306,7 @@ def get_board():
     docs = db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
     return {"success": True, "posts": [{"id": d.id, **d.to_dict()} for d in docs]}
 
+# 💡 공지사항(게시판) 삭제 엔진 유지
 @app.delete("/api/admin/board/{post_id}")
 def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
