@@ -103,8 +103,6 @@ if gemini_key:
 class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 class BulkStudentRequest(BaseModel): students: list
 class SingleStudentRequest(BaseModel): school: str; grade: str; name: str
-
-# 💡 동명이인 식별을 위한 old_id 변수 추가
 class UpdateStudentRequest(BaseModel): old_id: str; new_name: str; school: str; grade: str
 class BulkDeleteRequest(BaseModel): ids: list
 
@@ -121,13 +119,11 @@ def authenticate(req: AuthRequest):
     if req.admin_password == "1234": return {"success": True, "is_admin": True}
     if db is None: raise HTTPException(status_code=500, detail="DB 오류")
     
-    # 💡 3단 콤보 안전 로그인 로직
     new_doc_id = f"{req.school}_{req.grade}_{req.student_name}"
     doc = db.collection("students").document(new_doc_id).get()
     if doc.exists:
         return {"success": True, "is_admin": False}
         
-    # 구버전 호환 (이름만으로 저장된 기존 데이터 처리용)
     old_doc = db.collection("students").document(req.student_name).get()
     if old_doc.exists:
         data = old_doc.to_dict()
@@ -221,7 +217,6 @@ def get_students():
     students = []
     for d in db.collection("students").stream():
         data = d.to_dict()
-        # 💡 구버전(이름만 저장) 호환성 유지
         name = data.get("student_name", d.id) 
         students.append({
             "id": d.id, 
@@ -479,6 +474,7 @@ async def generate_stream(q_mode: str=Form(...), q_types: str=Form(...), cnt_kil
             if chunk.text: yield chunk.text
     return StreamingResponse(iter_response(), media_type="text/plain")
 
+# 💡 지식 자료(Knowledge) 저장 시 datetime 포맷 직렬화 오류 완벽 수정 적용
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Optional[List[UploadFile]]=File(None)):
     if db is None: return {"success": False}
@@ -496,7 +492,7 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
                     res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}])
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except Exception: pass
-    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
+    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
 @app.get("/api/knowledge")
