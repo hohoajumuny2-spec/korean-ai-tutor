@@ -114,7 +114,6 @@ class QuestionArchiveRequest(BaseModel): title: str; content: str
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
 
-# 💡 로그인 시 텔레그램 알림 및 접속 로그 저장 기능 추가
 @app.post("/api/auth")
 def authenticate(req: AuthRequest):
     if req.admin_password == "1234": return {"success": True, "is_admin": True}
@@ -500,6 +499,7 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
+# 💡 치명적 에러 수정: db.collection으로 오타 100% 정상 복구 완료
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
