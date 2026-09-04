@@ -57,7 +57,7 @@ if firebase_key_str:
         pass
 
 # ===============================================
-# 💡 라이브러리 충돌 원천 차단: 구글 다이렉트 통신 (REST API)
+# 💡 다이렉트 통신망(REST API) 자동 탐색/우회 엔진 완벽 적용
 # ===============================================
 def call_gemini_api(contents, stream=False):
     gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -74,19 +74,31 @@ def call_gemini_api(contents, stream=False):
     
     payload = {"contents": [{"parts": formatted_parts}]}
     
-    if stream:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
-        return requests.post(url, json=payload, stream=True)
-    else:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-        res = requests.post(url, json=payload)
-        if res.status_code == 200:
-            try:
-                return res.json()["candidates"][0]["content"]["parts"][0]["text"]
-            except Exception:
-                raise Exception("API 응답 형식을 읽을 수 없습니다.")
+    # 💡 최신 모델이 404 에러로 튕기면 즉시 구형 모델 주소로 갈아탑니다.
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-pro']
+    last_err = ""
+    
+    for m_name in models_to_try:
+        if stream:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:streamGenerateContent?alt=sse&key={gemini_key}"
+            res = requests.post(url, json=payload, stream=True)
+            if res.status_code == 200:
+                return res
+            else:
+                last_err = res.text
         else:
-            raise Exception(f"구글 API 거부 (에러코드 {res.status_code}): {res.text}")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={gemini_key}"
+            res = requests.post(url, json=payload)
+            if res.status_code == 200:
+                try:
+                    return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                except Exception:
+                    last_err = "API 응답 형식을 읽을 수 없습니다."
+            else:
+                last_err = res.text
+                
+    # 모든 모델 주소가 거부되었을 때만 에러 발생
+    raise Exception(f"구글 API 거부 (모든 모델 접속 불가). 마지막 에러: {last_err}")
 
 # 실시간 모의고사 웹소켓
 class ConnectionManager:
@@ -240,7 +252,6 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅 100% 다이렉트 통신망 적용
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
@@ -265,7 +276,6 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     except Exception as e:
         return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
-# 💡 논술 첨삭 다이렉트 통신망 적용
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
     try:
@@ -487,7 +497,6 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 정밀 출제망 다이렉트 통신망 적용
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
