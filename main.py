@@ -2,8 +2,6 @@ import os
 import json
 import shutil
 import uuid
-import base64
-import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -11,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore
+import google.generativeai as genai
 from datetime import datetime
 
 os.makedirs("uploads/exams", exist_ok=True)
@@ -56,39 +55,30 @@ if firebase_key_str:
         pass
 
 # ===============================================
-# 💡 라이브러리 충돌 원천 차단: 구글 다이렉트 통신 (REST API)
+# 💡 구글 공식 SDK 엔진 복구 (스트리밍 및 자동 우회 완벽 지원)
 # ===============================================
-def call_gemini_api(contents, stream=False, model="gemini-1.5-flash"):
-    gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not gemini_key:
+def safe_generate(contents, stream=False):
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
         raise Exception("API 키가 설정되지 않았습니다. 렌더 대시보드 환경변수를 확인해주세요.")
     
-    clean_key = gemini_key.strip().replace('"', '').replace("'", "")
+    clean_key = api_key.strip().replace('"', '').replace("'", "")
+    genai.configure(api_key=clean_key)
     
-    formatted_parts = []
-    for item in contents:
-        if isinstance(item, str):
-            formatted_parts.append({"text": item})
-        elif isinstance(item, dict):
-            b64_data = base64.b64encode(item['data']).decode('utf-8')
-            formatted_parts.append({"inline_data": {"mime_type": item['mime_type'], "data": b64_data}})
+    # 가장 빠르고 똑똑한 최신 모델부터 구형 모델까지 순서대로 알아서 찔러봅니다.
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
+    last_err = ""
     
-    payload = {"contents": [{"parts": formatted_parts}]}
-    
-    if stream:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={clean_key}"
-        # timeout=15 설정으로 무한 로딩(멈춤) 현상 완벽 방지
-        return requests.post(url, json=payload, stream=True, timeout=15)
-    else:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={clean_key}"
-        res = requests.post(url, json=payload, timeout=20)
-        if res.status_code == 200:
-            try:
-                return res.json()["candidates"][0]["content"]["parts"][0]["text"]
-            except Exception:
-                raise Exception("API 응답을 해석할 수 없습니다.")
-        else:
-            raise Exception(f"구글 서버 접근 거부 (코드 {res.status_code}): {res.text}")
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content(contents, stream=stream)
+            return response
+        except Exception as e:
+            last_err = str(e)
+            continue 
+            
+    raise Exception(f"모든 AI 모델 접근에 실패했습니다. (마지막 에러: {last_err})")
 
 # 실시간 모의고사 웹소켓
 class ConnectionManager:
@@ -242,7 +232,7 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅: 파이썬 에러 시 바로 반환
+# 💡 채팅 
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
@@ -256,17 +246,19 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     if files:
         for f in files:
             if f.filename:
+                file_bytes = await f.read()
                 mime = f.content_type
                 if "pdf" in f.filename.lower(): mime = "application/pdf"
                 elif "png" in f.filename.lower(): mime = "image/png"
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
-                contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
+                contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
     try:
-        reply_text = call_gemini_api(contents, stream=False)
-        return {"success": True, "reply": reply_text}
+        response = safe_generate(contents, stream=False)
+        return {"success": True, "reply": response.text}
     except Exception as e:
-        return {"success": False, "reply": f"🚨 통신 오류: {str(e)}"}
+        return {"success": False, "reply": f"🚨 {str(e)}"}
 
+# 💡 논술 첨삭
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
     try:
@@ -278,7 +270,7 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
 
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
         
-        res_text = call_gemini_api([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
+        response = safe_generate([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
         
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/homeworks/{filename}", "wb") as buffer: buffer.write(file_bytes)
@@ -290,7 +282,7 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
                 xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
                 db.collection("students").document(student_name).set({"xp": xp}, merge=True)
             
-        return {"success": True, "feedback": res_text}
+        return {"success": True, "feedback": response.text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
 @app.post("/api/admin/knowledge")
@@ -307,8 +299,8 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                     elif "png" in file.filename.lower(): mime = "image/png"
                     elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
                     
-                    res_text = call_gemini_api(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
-                    final_content += f"\n\n[{file.filename} 분석]\n{res_text}"
+                    response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
+                    final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
                 except Exception: pass
                 
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
@@ -488,7 +480,7 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 정밀 출제망: 에러 시 즉각 차단 및 메시지 반환
+# 💡 정밀 출제망 (스트리밍 시각적 피드백 완벽 적용)
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
@@ -510,23 +502,12 @@ async def generate_stream(
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
             
     try:
-        response = call_gemini_api(contents, stream=True)
+        response = safe_generate(contents, stream=True)
         def iter_response():
-            if response.status_code != 200:
-                yield f"❌ 구글 API 서버 에러: {response.text}"
-                return
-            for line in response.iter_lines():
-                if line:
-                    decoded = line.decode('utf-8')
-                    if decoded.startswith('data: '):
-                        try:
-                            data = json.loads(decoded[6:])
-                            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
-                            if parts and "text" in parts[0]:
-                                yield parts[0]["text"]
-                        except Exception: pass
+            for chunk in response:
+                if chunk.text: yield chunk.text
         return StreamingResponse(iter_response(), media_type="text/plain")
     except Exception as e:
         def err_response():
-            yield f"❌ 서버 내부 통신 실패: {str(e)}"
+            yield f"❌ AI 생성 실패: {str(e)}"
         return StreamingResponse(err_response(), media_type="text/plain")
