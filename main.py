@@ -2,6 +2,9 @@ import os
 import json
 import shutil
 import uuid
+import mimetypes
+import base64
+import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -9,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore
-import google.generativeai as genai
 from datetime import datetime
 
 os.makedirs("uploads/exams", exist_ok=True)
@@ -54,35 +56,39 @@ if firebase_key_str:
     except Exception as e:
         pass
 
-gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-if gemini_key:
-    genai.configure(api_key=gemini_key)
-
 # ===============================================
-# 💡 완벽 우회 탐색 엔진 (1.5 모델이 막히면 1.0 모델로 자동 침투)
+# 💡 라이브러리 충돌 원천 차단: 구글 다이렉트 통신 (REST API)
 # ===============================================
-def safe_generate(contents, has_files=False, stream=False):
+def call_gemini_api(contents, stream=False):
+    gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not gemini_key:
         raise Exception("API 키가 설정되지 않았습니다.")
     
-    # 원장님의 API 키 권한에 맞춰 작동하는 모델을 찾을 때까지 모두 찔러봅니다.
-    if has_files:
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision']
+    formatted_parts = []
+    for item in contents:
+        if isinstance(item, str):
+            formatted_parts.append({"text": item})
+        elif isinstance(item, dict):
+            b64_data = base64.b64encode(item['data']).decode('utf-8')
+            formatted_parts.append({"inline_data": {"mime_type": item['mime_type'], "data": b64_data}})
+    
+    payload = {"contents": [{"parts": formatted_parts}]}
+    
+    if stream:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
+        return requests.post(url, json=payload, stream=True)
     else:
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-pro']
-        
-    last_err = ""
-    for m_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(m_name)
-            return model.generate_content(contents, stream=stream)
-        except Exception as e:
-            last_err = str(e)
-            continue 
-            
-    # 모든 우회 시도가 실패했다면 100% API 키 자체의 권한/만료 문제입니다.
-    raise Exception(f"🚨 현재 연결된 구글 API 키로는 어떤 AI 모델에도 접근할 수 없습니다. 구글 AI Studio에서 API 키를 새로 발급받아 렌더(Render)의 환경변수에 교체해 주세요! (마지막 에러: {last_err})")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+        res = requests.post(url, json=payload)
+        if res.status_code == 200:
+            try:
+                return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception:
+                raise Exception("API 응답 형식을 읽을 수 없습니다.")
+        else:
+            raise Exception(f"구글 API 거부 (에러코드 {res.status_code}): {res.text}")
 
+# 실시간 모의고사 웹소켓
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -113,6 +119,10 @@ async def websocket_endpoint(websocket: WebSocket, room: str):
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
 
+
+# ===============================================
+# API 엔드포인트
+# ===============================================
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -181,19 +191,13 @@ def get_students():
     if db is None: return {"success": False, "students": []}
     return {"success": True, "students": [{"id": d.id, "student_name": d.id, **d.to_dict()} for d in db.collection("students").stream()]}
 
-class SingleStudentRequest(BaseModel):
-    school: str
-    grade: str
-    name: str
-
+class SingleStudentRequest(BaseModel): school: str; grade: str; name: str
 @app.post("/api/admin/student")
 def add_single_student(req: SingleStudentRequest):
     if db: db.collection("students").document(req.name).set({"school": req.school, "grade": req.grade}, merge=True)
     return {"success": True}
 
-class BulkStudentRequest(BaseModel):
-    students: list
-
+class BulkStudentRequest(BaseModel): students: list
 @app.post("/api/admin/student/bulk")
 def add_students_bulk(req: BulkStudentRequest):
     if db:
@@ -204,13 +208,7 @@ def add_students_bulk(req: BulkStudentRequest):
         batch.commit()
     return {"success": True}
 
-class StudentUpdateReq(BaseModel):
-    old_name: str = None
-    old_id: str = None
-    new_name: str
-    school: str
-    grade: str
-
+class StudentUpdateReq(BaseModel): old_name: str = None; old_id: str = None; new_name: str; school: str; grade: str
 @app.post("/api/admin/student/update")
 def update_student(req: StudentUpdateReq):
     if db is None: return {"success": False}
@@ -228,10 +226,7 @@ def update_student(req: StudentUpdateReq):
                 doc_ref.set(data, merge=True)
     return {"success": True}
 
-class BulkDeleteReq(BaseModel):
-    names: list = None
-    ids: list = None
-
+class BulkDeleteReq(BaseModel): names: list = None; ids: list = None
 @app.post("/api/admin/student/delete_bulk")
 def delete_students_bulk(req: BulkDeleteReq):
     if db:
@@ -245,6 +240,7 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
+# 💡 채팅 100% 다이렉트 통신망 적용
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
@@ -255,43 +251,66 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
     
-    has_files = False
     if files:
         for f in files:
             if f.filename:
-                has_files = True
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+                mime = f.content_type
+                if "pdf" in f.filename.lower(): mime = "application/pdf"
+                elif "png" in f.filename.lower(): mime = "image/png"
+                elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
+                contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
     try:
-        res = safe_generate(contents, has_files=has_files)
-        return {"success": True, "reply": res.text}
+        reply_text = call_gemini_api(contents)
+        return {"success": True, "reply": reply_text}
     except Exception as e:
-        return {"success": False, "reply": f"AI 오류 발생: {str(e)}"}
+        return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
+# 💡 논술 첨삭 다이렉트 통신망 적용
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
-    if db is None: return {"success": False, "detail": "서버 연결 오류"}
     try:
         file_bytes = await file.read()
+        mime = file.content_type
+        if "pdf" in file.filename.lower(): mime = "application/pdf"
+        elif "png" in file.filename.lower(): mime = "image/png"
+        elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
-        res = safe_generate([prompt, {"mime_type": file.content_type or "application/octet-stream", "data": file_bytes}], has_files=True)
+        
+        res_text = call_gemini_api([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}])
         
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/homeworks/{filename}", "wb") as buffer: buffer.write(file_bytes)
         
-        db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": f"/uploads/homeworks/{filename}"})
-        
-        s_doc = db.collection("students").document(student_name).get()
-        if s_doc.exists:
-            xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
-            db.collection("students").document(student_name).set({"xp": xp}, merge=True)
+        if db:
+            db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": f"/uploads/homeworks/{filename}"})
+            s_doc = db.collection("students").document(student_name).get()
+            if s_doc.exists:
+                xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
+                db.collection("students").document(student_name).set({"xp": xp}, merge=True)
             
-        return {"success": True, "feedback": res.text}
+        return {"success": True, "feedback": res_text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
-    db.collection("knowledge").add({"title": title, "content": content, "created_at": datetime.now()})
+    final_content = content
+    if files:
+        for file in files:
+            if file.filename:
+                try:
+                    file_bytes = await file.read()
+                    mime = file.content_type
+                    if "pdf" in file.filename.lower(): mime = "application/pdf"
+                    elif "png" in file.filename.lower(): mime = "image/png"
+                    elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+                    
+                    res_text = call_gemini_api(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}])
+                    final_content += f"\n\n[{file.filename} 분석]\n{res_text}"
+                except Exception: pass
+                
+    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
 
 @app.get("/api/knowledge")
@@ -321,10 +340,7 @@ def delete_inquiry(i_id: str):
     if db: db.collection("inquiries").document(i_id).delete()
     return {"success": True}
 
-class QuestionSaveReq(BaseModel):
-    title: str
-    content: str
-
+class QuestionSaveReq(BaseModel): title: str; content: str
 @app.post("/api/admin/questions")
 def save_question(req: QuestionSaveReq):
     if db: db.collection("questions").add({"title": req.title, "content": req.content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -401,11 +417,7 @@ def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
-class LectureRequest(BaseModel):
-    title: str
-    desc: str
-    video_url: str
-
+class LectureRequest(BaseModel): title: str; desc: str; video_url: str
 @app.post("/api/admin/lecture")
 def create_lecture(req: LectureRequest):
     if db: db.collection("lectures").add({"title": req.title, "desc": req.desc, "video_url": req.video_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -444,13 +456,7 @@ def delete_exam(title: str):
     if db: db.collection("exams").document(title).delete()
     return {"success": True}
 
-class ExamSubmitRequest(BaseModel):
-    school: str
-    grade: str
-    student_name: str
-    title: str
-    answers: list
-
+class ExamSubmitRequest(BaseModel): school: str; grade: str; student_name: str; title: str; answers: list
 @app.post("/api/exam/submit")
 def submit_exam(req: ExamSubmitRequest):
     if db is None: return {"success": False}
@@ -465,8 +471,7 @@ def submit_exam(req: ExamSubmitRequest):
             correct_ans = str(q.get("ans", "")).strip()
             score = int(q.get("score", 0))
             diff = q.get("diff", "C")
-            if student_ans == correct_ans and student_ans != "":
-                actual_score += score
+            if student_ans == correct_ans and student_ans != "": actual_score += score
             else:
                 wrongs.append(i+1)
                 if diff in wrong_by_diff: wrong_by_diff[diff] += 1
@@ -482,6 +487,7 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
+# 💡 정밀 출제망 다이렉트 통신망 적용
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
@@ -492,20 +498,31 @@ async def generate_stream(
     prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
     contents = [prompt]
     
-    has_files = False
     if files:
         for f in files:
             if f.filename: 
-                has_files = True
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+                mime = f.content_type
+                if "pdf" in f.filename.lower(): mime = "application/pdf"
+                elif "png" in f.filename.lower(): mime = "image/png"
+                elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
+                contents.append({"mime_type": mime or "application/octet-stream", "data": await f.read()})
             
     try:
-        response = safe_generate(contents, has_files=has_files, stream=True)
+        response = call_gemini_api(contents, stream=True)
         def iter_response():
-            for chunk in response:
-                if chunk.text: yield chunk.text
+            if response.status_code != 200:
+                yield f"❌ API 서버 통신 오류: {response.text}"
+                return
+            for line in response.iter_lines():
+                if line:
+                    decoded = line.decode('utf-8')
+                    if decoded.startswith('data: '):
+                        try:
+                            data = json.loads(decoded[6:])
+                            yield data["candidates"][0]["content"]["parts"][0]["text"]
+                        except Exception: pass
         return StreamingResponse(iter_response(), media_type="text/plain")
     except Exception as e:
         def err_response():
-            yield f"❌ AI 생성 실패: {str(e)}"
+            yield f"❌ AI 출제 실패: {str(e)}"
         return StreamingResponse(err_response(), media_type="text/plain")
