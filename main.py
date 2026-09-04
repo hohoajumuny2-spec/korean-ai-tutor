@@ -55,14 +55,37 @@ if firebase_key_str:
     except Exception as e:
         print("Firebase Error:", e)
 
-# 💡 404 에러 완벽 해결: 구형 모델(gemini-pro) 코드를 삭제하고 최신 gemini-1.5-flash 로 고정
+# ===============================================
+# 💡 무적의 AI 자동 탐색 엔진 (404 에러 원천 차단)
+# ===============================================
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
-def get_ai_model(has_files=False):
-    if not gemini_key: return None
-    return genai.GenerativeModel('gemini-1.5-flash')
+def safe_generate(contents, has_files=False, stream=False):
+    """서버 버전에 구애받지 않고 작동하는 모델을 자동 탐색하여 실행합니다."""
+    if not gemini_key:
+        raise Exception("API 키가 설정되지 않았습니다.")
+    
+    # 우선순위대로 모든 모델을 찔러봅니다.
+    if has_files:
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro-vision']
+    else:
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-1.0-pro-latest', 'gemini-pro']
+        
+    last_err = ""
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(m_name)
+            res = model.generate_content(contents, stream=stream)
+            return res
+        except Exception as e:
+            last_err = str(e)
+            # 404(모델 없음) 에러가 발생하면 멈추지 않고 즉시 다음 모델을 시도합니다.
+            continue 
+            
+    raise Exception(f"사용 가능한 AI 모델을 찾지 못했습니다. 마지막 에러: {last_err}")
+
 
 # 실시간 모의고사 웹소켓
 class ConnectionManager:
@@ -94,6 +117,7 @@ async def websocket_endpoint(websocket: WebSocket, room: str):
             await manager.broadcast(data, room, sender=websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
+
 
 # ===============================================
 # API 엔드포인트
@@ -231,12 +255,9 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 채팅
+# 💡 채팅 기능 (자동 탐색 엔진 적용)
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
-    model = get_ai_model(has_files=bool(files))
-    if model is None: return {"success": False, "reply": "AI 연결 오류."}
-    
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
@@ -245,25 +266,26 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
     
+    has_files = False
     if files:
         for f in files:
             if f.filename:
+                has_files = True
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
     try:
-        res = model.generate_content(contents)
+        res = safe_generate(contents, has_files=has_files)
         return {"success": True, "reply": res.text}
     except Exception as e:
         return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
-# 논술 첨삭
+# 💡 논술 첨삭 기능 (자동 탐색 엔진 적용)
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
-    model = get_ai_model(has_files=True)
-    if db is None or model is None: return {"success": False, "detail": "서버 연결 오류"}
+    if db is None: return {"success": False, "detail": "서버 연결 오류"}
     try:
         file_bytes = await file.read()
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
-        res = model.generate_content([prompt, {"mime_type": file.content_type or "application/octet-stream", "data": file_bytes}])
+        res = safe_generate([prompt, {"mime_type": file.content_type or "application/octet-stream", "data": file_bytes}], has_files=True)
         
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/homeworks/{filename}", "wb") as buffer: buffer.write(file_bytes)
@@ -479,25 +501,31 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 정밀 출제 엔진
+# 💡 정밀 출제 엔진 (자동 탐색 엔진 적용)
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
     cnt_killer: int = Form(0), cnt_semi: int = Form(0), cnt_high: int = Form(0), cnt_mid: int = Form(0), cnt_low: int = Form(0),
     q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
 ):
-    model = get_ai_model(has_files=bool(files))
-    if model is None: raise HTTPException(status_code=500, detail="AI 에러")
-    
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
     contents = [prompt]
+    
+    has_files = False
     if files:
         for f in files:
-            if f.filename: contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
+            if f.filename: 
+                has_files = True
+                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
             
-    response = model.generate_content(contents, stream=True)
-    def iter_response():
-        for chunk in response:
-            if chunk.text: yield chunk.text
-    return StreamingResponse(iter_response(), media_type="text/plain")
+    try:
+        response = safe_generate(contents, has_files=has_files, stream=True)
+        def iter_response():
+            for chunk in response:
+                if chunk.text: yield chunk.text
+        return StreamingResponse(iter_response(), media_type="text/plain")
+    except Exception as e:
+        def err_response():
+            yield f"❌ AI 생성 실패: {str(e)}"
+        return StreamingResponse(err_response(), media_type="text/plain")
