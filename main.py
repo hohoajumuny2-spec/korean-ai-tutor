@@ -55,7 +55,7 @@ if firebase_key_str:
         pass
 
 # ===============================================
-# 💡 구글 공식 SDK 엔진 복구 (단종된 구형 모델 제거)
+# 💡 구글 공식 SDK 엔진 복구 (단종된 구형 모델 제거 및 2.5 최신 모델 적용)
 # ===============================================
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -65,8 +65,8 @@ def safe_generate(contents, stream=False):
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    # 단종되어 404 에러를 내는 gemini-1.0-pro, gemini-pro 제거
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
+    # 단종되어 404 에러를 내는 1.5 이하 모델 제거 및 2.5 최신 모델 적용
+    models_to_try = ['gemini-2.5-flash', 'gemini-2.5-pro']
     last_err = ""
     
     for m_name in models_to_try:
