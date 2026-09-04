@@ -55,7 +55,7 @@ if firebase_key_str:
         pass
 
 # ===============================================
-# 💡 구글 공식 SDK 엔진 복구 (스트리밍 및 자동 우회 완벽 지원)
+# 💡 구글 공식 SDK 엔진 복구 (단종된 구형 모델 제거)
 # ===============================================
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -65,8 +65,8 @@ def safe_generate(contents, stream=False):
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    # 가장 빠르고 똑똑한 최신 모델부터 구형 모델까지 순서대로 알아서 찔러봅니다.
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
+    # 단종되어 404 에러를 내는 gemini-1.0-pro, gemini-pro 제거
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
     last_err = ""
     
     for m_name in models_to_try:
@@ -75,10 +75,11 @@ def safe_generate(contents, stream=False):
             response = model.generate_content(contents, stream=stream)
             return response
         except Exception as e:
-            last_err = str(e)
+            # 어떤 모델에서 어떤 에러가 났는지 정확히 기록
+            last_err = f"[{m_name} 모델 실패] {str(e)}"
             continue 
             
-    raise Exception(f"모든 AI 모델 접근에 실패했습니다. (마지막 에러: {last_err})")
+    raise Exception(f"모든 AI 모델 접근에 실패했습니다. 원인: {last_err}")
 
 # 실시간 모의고사 웹소켓
 class ConnectionManager:
@@ -488,7 +489,7 @@ async def generate_stream(
     q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
+    prompt = f"로지에듀 최준용 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
     contents = [prompt]
     
     if files:
