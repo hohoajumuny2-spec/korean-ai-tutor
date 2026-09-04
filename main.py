@@ -65,7 +65,6 @@ def safe_generate(contents, stream=False):
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    # 에러 메시지 권고에 따라 3.1 버전으로 완전히 교체
     models_to_try = ['gemini-3.1-flash-preview', 'gemini-3.1-pro-preview']
     last_err = ""
     
@@ -80,7 +79,6 @@ def safe_generate(contents, stream=False):
             
     raise Exception(f"모든 AI 모델 접근에 실패했습니다. 원인: {last_err}")
 
-# 실시간 모의고사 웹소켓
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -111,10 +109,6 @@ async def websocket_endpoint(websocket: WebSocket, room: str):
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
 
-
-# ===============================================
-# API 엔드포인트
-# ===============================================
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -232,15 +226,21 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅 
+# 💡 채팅 - 지식 베이스(자료학습) 및 기출문제(보관함) 동시 검색 적용
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
+        
+        # 보관함에 출제된 문제와 답안까지 챗봇이 읽을 수 있도록 추가 반영
+        q_docs = db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).stream()
+        questions_base = "\n".join([f"[원장님 출제문제: {d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in q_docs])
+        if questions_base:
+            knowledge_base += f"\n\n[학원 최근 출제 문제 및 정답 데이터]\n{questions_base}"
     
-    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]를 최우선 참고하여 답변하세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
+    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]와 [출제 문제 정답]을 최우선 참고하여 다정하고 명쾌하게 답변하세요. 마크다운(**)을 적극 활용하여 가독성을 높이세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
     
     if files:
@@ -258,7 +258,6 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     except Exception as e:
         return {"success": False, "reply": f"🚨 {str(e)}"}
 
-# 💡 논술 첨삭
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
     try:
@@ -480,15 +479,33 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 정밀 출제망 (스트리밍 시각적 피드백 완벽 적용)
+# 💡 정밀 출제망 (지문 분석 기능 추가 및 출제 강제성 극대화)
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
     cnt_killer: int = Form(0), cnt_semi: int = Form(0), cnt_high: int = Form(0), cnt_mid: int = Form(0), cnt_low: int = Form(0),
     q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
 ):
-    total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"로지에듀 최준용 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n- 유형: {q_types}\n- 총 {total}문항\n[입력자료]\n{q_text}"
+    if q_mode == "분석":
+        prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 연구원입니다.
+다음 지문의 내용을 학생이 이해하기 쉽게 핵심만 요약하고, 이 지문에서 출제될 수 있는 '핵심 출제 요소(어휘, 문법, 내용 일치, 추론, 표현상 특징 등)'를 상세히 분석해 주세요. 
+마크다운(**)을 적극 활용하여 가독성 좋게 작성해 주세요.
+[입력 자료]
+{q_text}"""
+    else:
+        total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+        prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 출제 위원입니다. 
+가장 중요한 절대 규칙: 사용자가 지시한 총 {total}문항을 중간에 끊거나 요약하지 말고 '한 번에 모두' 정확히 출력해야 합니다.
+지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 것은 절대 허용되지 않습니다. 기존에 학습된 난이도별 출제 원리를 엄격히 적용하십시오.
+
+[출제 지시 사항]
+- 출제 유형: {q_types}
+- 출제 난이도 및 문항 수: 총 {total}문항 (킬러 {cnt_killer}, 준킬러 {cnt_semi}, 상 {cnt_high}, 중 {cnt_mid}, 하 {cnt_low})
+- 추가 요구사항: 출제된 문제 맨 아래에 [정답 및 상세 해설] 파트를 반드시 따로 분리하여 모아 작성할 것.
+
+[입력자료]
+{q_text}"""
+        
     contents = [prompt]
     
     if files:
