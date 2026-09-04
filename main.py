@@ -114,6 +114,7 @@ class QuestionArchiveRequest(BaseModel): title: str; content: str
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
 
+# 💡 로그인 시 텔레그램 알림 및 접속 로그 저장 기능 추가
 @app.post("/api/auth")
 def authenticate(req: AuthRequest):
     if req.admin_password == "1234": return {"success": True, "is_admin": True}
@@ -121,16 +122,21 @@ def authenticate(req: AuthRequest):
     
     new_doc_id = f"{req.school}_{req.grade}_{req.student_name}"
     doc = db.collection("students").document(new_doc_id).get()
+    
     if doc.exists:
+        send_telegram_msg(f"🔔 [학생 접속 알림]\n- {req.school} {req.grade} {req.student_name} 학생이 스마트 학습실에 접속했습니다.")
+        db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": "스마트 학습실 접속", "type": "로그인", "score": "접속됨"})
         return {"success": True, "is_admin": False}
         
     old_doc = db.collection("students").document(req.student_name).get()
     if old_doc.exists:
         data = old_doc.to_dict()
         if data.get("school") == req.school and data.get("grade") == req.grade:
+            send_telegram_msg(f"🔔 [학생 접속 알림]\n- {req.school} {req.grade} {req.student_name} 학생이 스마트 학습실에 접속했습니다.")
+            db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": "스마트 학습실 접속", "type": "로그인", "score": "접속됨"})
             return {"success": True, "is_admin": False}
             
-    return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
+    return {"success": False, "detail": "명단에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
 @app.post("/api/inquiry")
 async def submit_inquiry(school: str=Form("미로그인"), grade: str=Form(""), student_name: str=Form("알수없음"), content: str=Form(...)):
@@ -491,8 +497,6 @@ async def add_knowledge(title: str=Form(...), content: str=Form(""), files: Opti
                     res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}])
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except Exception: pass
-    
-    # 💡 치명적 버그 수정: datetime 포맷 안전 적용 (데이터 증발 방지)
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
