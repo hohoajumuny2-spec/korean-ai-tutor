@@ -58,12 +58,19 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
-# 💡 최강의 방어막 탑재 (라이브러리 버전 에러 감지기)
+# ===============================================
+# 💡 완벽 우회 탐색 엔진 (1.5 모델이 막히면 1.0 모델로 자동 침투)
+# ===============================================
 def safe_generate(contents, has_files=False, stream=False):
     if not gemini_key:
         raise Exception("API 키가 설정되지 않았습니다.")
     
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest']
+    # 원장님의 API 키 권한에 맞춰 작동하는 모델을 찾을 때까지 모두 찔러봅니다.
+    if has_files:
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision']
+    else:
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-pro']
+        
     last_err = ""
     for m_name in models_to_try:
         try:
@@ -73,8 +80,8 @@ def safe_generate(contents, has_files=False, stream=False):
             last_err = str(e)
             continue 
             
-    # 모든 모델이 실패했다면 100% 라이브러리 구버전 문제입니다.
-    raise Exception(f"🚨 [치명적 오류] 렌더 서버의 구글 라이브러리가 너무 옛날 버전입니다! 깃허브의 'requirements.txt' 파일에 'google-generativeai>=0.8.2'를 입력하고, 렌더에서 [Clear build cache & deploy]를 반드시 눌러주세요! (마지막 에러: {last_err})")
+    # 모든 우회 시도가 실패했다면 100% API 키 자체의 권한/만료 문제입니다.
+    raise Exception(f"🚨 현재 연결된 구글 API 키로는 어떤 AI 모델에도 접근할 수 없습니다. 구글 AI Studio에서 API 키를 새로 발급받아 렌더(Render)의 환경변수에 교체해 주세요! (마지막 에러: {last_err})")
 
 class ConnectionManager:
     def __init__(self):
@@ -258,7 +265,7 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
         res = safe_generate(contents, has_files=has_files)
         return {"success": True, "reply": res.text}
     except Exception as e:
-        return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
+        return {"success": False, "reply": f"AI 오류 발생: {str(e)}"}
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
