@@ -55,16 +55,16 @@ if firebase_key_str:
     except Exception as e:
         print("Firebase Error:", e)
 
-# 💡 image_9ca044.png 404 에러 완벽 해결 (서버 버전에 구애받지 않는 자동 모델 선택기)
+# 💡 404 에러 완벽 해결: 구형 모델(gemini-pro) 코드를 삭제하고 최신 gemini-1.5-flash 로 고정
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
 def get_ai_model(has_files=False):
     if not gemini_key: return None
-    return genai.GenerativeModel('gemini-pro-vision' if has_files else 'gemini-pro')
+    return genai.GenerativeModel('gemini-1.5-flash')
 
-# 💡 실시간 모의고사 웹소켓 (화면 동기화) 완벽 복구
+# 실시간 모의고사 웹소켓
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -231,7 +231,7 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅 완벽 복구
+# 채팅
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     model = get_ai_model(has_files=bool(files))
@@ -255,7 +255,7 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     except Exception as e:
         return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
-# 💡 논술 첨삭 완벽 복구
+# 논술 첨삭
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
     model = get_ai_model(has_files=True)
@@ -278,7 +278,7 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
         return {"success": True, "feedback": res.text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
-# 💡 지식베이스 (누적 자료) 완벽 복구
+# 지식베이스
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
@@ -296,7 +296,7 @@ def delete_knowledge(k_id: str):
     if db: db.collection("knowledge").document(k_id).delete()
     return {"success": True}
 
-# 💡 문의사항 완벽 복구
+# 문의사항
 @app.post("/api/inquiry")
 def create_inquiry(content: str = Form(...), school: str = Form(""), grade: str = Form(""), student_name: str = Form("")):
     if db: db.collection("inquiries").add({"content": content, "school": school, "grade": grade, "student_name": student_name, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -313,7 +313,7 @@ def delete_inquiry(i_id: str):
     if db: db.collection("inquiries").document(i_id).delete()
     return {"success": True}
 
-# 💡 문제 보관함 완벽 복구
+# 문제 보관함
 class QuestionSaveReq(BaseModel):
     title: str
     content: str
