@@ -42,7 +42,6 @@ def get_upload_file(folder: str, filename: str):
         return response
     raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
-# 파이어베이스 연결
 firebase_key_str = os.environ.get("FIREBASE_KEY")
 db = None
 if firebase_key_str:
@@ -53,41 +52,30 @@ if firebase_key_str:
             firebase_admin.initialize_app(cred)
         db = firestore.client()
     except Exception as e:
-        print("Firebase Error:", e)
+        pass
 
-# ===============================================
-# 💡 무적의 AI 자동 탐색 엔진 (404 에러 원천 차단)
-# ===============================================
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
+# 💡 최강의 방어막 탑재 (라이브러리 버전 에러 감지기)
 def safe_generate(contents, has_files=False, stream=False):
-    """서버 버전에 구애받지 않고 작동하는 모델을 자동 탐색하여 실행합니다."""
     if not gemini_key:
         raise Exception("API 키가 설정되지 않았습니다.")
     
-    # 우선순위대로 모든 모델을 찔러봅니다.
-    if has_files:
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro-vision']
-    else:
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-1.0-pro-latest', 'gemini-pro']
-        
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest']
     last_err = ""
     for m_name in models_to_try:
         try:
             model = genai.GenerativeModel(m_name)
-            res = model.generate_content(contents, stream=stream)
-            return res
+            return model.generate_content(contents, stream=stream)
         except Exception as e:
             last_err = str(e)
-            # 404(모델 없음) 에러가 발생하면 멈추지 않고 즉시 다음 모델을 시도합니다.
             continue 
             
-    raise Exception(f"사용 가능한 AI 모델을 찾지 못했습니다. 마지막 에러: {last_err}")
+    # 모든 모델이 실패했다면 100% 라이브러리 구버전 문제입니다.
+    raise Exception(f"🚨 [치명적 오류] 렌더 서버의 구글 라이브러리가 너무 옛날 버전입니다! 깃허브의 'requirements.txt' 파일에 'google-generativeai>=0.8.2'를 입력하고, 렌더에서 [Clear build cache & deploy]를 반드시 눌러주세요! (마지막 에러: {last_err})")
 
-
-# 실시간 모의고사 웹소켓
 class ConnectionManager:
     def __init__(self):
         self.active_connections = {}
@@ -118,10 +106,6 @@ async def websocket_endpoint(websocket: WebSocket, room: str):
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
 
-
-# ===============================================
-# API 엔드포인트
-# ===============================================
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -185,7 +169,6 @@ async def update_profile(student_name: str = Form(...), motto: str = Form(""), a
     s_ref.set(update_data, merge=True)
     return {"success": True}
 
-# 학생 장부 관리
 @app.get("/api/admin/students")
 def get_students():
     if db is None: return {"success": False, "students": []}
@@ -255,7 +238,6 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅 기능 (자동 탐색 엔진 적용)
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
@@ -278,7 +260,6 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
     except Exception as e:
         return {"success": False, "reply": f"AI 분석 중 오류가 발생했습니다: {str(e)}"}
 
-# 💡 논술 첨삭 기능 (자동 탐색 엔진 적용)
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
     if db is None: return {"success": False, "detail": "서버 연결 오류"}
@@ -300,7 +281,6 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
         return {"success": True, "feedback": res.text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
-# 지식베이스
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
@@ -318,7 +298,6 @@ def delete_knowledge(k_id: str):
     if db: db.collection("knowledge").document(k_id).delete()
     return {"success": True}
 
-# 문의사항
 @app.post("/api/inquiry")
 def create_inquiry(content: str = Form(...), school: str = Form(""), grade: str = Form(""), student_name: str = Form("")):
     if db: db.collection("inquiries").add({"content": content, "school": school, "grade": grade, "student_name": student_name, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -335,7 +314,6 @@ def delete_inquiry(i_id: str):
     if db: db.collection("inquiries").document(i_id).delete()
     return {"success": True}
 
-# 문제 보관함
 class QuestionSaveReq(BaseModel):
     title: str
     content: str
@@ -356,7 +334,6 @@ def delete_question(q_id: str):
     if db: db.collection("questions").document(q_id).delete()
     return {"success": True}
 
-# 과제
 @app.post("/api/admin/homework")
 async def create_homework(title: str = Form(...), desc: str = Form(""), answer_text: str = Form(""), answer_file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
@@ -395,7 +372,6 @@ async def submit_homework(school: str = Form(...), grade: str = Form(...), stude
     ans_data = doc.to_dict() if doc.exists else {}
     return {"success": True, "answer_file": ans_data.get("answer_file", "")}
 
-# 게시판
 @app.post("/api/admin/board")
 async def create_board_post(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
@@ -418,7 +394,6 @@ def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
-# 강의
 class LectureRequest(BaseModel):
     title: str
     desc: str
@@ -440,7 +415,6 @@ def delete_lecture(lecture_id: str):
     if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
 
-# 모의고사
 @app.post("/api/admin/exam")
 async def create_exam(title: str = Form(...), objective: str = Form(""), exam_data: str = Form(...), video_url: str = Form(""), explanation_text: str = Form(""), file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
@@ -501,7 +475,6 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 정밀 출제 엔진 (자동 탐색 엔진 적용)
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
