@@ -54,9 +54,6 @@ if firebase_key_str:
     except Exception as e:
         pass
 
-# ===============================================
-# 💡 구글 공식 SDK 엔진 복구 (3.1 최신 모델 적용)
-# ===============================================
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -226,7 +223,6 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
-# 💡 채팅 - 지식 베이스(자료학습) 및 기출문제(보관함) 동시 검색 적용
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
     knowledge_base = ""
@@ -234,13 +230,12 @@ async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]
         kb_docs = db.collection("knowledge").limit(10).stream()
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
         
-        # 보관함에 출제된 문제와 답안까지 챗봇이 읽을 수 있도록 추가 반영
         q_docs = db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).stream()
         questions_base = "\n".join([f"[원장님 출제문제: {d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in q_docs])
         if questions_base:
             knowledge_base += f"\n\n[학원 최근 출제 문제 및 정답 데이터]\n{questions_base}"
     
-    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 아래 [학원 누적 자료]와 [출제 문제 정답]을 최우선 참고하여 다정하고 명쾌하게 답변하세요. 마크다운(**)을 적극 활용하여 가독성을 높이세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
+    system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 반드시 아래 제공된 [학원 누적 자료]와 [출제 문제 정답] 내에서만 근거를 찾아 다정하고 명쾌하게 답변하세요. 만약 제공된 자료에 전혀 없는 내용이라면 '해당 내용은 아직 학원 자료에 업데이트되지 않았습니다. 원장님께 직접 질문해 주세요!'라고 대답하세요. 마크다운(**)을 적극 활용하여 파란색 굵은 글씨가 적용되도록 가독성을 높이세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
     
     if files:
@@ -304,6 +299,34 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                 
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
+
+# 💡 새롭게 추가된 대량 일괄 등록 API
+@app.post("/api/admin/knowledge/bulk")
+async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
+    if db is None: return {"success": False}
+    processed = 0
+    for file in files:
+        if file.filename:
+            try:
+                file_bytes = await file.read()
+                mime = file.content_type
+                if "pdf" in file.filename.lower(): mime = "application/pdf"
+                elif "png" in file.filename.lower(): mime = "image/png"
+                elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+                
+                response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
+                title = file.filename.rsplit('.', 1)[0] # 확장자 제거하여 제목으로 사용
+                
+                db.collection("knowledge").add({
+                    "title": title, 
+                    "content": f"[{title} 요약 및 핵심]\n{response.text}", 
+                    "created_at": datetime.now()
+                })
+                processed += 1
+            except Exception as e:
+                print("Bulk Error:", str(e))
+                pass
+    return {"success": True, "count": processed}
 
 @app.get("/api/knowledge")
 def get_knowledge():
@@ -479,7 +502,6 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 정밀 출제망 (지문 분석 기능 추가 및 출제 강제성 극대화)
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
