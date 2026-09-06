@@ -4,7 +4,8 @@ import shutil
 import uuid
 import requests
 import threading
-import mimetypes # 💡 파일 글자 깨짐 방지를 위해 추가됨
+import mimetypes
+import urllib.parse # 💡 한글 파일명 깨짐 방지를 위해 추가
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -36,15 +37,21 @@ XP_REWARD_HOMEWORK = 200
 XP_REWARD_PROFILE = 300
 XP_MULTIPLIER_EXAM = 2
 
-# 💡 수정됨: 브라우저에서 파일 열 때 글자가 깨지지 않도록 이미지/PDF 형식을 명확히 지정합니다.
+# 💡 수정됨: 한글 파일명 인코딩 및 HWP 파일 강제 다운로드(깨짐 방지) 처리
 @app.get("/uploads/{folder}/{filename}")
 def get_upload_file(folder: str, filename: str):
     filepath = f"uploads/{folder}/{filename}"
     if os.path.exists(filepath):
         mt, _ = mimetypes.guess_type(filepath)
+        encoded_filename = urllib.parse.quote(filename.encode('utf-8'))
+        
+        # 브라우저에서 띄울 수 있는 파일(PDF, 이미지)은 inline(바로보기), 나머지는 attachment(다운로드)
+        is_inline = mt in ['application/pdf', 'image/jpeg', 'image/png', 'image/gif']
+        disposition = "inline" if is_inline else "attachment"
+        
         response = FileResponse(filepath, media_type=mt or "application/octet-stream")
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+        response.headers["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{encoded_filename}"
         return response
     raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
@@ -63,58 +70,42 @@ if firebase_key_str:
 def send_telegram_message(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    
-    if not token or not chat_id: 
-        return
-        
+    if not token or not chat_id: return
     def _send():
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
-        try:
-            requests.post(url, json=payload, timeout=3)
-        except:
-            pass
-            
+        try: requests.post(url, json=payload, timeout=3)
+        except: pass
     threading.Thread(target=_send).start()
 
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise Exception("API 키가 설정되지 않았습니다. 렌더 대시보드 환경변수를 확인해주세요.")
-    
+    if not api_key: raise Exception("API 키 오류")
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
-    
-    models_to_try = ['gemini-3.1-flash-preview', 'gemini-3.1-pro-preview']
-    last_err = ""
-    
-    for m_name in models_to_try:
+    for m_name in ['gemini-3.1-flash-preview', 'gemini-3.1-pro-preview']:
         try:
             model = genai.GenerativeModel(m_name)
-            response = model.generate_content(contents, stream=stream)
-            return response
+            return model.generate_content(contents, stream=stream)
         except Exception as e:
-            last_err = f"[{m_name} 모델 실패] {str(e)}"
+            last_err = str(e)
             continue 
-            
-    raise Exception(f"모든 AI 모델 접근에 실패했습니다. 원인: {last_err}")
+    raise Exception(f"AI 실패: {last_err}")
 
 class ConnectionManager:
-    def __init__(self):
-        self.active_connections = {}
+    def __init__(self): self.active_connections = {}
     async def connect(self, ws: WebSocket, room: str):
         await ws.accept()
-        if room not in self.active_connections:
-            self.active_connections[room] = []
+        if room not in self.active_connections: self.active_connections[room] = []
         self.active_connections[room].append(ws)
     def disconnect(self, ws: WebSocket, room: str):
         if room in self.active_connections and ws in self.active_connections[room]:
             self.active_connections[room].remove(ws)
     async def broadcast(self, message: str, room: str, sender: WebSocket):
         if room in self.active_connections:
-            for connection in self.active_connections[room]:
-                if connection != sender:
-                    try: await connection.send_text(message)
+            for c in self.active_connections[room]:
+                if c != sender:
+                    try: await c.send_text(message)
                     except: pass
 
 manager = ConnectionManager()
@@ -129,12 +120,7 @@ async def websocket_endpoint(websocket: WebSocket, room: str):
     except WebSocketDisconnect:
         manager.disconnect(websocket, room)
 
-
-class AuthRequest(BaseModel):
-    school: str = ""
-    grade: str = ""
-    student_name: str
-    admin_password: str = ""
+class AuthRequest(BaseModel): school: str = ""; grade: str = ""; student_name: str; admin_password: str = ""
 
 @app.get("/api/health")
 def health_check(): return {"status": "ok"}
@@ -143,7 +129,6 @@ def health_check(): return {"status": "ok"}
 def authenticate(req: AuthRequest):
     if req.admin_password == "1234": return {"success": True, "is_admin": True}
     if db is None: raise HTTPException(status_code=500, detail="DB 오류")
-    
     doc = db.collection("students").document(req.student_name).get()
     if doc.exists:
         data = doc.to_dict()
@@ -151,13 +136,10 @@ def authenticate(req: AuthRequest):
             today = datetime.now().strftime("%Y-%m-%d")
             last_login = data.get("last_login", "")
             current_xp = data.get("xp", 0)
-            
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
-            
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
-            
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
 
@@ -166,7 +148,8 @@ def get_student_profile(student_name: str):
     if db is None: return {"success": False}
     doc = db.collection("students").document(student_name).get()
     if not doc.exists: return {"success": False}
-    reports = [r.to_dict() for r in db.collection("reports").where("student_name", "==", student_name).order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(20).stream()]
+    # 💡 수정됨: 학생의 제출 기록을 최대 100개까지 넉넉하게 불러오도록 상향
+    reports = [r.to_dict() for r in db.collection("reports").where("student_name", "==", student_name).order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(100).stream()]
     return {"success": True, "profile": doc.to_dict(), "reports": reports}
 
 @app.post("/api/student/profile_update")
@@ -175,22 +158,18 @@ async def update_profile(student_name: str = Form(...), motto: str = Form(""), a
     s_ref = db.collection("students").document(student_name)
     doc = s_ref.get()
     if not doc.exists: return {"success": False}
-    
     data = doc.to_dict()
     update_data = {"motto": motto, "avatar": avatar}
     current_xp = data.get("xp", 0)
-    
     if not data.get("profile_setup_done"):
         current_xp += XP_REWARD_PROFILE
         update_data["xp"] = current_xp
         update_data["profile_setup_done"] = True
-
     if file and file.filename:
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/profiles/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         update_data["profile_image"] = f"/uploads/profiles/{filename}"
         update_data["avatar"] = "" 
-        
     s_ref.set(update_data, merge=True)
     return {"success": True}
 
@@ -250,22 +229,17 @@ def get_reports():
 
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), grade: str = Form("미상"), student_name: str = Form("미상"), files: Optional[List[UploadFile]] = File(None)):
-    
     send_telegram_message(f"💬 [질문 알림]\n{school} {grade}학년 {student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
-    
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
-        
         q_docs = db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).limit(10).stream()
         questions_base = "\n".join([f"[원장님 출제문제: {d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in q_docs])
-        if questions_base:
-            knowledge_base += f"\n\n[학원 최근 출제 문제 및 정답 데이터]\n{questions_base}"
+        if questions_base: knowledge_base += f"\n\n[학원 최근 출제 문제 및 정답 데이터]\n{questions_base}"
     
     system_prompt = f"당신은 로지에듀 국어학원 AI 튜터 '국최'입니다. 반드시 아래 제공된 [학원 누적 자료]와 [출제 문제 정답] 내에서만 근거를 찾아 다정하고 명쾌하게 답변하세요. 만약 제공된 자료에 전혀 없는 내용이라면 '해당 내용은 아직 학원 자료에 업데이트되지 않았습니다. 원장님께 직접 질문해 주세요!'라고 대답하세요. 마크다운(**)을 적극 활용하여 파란색 굵은 글씨가 적용되도록 가독성을 높이세요.\n[학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"
     contents = [system_prompt]
-    
     if files:
         for f in files:
             if f.filename:
@@ -289,21 +263,16 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
         if "pdf" in file.filename.lower(): mime = "application/pdf"
         elif "png" in file.filename.lower(): mime = "image/png"
         elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
-        
         response = safe_generate([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
-        
         filename = f"{uuid.uuid4()}_{file.filename}"
         with open(f"uploads/homeworks/{filename}", "wb") as buffer: buffer.write(file_bytes)
-        
         if db:
             db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": f"/uploads/homeworks/{filename}"})
             s_doc = db.collection("students").document(student_name).get()
             if s_doc.exists:
                 xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
                 db.collection("students").document(student_name).set({"xp": xp}, merge=True)
-            
         return {"success": True, "feedback": response.text}
     except Exception as e: return {"success": False, "detail": str(e)}
 
@@ -320,11 +289,9 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                     if "pdf" in file.filename.lower(): mime = "application/pdf"
                     elif "png" in file.filename.lower(): mime = "image/png"
                     elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-                    
                     response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
                     final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
                 except Exception: pass
-                
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
 
@@ -340,19 +307,11 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
                 if "pdf" in file.filename.lower(): mime = "application/pdf"
                 elif "png" in file.filename.lower(): mime = "image/png"
                 elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-                
                 response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
                 title = file.filename.rsplit('.', 1)[0] 
-                
-                db.collection("knowledge").add({
-                    "title": title, 
-                    "content": f"[{title} 요약 및 핵심]\n{response.text}", 
-                    "created_at": datetime.now()
-                })
+                db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now()})
                 processed += 1
-            except Exception as e:
-                print("Bulk Error:", str(e))
-                pass
+            except Exception as e: pass
     return {"success": True, "count": processed}
 
 @app.get("/api/knowledge")
@@ -421,19 +380,10 @@ def delete_homework(title: str):
     if db: db.collection("homeworks").document(title).delete()
     return {"success": True}
 
-# 💡 수정됨: 다중 파일(List[UploadFile])을 한 번에 받을 수 있도록 수정
 @app.post("/api/homework/submit")
-async def submit_homework(
-    school: str = Form(...), 
-    grade: str = Form(...), 
-    student_name: str = Form(...), 
-    title: str = Form(...), 
-    files: List[UploadFile] = File(...) # 여러 파일을 받기 위해 List로 변경
-):
+async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
     if db is None: return {"success": False}
-    
     file_urls = []
-    
     for file in files:
         if file.filename:
             filename = f"{uuid.uuid4()}_{file.filename}"
@@ -441,19 +391,8 @@ async def submit_homework(
                 shutil.copyfileobj(file.file, buffer)
             file_urls.append(f"/uploads/homeworks/{filename}")
             
-    # 파일이 여러 개일 경우 쉼표(,)로 연결해서 저장
     joined_urls = ",".join(file_urls)
-    
-    db.collection("reports").add({
-        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-        "student_name": student_name, 
-        "school": school, 
-        "grade": grade, 
-        "task_name": title, 
-        "type": "과제 제출", 
-        "score": "제출완료", 
-        "file_url": joined_urls
-    })
+    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": joined_urls})
     
     s_doc = db.collection("students").document(student_name).get()
     if s_doc.exists:
@@ -583,7 +522,6 @@ async def generate_stream(
 {q_text}"""
         
     contents = [prompt]
-    
     if files:
         for f in files:
             if f.filename: 
@@ -593,7 +531,6 @@ async def generate_stream(
                 elif "png" in f.filename.lower(): mime = "image/png"
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
-            
     try:
         response = safe_generate(contents, stream=True)
         def iter_response():
