@@ -2,6 +2,8 @@ import os
 import json
 import shutil
 import uuid
+import requests # 💡 텔레그램 통신을 위해 추가됨
+import threading # 💡 서버 멈춤 방지를 위해 추가됨
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -53,6 +55,27 @@ if firebase_key_str:
         db = firestore.client()
     except Exception as e:
         pass
+
+# 💡 완벽하게 보호된 텔레그램 알림 발송 함수
+def send_telegram_message(text: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    # 토큰이 설정 안 되어 있으면 쿨하게 무시 (서버 안 멈춤)
+    if not token or not chat_id: 
+        return
+        
+    def _send():
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text}
+        try:
+            # 최대 3초만 기다림. 텔레그램이 대답 안 해도 무시하고 종료
+            requests.post(url, json=payload, timeout=3)
+        except:
+            pass
+            
+    # 백그라운드에서 별도로 실행시켜 학생의 화면 대기 시간을 '0'으로 만듦
+    threading.Thread(target=_send).start()
 
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -132,6 +155,9 @@ def authenticate(req: AuthRequest):
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
+            
+            # 💡 텔레그램 로그인 알림 추가!
+            send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
@@ -223,8 +249,13 @@ def get_reports():
     docs = db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(500).stream()
     return {"success": True, "reports": [{"id": d.id, **d.to_dict()} for d in docs]}
 
+# 💡 질문 내용을 원장님께 전송하도록 프론트엔드 데이터를 잡아냅니다.
 @app.post("/api/chat")
-async def chat_with_ai(prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)):
+async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), grade: str = Form("미상"), student_name: str = Form("미상"), files: Optional[List[UploadFile]] = File(None)):
+    
+    # 💡 텔레그램 질문 알림 추가!
+    send_telegram_message(f"💬 [질문 알림]\n{school} {grade}학년 {student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
+    
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
@@ -300,7 +331,6 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
     return {"success": True}
 
-# 💡 새롭게 추가된 대량 일괄 등록 API
 @app.post("/api/admin/knowledge/bulk")
 async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
     if db is None: return {"success": False}
@@ -315,7 +345,7 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
                 elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
                 
                 response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
-                title = file.filename.rsplit('.', 1)[0] # 확장자 제거하여 제목으로 사용
+                title = file.filename.rsplit('.', 1)[0] 
                 
                 db.collection("knowledge").add({
                     "title": title, 
