@@ -46,9 +46,13 @@ if firebase_key_str:
         cred = credentials.Certificate(cred_dict)
         project_id = cred_dict.get("project_id")
         
+        # 💡 수정됨: Render 환경변수에 FIREBASE_BUCKET 주소가 있으면 그걸 쓰고, 없으면 기본값 사용
+        bucket_name = os.environ.get("FIREBASE_BUCKET", f"{project_id}.appspot.com")
+        bucket_name = bucket_name.replace("gs://", "").strip("/") # 실수로 gs://를 붙여 넣어도 자동 제거됨
+        
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {
-                'storageBucket': f"{project_id}.appspot.com" 
+                'storageBucket': bucket_name 
             })
         db = firestore.client()
         bucket = storage.bucket()
@@ -107,7 +111,7 @@ def get_upload_file(folder: str, filename: str):
             }
         )
         
-    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다. (과거에 임시 저장되어 삭제된 파일입니다)")
 
 def send_telegram_message(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -181,7 +185,6 @@ def authenticate(req: AuthRequest):
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
-            
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
@@ -533,7 +536,6 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
-# 💡 새롭게 추가된 [타임어택 퀴즈] API
 class QuizQuestion(BaseModel):
     q_text: str
     options: list
@@ -553,7 +555,7 @@ def create_quiz(req: QuizCreateReq):
         "title": req.title,
         "deadline": req.deadline,
         "time_limit": req.time_limit,
-        "questions": req.questions,
+        "questions": [q.dict() for q in req.questions],
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     return {"success": True}
@@ -591,7 +593,6 @@ def submit_quiz(req: QuizSubmitReq):
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "타임어택 퀴즈", "score": actual_score})
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.school} {req.grade}학년 {req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
     return {"success": True, "score": actual_score}
-
 
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
