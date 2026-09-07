@@ -46,13 +46,9 @@ if firebase_key_str:
         cred = credentials.Certificate(cred_dict)
         project_id = cred_dict.get("project_id")
         
-        # 💡 수정됨: Render 환경변수에 FIREBASE_BUCKET 주소가 있으면 그걸 쓰고, 없으면 기본값 사용
-        bucket_name = os.environ.get("FIREBASE_BUCKET", f"{project_id}.appspot.com")
-        bucket_name = bucket_name.replace("gs://", "").strip("/") # 실수로 gs://를 붙여 넣어도 자동 제거됨
-        
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {
-                'storageBucket': bucket_name 
+                'storageBucket': f"{project_id}.appspot.com" 
             })
         db = firestore.client()
         bucket = storage.bucket()
@@ -111,7 +107,7 @@ def get_upload_file(folder: str, filename: str):
             }
         )
         
-    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다. (과거에 임시 저장되어 삭제된 파일입니다)")
+    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
 def send_telegram_message(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -185,6 +181,7 @@ def authenticate(req: AuthRequest):
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
+            
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
@@ -608,9 +605,15 @@ async def generate_stream(
 {q_text}"""
     else:
         total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+        
+        # 💡 편집을 위해 AI에게 딴소리와 영어를 금지시키는 강력한 프롬프트 추가
         prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 출제 위원입니다. 
 가장 중요한 절대 규칙: 사용자가 지시한 총 {total}문항을 중간에 끊거나 요약하지 말고 '한 번에 모두' 정확히 출력해야 합니다.
-지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 단축은 절대 허용되지 않습니다. 기존에 학습된 난이도별 출제 원리를 엄격히 적용하십시오.
+지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 단축은 절대 허용되지 않습니다.
+
+[⚠️편집을 위한 엄격한 제약 사항⚠️]
+1. 원본 지문에 없는 영어 단어나 알파벳(English)은 절대 사용하지 마십시오.
+2. "문제를 이렇게 출제했습니다", "요청하신 난이도에 맞췄습니다" 같은 AI의 부연 설명, 인사말, 맺음말을 일절 출력하지 마십시오. 오직 결과물(지문, 문제, 정답 및 해설)만 건조하게 출력하십시오.
 
 [출제 지시 사항]
 - 출제 유형: {q_types}
