@@ -5,14 +5,14 @@ import uuid
 import requests
 import threading
 import mimetypes
-import urllib.parse # 💡 한글 파일명 깨짐 방지를 위해 추가
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+import urllib.parse 
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Response
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
 from datetime import datetime
 
@@ -37,35 +37,77 @@ XP_REWARD_HOMEWORK = 200
 XP_REWARD_PROFILE = 300
 XP_MULTIPLIER_EXAM = 2
 
-# 💡 수정됨: 한글 파일명 인코딩 및 HWP 파일 강제 다운로드(깨짐 방지) 처리
-@app.get("/uploads/{folder}/{filename}")
-def get_upload_file(folder: str, filename: str):
-    filepath = f"uploads/{folder}/{filename}"
-    if os.path.exists(filepath):
-        mt, _ = mimetypes.guess_type(filepath)
-        encoded_filename = urllib.parse.quote(filename.encode('utf-8'))
-        
-        # 브라우저에서 띄울 수 있는 파일(PDF, 이미지)은 inline(바로보기), 나머지는 attachment(다운로드)
-        is_inline = mt in ['application/pdf', 'image/jpeg', 'image/png', 'image/gif']
-        disposition = "inline" if is_inline else "attachment"
-        
-        response = FileResponse(filepath, media_type=mt or "application/octet-stream")
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{encoded_filename}"
-        return response
-    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
-
 firebase_key_str = os.environ.get("FIREBASE_KEY")
 db = None
+bucket = None
 if firebase_key_str:
     try:
         cred_dict = json.loads(firebase_key_str)
         cred = credentials.Certificate(cred_dict)
+        project_id = cred_dict.get("project_id")
+        
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': f"{project_id}.appspot.com" 
+            })
         db = firestore.client()
+        bucket = storage.bucket()
     except Exception as e:
-        pass
+        print("Firebase Init Error:", e)
+
+def save_bytes(file_bytes: bytes, filename: str, folder: str, content_type: str) -> str:
+    unique_name = f"{uuid.uuid4()}_{filename}"
+    filepath = f"uploads/{folder}/{unique_name}"
+    
+    if bucket:
+        try:
+            blob = bucket.blob(filepath)
+            mt, _ = mimetypes.guess_type(filename)
+            blob.upload_from_string(file_bytes, content_type=mt or content_type or 'application/octet-stream')
+            return f"/{filepath}"
+        except Exception as e:
+            print("Storage Upload Error:", e)
+            
+    with open(filepath, "wb") as buffer:
+        buffer.write(file_bytes)
+    return f"/{filepath}"
+
+@app.get("/uploads/{folder}/{filename}")
+def get_upload_file(folder: str, filename: str):
+    filepath = f"uploads/{folder}/{filename}"
+    mt, _ = mimetypes.guess_type(filename)
+    encoded_filename = urllib.parse.quote(filename.encode('utf-8'))
+    
+    is_inline = mt in ['application/pdf', 'image/jpeg', 'image/png', 'image/gif']
+    disposition = "inline" if is_inline else "attachment"
+
+    if bucket:
+        try:
+            blob = bucket.blob(filepath)
+            if blob.exists():
+                file_bytes = blob.download_as_bytes()
+                return Response(
+                    content=file_bytes, 
+                    media_type=mt or "application/octet-stream",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}"
+                    }
+                )
+        except Exception as e:
+            pass
+            
+    if os.path.exists(filepath):
+        return FileResponse(
+            filepath, 
+            media_type=mt or "application/octet-stream",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+        
+    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
 def send_telegram_message(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -139,6 +181,7 @@ def authenticate(req: AuthRequest):
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
+            
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
@@ -148,7 +191,6 @@ def get_student_profile(student_name: str):
     if db is None: return {"success": False}
     doc = db.collection("students").document(student_name).get()
     if not doc.exists: return {"success": False}
-    # 💡 수정됨: 학생의 제출 기록을 최대 100개까지 넉넉하게 불러오도록 상향
     reports = [r.to_dict() for r in db.collection("reports").where("student_name", "==", student_name).order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(100).stream()]
     return {"success": True, "profile": doc.to_dict(), "reports": reports}
 
@@ -165,11 +207,13 @@ async def update_profile(student_name: str = Form(...), motto: str = Form(""), a
         current_xp += XP_REWARD_PROFILE
         update_data["xp"] = current_xp
         update_data["profile_setup_done"] = True
+        
     if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        with open(f"uploads/profiles/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-        update_data["profile_image"] = f"/uploads/profiles/{filename}"
+        file_bytes = await file.read()
+        file_url = save_bytes(file_bytes, file.filename, "profiles", file.content_type)
+        update_data["profile_image"] = file_url
         update_data["avatar"] = "" 
+        
     s_ref.set(update_data, merge=True)
     return {"success": True}
 
@@ -257,6 +301,7 @@ async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), gr
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
+    send_telegram_message(f"✍️ [논술/요약 제출 알림]\n{school} {grade}학년 {student_name} 학생이 '{topic}' 논술을 제출했습니다.")
     try:
         file_bytes = await file.read()
         mime = file.content_type
@@ -265,10 +310,9 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
         elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
         response = safe_generate([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        with open(f"uploads/homeworks/{filename}", "wb") as buffer: buffer.write(file_bytes)
+        file_url = save_bytes(file_bytes, file.filename, "homeworks", mime)
         if db:
-            db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": f"/uploads/homeworks/{filename}"})
+            db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": file_url})
             s_doc = db.collection("students").document(student_name).get()
             if s_doc.exists:
                 xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
@@ -363,9 +407,8 @@ async def create_homework(title: str = Form(...), desc: str = Form(""), answer_t
     if db is None: return {"success": False}
     ans_url = ""
     if answer_file and answer_file.filename:
-        filename = f"{uuid.uuid4()}_{answer_file.filename}"
-        with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(answer_file.file, buffer)
-        ans_url = f"/uploads/homeworks/{filename}"
+        file_bytes = await answer_file.read()
+        ans_url = save_bytes(file_bytes, answer_file.filename, "homeworks", answer_file.content_type)
     db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
@@ -383,22 +426,19 @@ def delete_homework(title: str):
 @app.post("/api/homework/submit")
 async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
     if db is None: return {"success": False}
+    send_telegram_message(f"📝 [과제 제출 알림]\n{school} {grade}학년 {student_name} 학생이 '{title}' 과제를 제출했습니다.")
     file_urls = []
     for file in files:
         if file.filename:
-            filename = f"{uuid.uuid4()}_{file.filename}"
-            with open(f"uploads/homeworks/{filename}", "wb") as buffer: 
-                shutil.copyfileobj(file.file, buffer)
-            file_urls.append(f"/uploads/homeworks/{filename}")
-            
+            file_bytes = await file.read()
+            url = save_bytes(file_bytes, file.filename, "homeworks", file.content_type)
+            file_urls.append(url)
     joined_urls = ",".join(file_urls)
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": joined_urls})
-    
     s_doc = db.collection("students").document(student_name).get()
     if s_doc.exists:
         xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
         db.collection("students").document(student_name).set({"xp": xp}, merge=True)
-        
     doc = db.collection("homeworks").document(title).get()
     ans_data = doc.to_dict() if doc.exists else {}
     return {"success": True, "answer_file": ans_data.get("answer_file", "")}
@@ -408,9 +448,8 @@ async def create_board_post(title: str = Form(...), desc: str = Form(""), file: 
     if db is None: return {"success": False}
     file_url = ""
     if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        with open(f"uploads/board/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-        file_url = f"/uploads/board/{filename}"
+        file_bytes = await file.read()
+        file_url = save_bytes(file_bytes, file.filename, "board", file.content_type)
     db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
@@ -447,9 +486,8 @@ async def create_exam(title: str = Form(...), objective: str = Form(""), exam_da
     if db is None: return {"success": False}
     pdf_url = ""
     if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        with open(f"uploads/exams/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-        pdf_url = f"/uploads/exams/{filename}"
+        file_bytes = await file.read()
+        pdf_url = save_bytes(file_bytes, file.filename, "exams", file.content_type)
     db.collection("exams").document(title).set({"title": title, "objective": objective, "exam_data": exam_data, "pdf_url": pdf_url, "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
@@ -495,6 +533,66 @@ def submit_exam(req: ExamSubmitRequest):
         db.collection("students").document(req.student_name).set({"xp": xp}, merge=True)
     return {"success": True, "score": actual_score, "wrongs": wrongs, "wrong_by_diff": wrong_by_diff, "potential_ab": potential_ab, "potential_abc": potential_abc, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
+# 💡 새롭게 추가된 [타임어택 퀴즈] API
+class QuizQuestion(BaseModel):
+    q_text: str
+    options: list
+    answer: int
+    score: int
+
+class QuizCreateReq(BaseModel):
+    title: str
+    deadline: str
+    time_limit: int
+    questions: list
+
+@app.post("/api/admin/quiz")
+def create_quiz(req: QuizCreateReq):
+    if db is None: return {"success": False}
+    db.collection("quizzes").document(req.title).set({
+        "title": req.title,
+        "deadline": req.deadline,
+        "time_limit": req.time_limit,
+        "questions": req.questions,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+    return {"success": True}
+
+@app.get("/api/quizzes")
+def get_quizzes():
+    if db is None: return {"success": False, "quizzes": []}
+    docs = db.collection("quizzes").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    return {"success": True, "quizzes": [{"id": d.id, **d.to_dict()} for d in docs]}
+
+@app.delete("/api/admin/quiz/{title}")
+def delete_quiz(title: str):
+    if db: db.collection("quizzes").document(title).delete()
+    return {"success": True}
+
+class QuizSubmitReq(BaseModel):
+    school: str
+    grade: str
+    student_name: str
+    title: str
+    answers: list
+
+@app.post("/api/quiz/submit")
+def submit_quiz(req: QuizSubmitReq):
+    if db is None: return {"success": False}
+    doc = db.collection("quizzes").document(req.title).get()
+    actual_score = 0
+    if doc.exists:
+        data = doc.to_dict()
+        questions = data.get("questions", [])
+        for i, q in enumerate(questions):
+            if i < len(req.answers) and str(req.answers[i]) == str(q.get("answer")):
+                actual_score += int(q.get("score", 0))
+                
+    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "타임어택 퀴즈", "score": actual_score})
+    send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.school} {req.grade}학년 {req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
+    return {"success": True, "score": actual_score}
+
+
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
@@ -511,7 +609,7 @@ async def generate_stream(
         total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
         prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 출제 위원입니다. 
 가장 중요한 절대 규칙: 사용자가 지시한 총 {total}문항을 중간에 끊거나 요약하지 말고 '한 번에 모두' 정확히 출력해야 합니다.
-지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 것은 절대 허용되지 않습니다. 기존에 학습된 난이도별 출제 원리를 엄격히 적용하십시오.
+지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 단축은 절대 허용되지 않습니다. 기존에 학습된 난이도별 출제 원리를 엄격히 적용하십시오.
 
 [출제 지시 사항]
 - 출제 유형: {q_types}
