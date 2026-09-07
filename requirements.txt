@@ -1,8 +1,7 @@
 fastapi
 uvicorn
 pydantic
-google-generativeai>=0.8.2
+google-generativeai
 firebase-admin
 python-multipart
 requests
-websockets
