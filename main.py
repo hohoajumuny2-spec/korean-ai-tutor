@@ -57,10 +57,12 @@ if firebase_key_str:
     except Exception as e:
         pass
 
-# 💡 완벽하게 보호된 텔레그램 알림 발송 함수
+# ==========================================
+# 📱 완벽하게 보호된 텔레그램 알림 발송 함수 (토큰 직접 입력)
+# ==========================================
 def send_telegram_message(text: str):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    token = "8941576630:AAFfZ0EnbpTx4nsuP3moecgzRh4gESBHEzg"
+    chat_id = "1720615282"
     
     if not token or not chat_id: 
         return
@@ -153,6 +155,7 @@ def authenticate(req: AuthRequest):
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
             
+            # 로그인 성공 시 텔레그램 알림
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
@@ -248,6 +251,7 @@ def get_reports():
 @app.post("/api/chat")
 async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), grade: str = Form("미상"), student_name: str = Form("미상"), files: Optional[List[UploadFile]] = File(None)):
     
+    # 질문 발생 시 텔레그램 알림
     send_telegram_message(f"💬 [질문 알림]\n{school} {grade}학년 {student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
     
     knowledge_base = ""
