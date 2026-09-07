@@ -46,9 +46,12 @@ if firebase_key_str:
         cred = credentials.Certificate(cred_dict)
         project_id = cred_dict.get("project_id")
         
+        bucket_name = os.environ.get("FIREBASE_BUCKET", f"{project_id}.appspot.com")
+        bucket_name = bucket_name.replace("gs://", "").strip("/")
+        
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {
-                'storageBucket': f"{project_id}.appspot.com" 
+                'storageBucket': bucket_name 
             })
         db = firestore.client()
         bucket = storage.bucket()
@@ -181,7 +184,6 @@ def authenticate(req: AuthRequest):
             if last_login != today:
                 current_xp += XP_REWARD_LOGIN
                 db.collection("students").document(req.student_name).set({"last_login": today, "xp": current_xp}, merge=True)
-            
             send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "xp": current_xp, "reward": XP_REWARD_LOGIN if last_login != today else 0}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년이 틀립니다."}
@@ -336,7 +338,9 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                     response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
                     final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
                 except Exception: pass
-    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now()})
+    
+    # 💡 치명적 오류 수정: created_at을 반드시 텍스트로 저장하여 500 충돌 에러 방지
+    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
 @app.post("/api/admin/knowledge/bulk")
@@ -353,7 +357,9 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
                 elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
                 response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
                 title = file.filename.rsplit('.', 1)[0] 
-                db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now()})
+                
+                # 💡 치명적 오류 수정: 대량 업로드 시에도 텍스트로 저장
+                db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 processed += 1
             except Exception as e: pass
     return {"success": True, "count": processed}
@@ -362,7 +368,16 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
     docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-    return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in docs]}
+    
+    # 💡 기존에 꼬여버린 시간 객체를 강제로 텍스트로 자동 치유하는 방어 코드
+    results = []
+    for d in docs:
+        data = d.to_dict()
+        if "created_at" in data and not isinstance(data["created_at"], str):
+            data["created_at"] = str(data["created_at"])
+        results.append({"id": d.id, **data})
+        
+    return {"success": True, "knowledge": results}
 
 @app.delete("/api/admin/knowledge/{k_id}")
 def delete_knowledge(k_id: str):
@@ -605,8 +620,6 @@ async def generate_stream(
 {q_text}"""
     else:
         total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-        
-        # 💡 편집을 위해 AI에게 딴소리와 영어를 금지시키는 강력한 프롬프트 추가
         prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 출제 위원입니다. 
 가장 중요한 절대 규칙: 사용자가 지시한 총 {total}문항을 중간에 끊거나 요약하지 말고 '한 번에 모두' 정확히 출력해야 합니다.
 지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 단축은 절대 허용되지 않습니다.
