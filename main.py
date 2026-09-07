@@ -15,6 +15,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
 from datetime import datetime
+import traceback
 
 os.makedirs("uploads/exams", exist_ok=True)
 os.makedirs("uploads/homeworks", exist_ok=True)
@@ -71,6 +72,7 @@ def save_bytes(file_bytes: bytes, filename: str, folder: str, content_type: str)
         except Exception as e:
             print("Storage Upload Error:", e)
             
+    os.makedirs(f"uploads/{folder}", exist_ok=True)
     with open(filepath, "wb") as buffer:
         buffer.write(file_bytes)
     return f"/{filepath}"
@@ -324,9 +326,32 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
 
 @app.post("/api/admin/knowledge")
 async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
-    if db is None: return {"success": False}
-    final_content = content
-    if files:
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        final_content = content
+        if files:
+            for file in files:
+                if file.filename:
+                    try:
+                        file_bytes = await file.read()
+                        mime = file.content_type
+                        if "pdf" in file.filename.lower(): mime = "application/pdf"
+                        elif "png" in file.filename.lower(): mime = "image/png"
+                        elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
+                        response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
+                        final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
+                    except Exception as ai_err:
+                        final_content += f"\n\n[{file.filename} 분석 오류: {str(ai_err)}]"
+        db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
+
+@app.post("/api/admin/knowledge/bulk")
+async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        processed = 0
         for file in files:
             if file.filename:
                 try:
@@ -335,48 +360,25 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                     if "pdf" in file.filename.lower(): mime = "application/pdf"
                     elif "png" in file.filename.lower(): mime = "image/png"
                     elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-                    response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
-                    final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
-                except Exception: pass
-    
-    # 💡 치명적 오류 수정: created_at을 반드시 텍스트로 저장하여 500 충돌 에러 방지
-    db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
-
-@app.post("/api/admin/knowledge/bulk")
-async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
-    if db is None: return {"success": False}
-    processed = 0
-    for file in files:
-        if file.filename:
-            try:
-                file_bytes = await file.read()
-                mime = file.content_type
-                if "pdf" in file.filename.lower(): mime = "application/pdf"
-                elif "png" in file.filename.lower(): mime = "image/png"
-                elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-                response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
-                title = file.filename.rsplit('.', 1)[0] 
-                
-                # 💡 치명적 오류 수정: 대량 업로드 시에도 텍스트로 저장
-                db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                processed += 1
-            except Exception as e: pass
-    return {"success": True, "count": processed}
+                    response = safe_generate(["이 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.", {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
+                    title = file.filename.rsplit('.', 1)[0] 
+                    db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    processed += 1
+                except Exception as e: pass
+        return {"success": True, "count": processed}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
 
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
     docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-    
-    # 💡 기존에 꼬여버린 시간 객체를 강제로 텍스트로 자동 치유하는 방어 코드
     results = []
     for d in docs:
         data = d.to_dict()
         if "created_at" in data and not isinstance(data["created_at"], str):
             data["created_at"] = str(data["created_at"])
         results.append({"id": d.id, **data})
-        
     return {"success": True, "knowledge": results}
 
 @app.delete("/api/admin/knowledge/{k_id}")
@@ -419,13 +421,16 @@ def delete_question(q_id: str):
 
 @app.post("/api/admin/homework")
 async def create_homework(title: str = Form(...), desc: str = Form(""), answer_text: str = Form(""), answer_file: Optional[UploadFile] = File(None)):
-    if db is None: return {"success": False}
-    ans_url = ""
-    if answer_file and answer_file.filename:
-        file_bytes = await answer_file.read()
-        ans_url = save_bytes(file_bytes, answer_file.filename, "homeworks", answer_file.content_type)
-    db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        ans_url = ""
+        if answer_file and answer_file.filename:
+            file_bytes = await answer_file.read()
+            ans_url = save_bytes(file_bytes, answer_file.filename, "homeworks", answer_file.content_type)
+        db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
 
 @app.get("/api/homeworks")
 def get_homeworks():
@@ -440,33 +445,39 @@ def delete_homework(title: str):
 
 @app.post("/api/homework/submit")
 async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
-    if db is None: return {"success": False}
-    send_telegram_message(f"📝 [과제 제출 알림]\n{school} {grade}학년 {student_name} 학생이 '{title}' 과제를 제출했습니다.")
-    file_urls = []
-    for file in files:
-        if file.filename:
-            file_bytes = await file.read()
-            url = save_bytes(file_bytes, file.filename, "homeworks", file.content_type)
-            file_urls.append(url)
-    joined_urls = ",".join(file_urls)
-    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": joined_urls})
-    s_doc = db.collection("students").document(student_name).get()
-    if s_doc.exists:
-        xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
-        db.collection("students").document(student_name).set({"xp": xp}, merge=True)
-    doc = db.collection("homeworks").document(title).get()
-    ans_data = doc.to_dict() if doc.exists else {}
-    return {"success": True, "answer_file": ans_data.get("answer_file", "")}
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        send_telegram_message(f"📝 [과제 제출 알림]\n{school} {grade}학년 {student_name} 학생이 '{title}' 과제를 제출했습니다.")
+        file_urls = []
+        for file in files:
+            if file.filename:
+                file_bytes = await file.read()
+                url = save_bytes(file_bytes, file.filename, "homeworks", file.content_type)
+                file_urls.append(url)
+        joined_urls = ",".join(file_urls)
+        db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": joined_urls})
+        s_doc = db.collection("students").document(student_name).get()
+        if s_doc.exists:
+            xp = s_doc.to_dict().get("xp", 0) + XP_REWARD_HOMEWORK
+            db.collection("students").document(student_name).set({"xp": xp}, merge=True)
+        doc = db.collection("homeworks").document(title).get()
+        ans_data = doc.to_dict() if doc.exists else {}
+        return {"success": True, "answer_file": ans_data.get("answer_file", "")}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
 
 @app.post("/api/admin/board")
 async def create_board_post(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
-    if db is None: return {"success": False}
-    file_url = ""
-    if file and file.filename:
-        file_bytes = await file.read()
-        file_url = save_bytes(file_bytes, file.filename, "board", file.content_type)
-    db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        file_url = ""
+        if file and file.filename:
+            file_bytes = await file.read()
+            file_url = save_bytes(file_bytes, file.filename, "board", file.content_type)
+        db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
 
 @app.get("/api/board")
 def get_board():
@@ -498,13 +509,16 @@ def delete_lecture(lecture_id: str):
 
 @app.post("/api/admin/exam")
 async def create_exam(title: str = Form(...), objective: str = Form(""), exam_data: str = Form(...), video_url: str = Form(""), explanation_text: str = Form(""), file: Optional[UploadFile] = File(None)):
-    if db is None: return {"success": False}
-    pdf_url = ""
-    if file and file.filename:
-        file_bytes = await file.read()
-        pdf_url = save_bytes(file_bytes, file.filename, "exams", file.content_type)
-    db.collection("exams").document(title).set({"title": title, "objective": objective, "exam_data": exam_data, "pdf_url": pdf_url, "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
+    try:
+        if db is None: return {"success": False, "detail": "DB 연결 오류"}
+        pdf_url = ""
+        if file and file.filename:
+            file_bytes = await file.read()
+            pdf_url = save_bytes(file_bytes, file.filename, "exams", file.content_type)
+        db.collection("exams").document(title).set({"title": title, "objective": objective, "exam_data": exam_data, "pdf_url": pdf_url, "video_url": video_url, "explanation_text": explanation_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "detail": f"서버 내부 오류: {str(e)}"}
 
 @app.get("/api/exams")
 def get_exams():
@@ -614,7 +628,7 @@ async def generate_stream(
 ):
     if q_mode == "분석":
         prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 연구원입니다.
-다음 지문의 내용을 학생이 이해하기 쉽게 핵심만 요약하고, 이 지문에서 출제될 수 있는 '핵심 출제 요소(어휘, 문법, 내용 일치, 추론, 표현상 특징 등)'를 상세히 분석해 주세요. 
+다음 지문을 학생이 이해하기 쉽게 핵심만 요약하고, 이 지문에서 출제될 수 있는 '핵심 출제 요소'를 분석해 주세요. 
 마크다운(**)을 적극 활용하여 가독성 좋게 작성해 주세요.
 [입력 자료]
 {q_text}"""
@@ -622,16 +636,16 @@ async def generate_stream(
         total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
         prompt = f"""당신은 '로지에듀 최준용 국어'의 수석 출제 위원입니다. 
 가장 중요한 절대 규칙: 사용자가 지시한 총 {total}문항을 중간에 끊거나 요약하지 말고 '한 번에 모두' 정확히 출력해야 합니다.
-지문 길이가 짧더라도 어휘, 문법, 문장 구조, 추론, 비판적 이해, 내용 일치 등 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오. 질적 저하를 핑계로 문항 수를 줄이는 단축은 절대 허용되지 않습니다.
+지문 길이가 짧더라도 가능한 모든 출제 요소를 동원하여 지시된 문항 수를 무조건 100% 채우십시오.
 
 [⚠️편집을 위한 엄격한 제약 사항⚠️]
 1. 원본 지문에 없는 영어 단어나 알파벳(English)은 절대 사용하지 마십시오.
-2. "문제를 이렇게 출제했습니다", "요청하신 난이도에 맞췄습니다" 같은 AI의 부연 설명, 인사말, 맺음말을 일절 출력하지 마십시오. 오직 결과물(지문, 문제, 정답 및 해설)만 건조하게 출력하십시오.
+2. "문제를 이렇게 출제했습니다", "요청하신 난이도에 맞췄습니다" 같은 AI의 부연 설명, 인사말, 맺음말을 일절 출력하지 마십시오. 오직 결과물만 건조하게 출력하십시오.
 
 [출제 지시 사항]
 - 출제 유형: {q_types}
 - 출제 난이도 및 문항 수: 총 {total}문항 (킬러 {cnt_killer}, 준킬러 {cnt_semi}, 상 {cnt_high}, 중 {cnt_mid}, 하 {cnt_low})
-- 추가 요구사항: 출제된 문제 맨 아래에 [정답 및 상세 해설] 파트를 반드시 따로 분리하여 모아 작성할 것.
+- 추가 요구사항: 출제된 문제 맨 아래에 [정답 및 상세 해설] 파트를 반드시 분리하여 모아 작성할 것.
 
 [입력자료]
 {q_text}"""
