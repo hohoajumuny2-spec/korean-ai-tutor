@@ -108,7 +108,6 @@
         </div>
     </nav>
 
-    <!-- 💡 홈 화면 및 앵커 타겟용 스크롤 섹션 추가 -->
     <div id="home-view" class="w-full flex-grow flex flex-col items-center pt-20 px-4 overflow-y-auto">
         <div class="text-center z-10 fade-in min-h-[80vh] flex flex-col justify-center items-center w-full">
             <h1 class="text-4xl md:text-6xl lg:text-[5rem] font-black text-white mb-10 tracking-tight leading-tight word-break-keep-all"><span class="text-blue-500">'로지는 언제나 올바름'</span>을 찾아냈습니다.<br><span class="text-2xl md:text-4xl lg:text-[2.5rem] mt-6 block text-gray-300 font-bold">그리고 그것이 <span class="text-blue-500">정답</span>이 되는 길을 만들었습니다.</span></h1>
@@ -117,7 +116,6 @@
             </div>
         </div>
         
-        <!-- 프로그램 소개 섹션 -->
         <div id="intro-section" class="w-full max-w-5xl mx-auto py-24 text-left border-t border-gray-800">
             <h2 class="text-3xl font-bold text-blue-400 mb-6"><i class="fa-solid fa-circle-info mr-2"></i>프로그램 소개</h2>
             <div class="bg-[#151922] p-8 rounded-2xl border border-gray-700 text-gray-300 leading-relaxed text-lg">
@@ -131,7 +129,6 @@
             </div>
         </div>
 
-        <!-- 이용 안내 섹션 -->
         <div id="guide-section" class="w-full max-w-5xl mx-auto py-24 text-left border-t border-gray-800 mb-20">
             <h2 class="text-3xl font-bold text-emerald-400 mb-6"><i class="fa-solid fa-book-open mr-2"></i>이용 안내</h2>
             <div class="bg-[#151922] p-8 rounded-2xl border border-gray-700 text-gray-300 leading-relaxed text-lg">
@@ -198,20 +195,17 @@
         <div id="program-view" style="display: none;" class="fade-in pt-24 px-4 pb-12 w-full max-w-7xl mx-auto">
             <button onclick="closeProgram()" class="mb-4 text-gray-400 hover:text-white font-bold"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button>
 
-            <!-- 마이페이지 -->
             <div id="prog-mypage" class="prog-content w-full max-w-5xl mx-auto bg-[#1e2430] p-6 rounded-xl border border-gray-800">
                 <h2 class="text-2xl font-bold text-emerald-400 mb-4">나의 학습 기록</h2>
                 <div class="grid grid-cols-2 gap-4 mb-4"><div class="bg-[#151922] p-4 rounded-xl border border-gray-700"><p id="mypage-info" class="text-lg text-white font-bold"></p></div><div class="bg-[#151922] p-4 rounded-xl border border-gray-700"><p id="mypage-count" class="text-xl text-emerald-400 font-black">0건</p></div></div>
                 <div id="mypage-history-list" class="space-y-2 bg-[#151922] p-4 rounded-xl h-[400px] overflow-y-auto text-gray-300"></div>
             </div>
 
-            <!-- 공지사항 -->
             <div id="prog-board" class="prog-content w-full max-w-4xl mx-auto">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-3xl font-bold text-white"><i class="fa-solid fa-bullhorn text-emerald-400 mr-3"></i>공지사항</h2>
                     <button id="btn-show-board-write" onclick="document.getElementById('board-write-area').style.display='block'" class="hidden bg-emerald-600 hover:bg-emerald-700 px-6 py-2 rounded-lg text-white font-bold transition">새 글 작성</button>
                 </div>
-                
                 <div id="board-write-area" class="hidden bg-[#1e2430] p-6 border border-emerald-500 rounded-2xl mb-8 shadow-xl">
                     <input type="text" id="bd-title" placeholder="제목을 입력하세요" class="w-full bg-[#151922] border border-gray-600 p-4 text-white mb-4 rounded-lg outline-none focus:border-emerald-500">
                     <textarea id="bd-desc" placeholder="내용을 입력하세요" class="w-full h-32 bg-[#151922] border border-gray-600 p-4 text-white mb-4 rounded-lg outline-none focus:border-emerald-500"></textarea>
@@ -224,7 +218,6 @@
                         <button onclick="createBoard()" class="bg-emerald-600 hover:bg-emerald-700 px-6 py-2 rounded-lg text-white font-bold transition">등록하기</button>
                     </div>
                 </div>
-
                 <div id="board-list" class="space-y-6"></div>
             </div>
 
@@ -234,7 +227,6 @@
                 <div id="inquiry-list" class="mt-4 space-y-2"></div>
             </div>
 
-            <!-- 채팅 -->
             <div id="prog-chat" class="prog-content w-full max-w-6xl mx-auto bg-[#1e2430] p-4 md:p-8 rounded-xl border border-gray-800 shadow-2xl">
                 <h2 class="text-2xl md:text-3xl font-bold text-blue-400 mb-4 md:mb-6"><i class="fa-solid fa-robot mr-2"></i>24시간 AI 국최</h2>
                 <div id="chat-history" class="h-[60vh] overflow-y-auto mb-4 bg-[#151922] p-4 rounded-xl border border-gray-700 text-sm md:text-lg leading-relaxed">
@@ -251,23 +243,19 @@
                         <label for="chat-file" class="cursor-pointer bg-gray-700 hover:bg-gray-600 p-3 rounded-xl text-white transition flex-shrink-0"><i class="fa-solid fa-paperclip"></i></label>
                         <input type="file" id="chat-file" class="hidden" multiple accept="image/*,.pdf" onchange="handleFileSelect(event, chatFiles, 'chat-file-visual')">
                         <input type="text" id="chat-input" class="flex-grow bg-[#151922] border border-gray-600 text-white p-3 rounded-xl text-sm md:text-lg outline-none" placeholder="질문 입력..." onkeypress="if(event.key==='Enter') sendChat()">
-                        <div id="chat-file-label" class="hidden"></div>
                         <button onclick="sendChat()" class="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-white transition flex-shrink-0"><i class="fa-solid fa-paper-plane"></i></button>
                     </div>
                 </div>
             </div>
 
-            <!-- 에세이 -->
             <div id="prog-essay" class="prog-content w-full bg-[#1e2430] p-6 rounded-xl border border-gray-800">
                 <h2 class="text-2xl font-bold text-pink-400 mb-4">AI 첨삭</h2>
                 <input type="text" id="essay-topic" placeholder="논제 입력" class="w-full bg-[#151922] p-3 text-white mb-4"><input type="file" id="essay-file" class="text-white"><button onclick="submitEssayGrade()" class="w-full bg-pink-600 py-3 mt-4 text-white font-bold rounded shadow-lg transition hover:bg-pink-700">첨삭 시작</button>
                 <div id="essay-result-area" class="hidden bg-white p-6 mt-4 text-black rounded"><div id="essay-feedback"></div></div>
             </div>
 
-            <!-- 강의실 -->
             <div id="prog-lecture" class="prog-content w-full bg-[#1e2430] p-6 rounded-xl"><h2 class="text-2xl font-bold text-purple-400 mb-4">강의실</h2><div id="student-lecture-list" class="grid grid-cols-2 gap-4"></div></div>
             
-            <!-- 과제 제출 -->
             <div id="prog-homework" class="prog-content w-full bg-[#1e2430] p-6 rounded-xl">
                 <h2 class="text-2xl font-bold text-emerald-400 mb-4">과제 제출</h2>
                 <div id="student-hw-list" class="space-y-4"></div>
@@ -298,10 +286,8 @@
                 <button onclick="submitQuizReal()" class="w-full bg-orange-600 hover:bg-orange-700 py-4 rounded-xl text-white font-bold text-lg shadow-lg">퀴즈 제출하기</button>
             </div>
 
-            <!-- 모의고사 목록 -->
             <div id="prog-exam-list" class="prog-content w-full bg-[#1e2430] p-6 rounded-xl"><h2 class="text-2xl font-bold text-yellow-500 mb-4">모의고사 목록</h2><div id="student-exam-list" class="grid grid-cols-2 gap-4"></div></div>
 
-            <!-- 모의고사 룸 -->
             <div id="prog-exam-room" class="prog-content w-full h-[85vh] relative">
                 <div id="exam-prep-overlay" class="absolute inset-0 bg-[#1a1e29] z-40 flex items-center justify-center p-4">
                     <div class="bg-[#1e2430] p-8 rounded-xl w-full max-w-2xl"><h2 id="prep-exam-title" class="text-2xl font-bold text-white mb-4"></h2><p id="prep-objective-text" class="text-blue-200 mb-4"></p><input type="number" id="prep-target-score" placeholder="목표 점수" class="w-full bg-[#151922] p-4 text-white mb-4"><div id="prep-sections-board" class="mb-4"></div><button onclick="startExamReal()" class="w-full bg-indigo-600 py-4 text-white font-bold rounded hover:bg-indigo-700 transition">시작</button></div>
@@ -341,7 +327,6 @@
                         <div class="bg-[#151922] p-6 rounded">
                             <h3 class="text-lg font-bold text-orange-400 mb-4">새 퀴즈 출제</h3>
                             <input type="text" id="qz-title" placeholder="퀴즈 제목" class="w-full p-3 bg-gray-800 text-white mb-2 rounded border border-gray-600">
-                            
                             <div class="flex gap-2 mb-2">
                                 <div class="w-1/2">
                                     <label class="text-xs text-gray-400 mb-1 block">마감 일시 (기한)</label>
@@ -352,13 +337,11 @@
                                     <input type="number" id="qz-limit" placeholder="예: 10" class="w-full p-3 bg-gray-800 text-white rounded border border-gray-600">
                                 </div>
                             </div>
-                            
                             <div class="mt-4 border-t border-gray-700 pt-4">
                                 <h4 class="text-sm font-bold text-white mb-2">문제 목록 (5지 선다형)</h4>
                                 <div id="qz-questions-board" class="space-y-4 max-h-[400px] overflow-y-auto mb-4 pr-2"></div>
                                 <button onclick="addQuizQuestionUI()" class="w-full bg-gray-700 hover:bg-gray-600 transition py-3 text-white rounded font-bold text-sm">+ 문제 1개 추가</button>
                             </div>
-                            
                             <button onclick="createQuiz()" class="w-full bg-orange-600 hover:bg-orange-700 py-3 text-white font-bold rounded mt-6 transition">퀴즈 오픈(배포)하기</button>
                         </div>
                         <div class="bg-[#151922] p-6 rounded h-[650px] flex flex-col">
@@ -477,6 +460,69 @@
         </div>
     </div>
 
+    <div id="auth-modal" class="hidden fixed inset-0 z-[100] modal-bg flex items-center justify-center p-4">
+        <div class="bg-[#1e2430] p-8 rounded-2xl w-full max-w-md">
+            <button onclick="closeModal('auth-modal')" class="float-right text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+            <h2 class="text-3xl font-black mb-2 text-white text-center">로그인</h2>
+            <div class="text-center mb-6">
+                <button onclick="showModal('login-guide')" class="text-emerald-400 hover:text-emerald-300 text-sm font-bold underline transition"><i class="fa-solid fa-circle-question mr-1"></i>로그인이 안 되나요?</button>
+            </div>
+            <input type="text" id="login-school" placeholder="학교 (예: 미강고, 하남고)" class="w-full p-3 bg-[#151922] border border-gray-600 outline-none focus:border-blue-500 rounded text-white mb-2">
+            <input type="text" id="login-grade" placeholder="학년 (예: 1, 2, 3)" class="w-full p-3 bg-[#151922] border border-gray-600 outline-none focus:border-blue-500 rounded text-white mb-2">
+            <input type="text" id="login-name" placeholder="이름" class="w-full p-3 bg-[#151922] border border-gray-600 outline-none focus:border-blue-500 rounded text-white mb-4">
+            <input type="password" id="login-pw" placeholder="관리자 비밀번호 (학생은 비워둠)" class="w-full p-3 bg-[#151922] border border-gray-600 outline-none focus:border-red-500 rounded text-white mb-4">
+            <button onclick="login()" class="w-full bg-blue-600 hover:bg-blue-700 transition py-3 text-white font-bold rounded text-lg">입장하기</button>
+        </div>
+    </div>
+
+    <div id="login-guide-modal" class="hidden fixed inset-0 z-[160] modal-bg flex items-center justify-center p-4">
+        <div class="bg-[#1e2430] border border-emerald-500 p-8 rounded-2xl w-full max-w-md shadow-2xl relative">
+            <button onclick="closeModal('login-guide-modal')" class="absolute top-5 right-5 text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-2xl"></i></button>
+            <h3 class="text-2xl font-black text-emerald-400 mb-5"><i class="fa-solid fa-circle-info mr-2"></i>올바른 로그인 방법</h3>
+            <div class="text-gray-300 text-sm leading-relaxed space-y-4">
+                <p>원장님이 명단에 등록하신 <strong>학교, 학년, 이름</strong>과 띄어쓰기까지 정확히 일치해야 접속할 수 있습니다.</p>
+                <div class="bg-[#151922] p-4 rounded border border-red-900">
+                    <p class="text-red-400 font-bold mb-2">❌ 잘못된 예시 (접속 불가)</p>
+                    <ul class="list-disc pl-5 space-y-1 text-gray-400">
+                        <li><span class="line-through">미사강변고</span> (줄임말이 아닌 경우)</li>
+                        <li><span class="line-through">하남 고등학교</span> (띄어쓰기 포함된 경우)</li>
+                        <li><span class="line-through">2학년</span> (글자가 포함된 경우)</li>
+                    </ul>
+                </div>
+                <div class="bg-[#151922] p-4 rounded border border-emerald-900">
+                    <p class="text-emerald-400 font-bold mb-2">✅ 올바른 예시 (접속 가능)</p>
+                    <ul class="list-disc pl-5 space-y-1 text-white">
+                        <li><strong>학교:</strong> 미강고</li>
+                        <li><strong>학년:</strong> 2</li>
+                        <li><strong>이름:</strong> 홍길동</li>
+                    </ul>
+                </div>
+            </div>
+            <button onclick="closeModal('login-guide-modal')" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 mt-6 rounded-xl transition text-lg">확인했습니다</button>
+        </div>
+    </div>
+
+    <div id="knowledge-import-modal" class="hidden fixed inset-0 z-[160] modal-bg flex items-center justify-center p-4">
+        <div class="bg-[#1e2430] border border-blue-500 p-8 rounded-2xl w-full max-w-2xl shadow-2xl relative flex flex-col max-h-[80vh]">
+            <button onclick="closeModal('knowledge-import-modal')" class="absolute top-5 right-5 text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-2xl"></i></button>
+            <h3 class="text-2xl font-black text-blue-400 mb-2"><i class="fa-solid fa-file-import mr-2"></i>학습된 자료 가져오기</h3>
+            <p class="text-gray-400 text-sm mb-6">[자료학습] 탭에서 등록했던 자료 목록입니다. 클릭하시면 바로 출제 지문으로 입력됩니다.</p>
+            <div id="knowledge-import-list" class="flex-grow overflow-y-auto space-y-2 pr-2"></div>
+        </div>
+    </div>
+
+    <div id="edit-student-modal" class="hidden fixed inset-0 z-[110] modal-bg flex items-center justify-center p-4">
+        <div class="bg-[#1e2430] p-8 rounded-2xl w-full max-w-sm">
+            <input type="hidden" id="edit-old-id">
+            <input type="text" id="edit-school" class="w-full p-2 bg-gray-800 text-white mb-2">
+            <input type="text" id="edit-grade" class="w-full p-2 bg-gray-800 text-white mb-2">
+            <input type="text" id="edit-name" class="w-full p-2 bg-gray-800 text-white mb-4">
+            <div class="flex gap-2">
+                <button onclick="submitEditStudent()" class="flex-1 bg-blue-600 py-2 text-white">저장</button>
+                <button onclick="closeModal('edit-student-modal')" class="flex-1 bg-gray-600 py-2 text-white">취소</button>
+            </div>
+        </div>
+    </div>
     <script>
         const API_URL = "https://korean-ai-tutor.onrender.com"; 
         let currentUser = null; let wsLive = null; 
@@ -486,6 +532,7 @@
         let adminExamSections = []; let adminExamQuestions = [];
         let quizQuestionsBuffer = []; let allQuizzes = [];
         let activeQuizTimer = null; let activeQuizTimeLeft = 0; let currentActiveQuiz = null; let quizAnswers = [];
+        
         let examTimerInterval = null; let studentOmrAnswers = []; let currentExamTitle = ""; let currentExamData = null; let studentSections = []; let currSecIdx = 0; let secAllocated = 0; let secSpent = 0; let isExamActive = false; let isExamPaused = false;
         let pdfDoc = null; let isDrawing = false;
 
@@ -1108,11 +1155,12 @@
             if(!t||!u) return alert("제목과 URL을 입력하세요."); 
             showLoader("강의 등록 중..."); 
             try {
-                await fetch(`${API_URL}/api/admin/lecture`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t,desc:'',video_url:u})}); 
+                const res = await fetch(`${API_URL}/api/admin/lecture`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t,desc:'',video_url:u})}); 
+                if(!res.ok) throw new Error("등록 실패");
                 loadAdminLectures(); 
                 document.getElementById('lec-title').value=''; 
                 document.getElementById('lec-url').value=''; 
-            } catch(e) { alert("오류 발생"); }
+            } catch(e) { alert("오류 발생: " + e.message); }
             hideLoader(); 
         }
         
