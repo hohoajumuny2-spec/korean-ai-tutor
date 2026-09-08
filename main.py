@@ -126,19 +126,31 @@ def send_telegram_message(text: str):
         except: pass
     threading.Thread(target=_send).start()
 
-# 💡 핵심 수정: 에러를 내던 gemini-1.5-pro를 아예 빼버리고, 
-# 100% 작동을 보장하는 gemini-1.5-flash 모델로만 단일 고정시켰습니다.
+# 💡 핵심 수정: 구글 API 키 권한에 맞춰 작동 가능한 AI 모델을 알아서 찾아내는 방탄 코드
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key: raise Exception("API 키 오류")
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        return model.generate_content(contents, stream=stream)
-    except Exception as e:
-        raise Exception(f"AI 실패: {str(e)}")
+    fallback_models = [
+        'gemini-1.5-flash', 
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-pro', 
+        'gemini-pro', 
+        'gemini-1.0-pro'
+    ]
+    
+    last_err = ""
+    for m_name in fallback_models:
+        try:
+            model = genai.GenerativeModel(m_name)
+            return model.generate_content(contents, stream=stream)
+        except Exception as e:
+            last_err = str(e)
+            continue 
+            
+    raise Exception(f"AI 실패: {last_err}")
 
 class ConnectionManager:
     def __init__(self): self.active_connections = {}
