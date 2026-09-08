@@ -347,18 +347,22 @@ async def authenticate(req: AuthRequest):
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
 
-    doc = await asyncio.to_thread(lambda: db.collection("students").document(req.student_name).get())
+    student_name = req.student_name.strip()
+    school = req.school.strip()
+    grade = req.grade.strip()
+
+    doc = await asyncio.to_thread(lambda: db.collection("students").document(student_name).get())
     if doc.exists:
         data = doc.to_dict()
-        if data.get("school") == req.school and data.get("grade") == req.grade:
+        if str(data.get("school", "")).strip() == school and str(data.get("grade", "")).strip() == grade:
             today = datetime.now().strftime("%Y-%m-%d")
             if data.get("last_login", "") != today:
                 await asyncio.to_thread(
-                    lambda: db.collection("students").document(req.student_name).set(
+                    lambda: db.collection("students").document(student_name).set(
                         {"last_login": today, "xp": firestore.Increment(XP_REWARD_LOGIN)}, merge=True
                     )
                 )
-            send_telegram_message(f"🔔 [접속 알림]\n{req.school} {req.grade}학년 {req.student_name} 학생이 스마트 학습실에 로그인했습니다.")
+            send_telegram_message(f"🔔 [접속 알림]\n{school} {grade}학년 {student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False}
     return {"success": False, "detail": "명부에 이름이 없거나 정보가 틀립니다."}
 
@@ -434,6 +438,26 @@ async def update_profile(
 
     await asyncio.to_thread(lambda: s_ref.set(update_data, merge=True))
     return {"success": True}
+
+
+@app.get("/api/classes")
+def get_classes():
+    """로그인 화면 자동완성용 — 등록된 학교/학년 조합만 공개 (이름 등 개인정보 제외)."""
+    if db is None:
+        return {"success": False, "classes": []}
+    seen = set()
+    classes = []
+    for d in db.collection("students").stream():
+        data = d.to_dict()
+        school, grade = str(data.get("school", "")).strip(), str(data.get("grade", "")).strip()
+        if not school and not grade:
+            continue
+        key = (school, grade)
+        if key in seen:
+            continue
+        seen.add(key)
+        classes.append({"school": school, "grade": grade})
+    return {"success": True, "classes": classes}
 
 
 # ─────────────────────────────────────────────────────────
