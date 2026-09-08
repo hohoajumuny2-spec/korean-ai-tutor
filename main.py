@@ -64,11 +64,40 @@ if firebase_key_str:
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
-# 🚀 다이렉트 통신망 (REST API) - 모델 자동 우회 탑재
-def call_gemini_rest_multi(text: str, files_data: list):
+# 🚀 모델 자동 탐색 엔진 (404 에러 원천 차단)
+_cached_model = None
+
+def get_working_model():
+    global _cached_model
+    if _cached_model: return _cached_model
     if not gemini_key: raise Exception("API 키 오류")
     
-    models = ["gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-flash"]
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            # 1순위: flash 모델 탐색
+            for m in models:
+                name = m.get("name", "")
+                if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in name:
+                    _cached_model = name.replace("models/", "")
+                    return _cached_model
+            # 2순위: 사용 가능한 아무 텍스트 생성 모델 탐색
+            for m in models:
+                name = m.get("name", "")
+                if "generateContent" in m.get("supportedGenerationMethods", []):
+                    _cached_model = name.replace("models/", "")
+                    return _cached_model
+    except Exception:
+        pass
+    
+    _cached_model = "gemini-1.5-flash"
+    return _cached_model
+
+def call_gemini_rest_multi(text: str, files_data: list):
+    model_name = get_working_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
     parts = [{"text": text}]
     
     for fd in files_data:
@@ -76,23 +105,22 @@ def call_gemini_rest_multi(text: str, files_data: list):
         parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
     
     payload = {"contents": [{"parts": parts}]}
-    last_error = ""
+    resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=45)
     
-    for model_name in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
-        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
-        if resp.status_code == 200:
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-        last_error = resp.text
+    if resp.status_code != 200:
+        global _cached_model
+        _cached_model = None # 에러 발생 시 캐시 초기화
+        raise Exception(f"API 에러 ({model_name}): {resp.text}")
         
-    raise Exception(f"API 에러: {last_error}")
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 def call_gemini_stream(text: str, files_data: list):
     if not gemini_key:
         yield "API 키 오류"
         return
         
-    models = ["gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-flash"]
+    model_name = get_working_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?alt=sse&key={gemini_key}"
     parts = [{"text": text}]
     
     for fd in files_data:
@@ -100,31 +128,23 @@ def call_gemini_stream(text: str, files_data: list):
         parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
     
     payload = {"contents": [{"parts": parts}]}
-    last_error = ""
-    success = False
-    
-    for model_name in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?alt=sse&key={gemini_key}"
-        try:
-            with requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True, timeout=30) as resp:
-                if resp.status_code == 200:
-                    success = True
-                    for line in resp.iter_lines():
-                        if line:
-                            decoded = line.decode('utf-8')
-                            if decoded.startswith("data: "):
-                                try:
-                                    data = json.loads(decoded[6:])
-                                    yield data["candidates"][0]["content"]["parts"][0]["text"]
-                                except: pass
-                    break
-                else:
-                    last_error = resp.text
-        except Exception as e:
-            last_error = str(e)
-            
-    if not success:
-        yield f"API 에러: {last_error}"
+    try:
+        with requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True, timeout=45) as resp:
+            if resp.status_code != 200:
+                global _cached_model
+                _cached_model = None
+                yield f"API 에러 ({model_name}): {resp.text}"
+                return
+            for line in resp.iter_lines():
+                if line:
+                    decoded = line.decode('utf-8')
+                    if decoded.startswith("data: "):
+                        try:
+                            data = json.loads(decoded[6:])
+                            yield data["candidates"][0]["content"]["parts"][0]["text"]
+                        except: pass
+    except Exception as e:
+        yield f"\n[스트림 통신 오류: {str(e)}]"
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -442,6 +462,29 @@ def delete_knowledge(doc_id: str):
     if db: db.collection("knowledge").document(doc_id).delete()
     return {"success": True}
 
+# 🚀 프론트엔드 호환성을 위해 /generate (단일 응답)와 /generate_stream (실시간) 동시 지원
+@app.post("/api/admin/generate")
+async def generate_questions_json(
+    q_mode: str = Form(""), q_style: str = Form(""), q_type: str = Form(""),
+    total_q_count: int = Form(3), q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
+):
+    prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n모드: {q_mode}\n유형: {q_type}\n총 {total_q_count}문항\n[입력자료]\n{q_text}"
+    files_data = []
+    if files:
+        for f in files:
+            if f.filename:
+                file_bytes = await f.read()
+                if f.filename.lower().endswith('.pdf') and fitz:
+                    pdf_text = extract_text_from_pdf(file_bytes)
+                    prompt += f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}"
+                else:
+                    files_data.append({"mime_type": f.content_type or "image/jpeg", "data": file_bytes})
+    try:
+        reply = call_gemini_rest_multi(prompt, files_data)
+        return {"success": True, "result": reply}
+    except Exception as e:
+        return {"success": False, "detail": str(e)}
+
 @app.post("/api/admin/generate_stream")
 async def generate_stream(
     q_mode: str = Form(...), q_types: str = Form(...),
@@ -450,7 +493,6 @@ async def generate_stream(
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n유형: {q_types}\n총 {total}문항\n[입력자료]\n{q_text}"
-    
     files_data = []
     if files:
         for f in files:
