@@ -52,12 +52,12 @@ XP_REWARD_HOMEWORK = 200
 XP_REWARD_PROFILE = 300
 XP_MULTIPLIER_EXAM = 2
 
-# 업로드 제한
+# 💡 해결: 파일 업로드 제한을 25MB에서 100MB로 대폭 상향 조정
 ALLOWED_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".hwp", ".doc", ".docx",
     ".txt", ".ppt", ".pptx", ".mp4", ".mov",
 }
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
 
 # ─────────────────────────────────────────────────────────
 # Firebase 초기화
@@ -91,6 +91,7 @@ def issue_admin_token() -> str:
     _admin_tokens.add(token)
     return token
 
+
 def verify_admin(x_admin_token: Optional[str] = Header(None)):
     if not x_admin_token or x_admin_token not in _admin_tokens:
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
@@ -111,8 +112,9 @@ def validate_upload(filename: str, file_bytes: bytes):
     ext = os.path.splitext(safe_name)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"허용되지 않는 파일 형식입니다: {ext}")
+    # 💡 100MB 초과 시 에러 메시지
     if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="파일 용량이 25MB를 초과했습니다.")
+        raise HTTPException(status_code=400, detail="파일 용량이 100MB를 초과했습니다. 더 작은 파일로 분할해 주세요.")
 
 
 def save_bytes(file_bytes: bytes, filename: str, folder: str, content_type: str) -> str:
@@ -356,7 +358,7 @@ async def update_profile(
 
 
 # ─────────────────────────────────────────────────────────
-# 관리자 기능 목록 (전부 verify_admin 의존성 적용)
+# 관리자 - 학생 관리
 # ─────────────────────────────────────────────────────────
 @app.get("/api/admin/students")
 def get_students(_: bool = Depends(verify_admin)):
@@ -414,13 +416,12 @@ def get_reports(_: bool = Depends(verify_admin)):
 
 
 # ─────────────────────────────────────────────────────────
-# 💡 챗봇 — 정답 유출 방지 및 답변 자율성 극대화 (해결 완료)
+# 챗봇 — 답변 자율성 부여 (족쇄 해제)
 # ─────────────────────────────────────────────────────────
 def build_safe_knowledge_context() -> str:
     """학생 챗봇에 노출해도 안전한 자료만 모은다 (정답/해설 필드 제외)."""
     if db is None:
         return ""
-    # 최신 자료 50개까지 넉넉하게 읽어오도록 수정
     kb_docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).limit(50).stream()
     knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
     return knowledge_base
@@ -438,7 +439,6 @@ async def chat_with_ai(
 
     knowledge_base = await asyncio.to_thread(build_safe_knowledge_context)
 
-    # 💡 융통성 패치: 자료에 없어도 국어 전문가로서 답변하도록 족쇄 해제
     system_prompt = f"""당신은 로지에듀 국어학원 AI 튜터 '국최'입니다.
 아래 [학원 누적 자료]를 최우선으로 참고하여 다정하고 명쾌하게 답변하세요.
 만약 학생이 묻는 내용이 자료에 없더라도, 국어 전문가로서의 지식을 활용해 국어 개념(문법, 표현법 등)을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
@@ -504,51 +504,72 @@ async def grade_essay(
 
 
 # ─────────────────────────────────────────────────────────
-# 학생 접근 가능 엔드포인트
+# 관리자 - 시험
 # ─────────────────────────────────────────────────────────
+@app.post("/api/admin/exam")
+async def create_exam(
+    title: str = Form(...),
+    objective: str = Form(""),
+    exam_data: str = Form(...),
+    video_url: str = Form(""),
+    explanation_text: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+    ans_file: Optional[UploadFile] = File(None),
+    _: bool = Depends(verify_admin),
+):
+    if db is None:
+        return {"success": False, "detail": "DB 오류"}
+
+    try:
+        json.loads(exam_data)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="exam_data 형식이 올바르지 않습니다.")
+
+    pdf_url, ans_pdf_url = "", ""
+    if file and file.filename:
+        pdf_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "exams", file.content_type)
+    if ans_file and ans_file.filename:
+        ans_pdf_url = await asyncio.to_thread(save_bytes, await ans_file.read(), ans_file.filename, "exams", ans_file.content_type)
+
+    safe_title = sanitize_doc_id(title)
+    await asyncio.to_thread(
+        lambda: db.collection("exams").document(safe_title).set(
+            {
+                "title": title,
+                "objective": objective,
+                "exam_data": exam_data,
+                "pdf_url": pdf_url,
+                "ans_pdf_url": ans_pdf_url,
+                "video_url": video_url,
+                "explanation_text": explanation_text,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    )
+    return {"success": True}
+
+
 @app.get("/api/exams")
 def get_exams():
     if db is None:
         return {"success": False, "exams": []}
     return {"success": True, "exams": [{"id": d.id, **d.to_dict()} for d in db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
-@app.get("/api/quizzes")
-def get_quizzes():
-    if db is None:
-        return {"success": False, "quizzes": []}
-    return {"success": True, "quizzes": [{"id": d.id, **d.to_dict()} for d in db.collection("quizzes").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
-@app.get("/api/homeworks")
-def get_homeworks():
-    if db is None:
-        return {"success": False, "homeworks": []}
-    return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
-
-@app.get("/api/board")
-def get_board():
-    if db is None: return {"success": False, "posts": []}
-    return {"success": True, "posts": [{"id": d.id, **d.to_dict()} for d in db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
-
-@app.get("/api/lectures")
-def get_lectures():
-    if db is None: return {"success": False, "lectures": []}
-    return {"success": True, "lectures": [{"id": d.id, **d.to_dict()} for d in db.collection("lectures").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
-
-@app.get("/api/knowledge")
-def get_knowledge():
-    if db is None: return {"success": False, "knowledge": []}
-    return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+@app.delete("/api/admin/exam/{title}")
+def delete_exam(title: str, _: bool = Depends(verify_admin)):
+    if db:
+        db.collection("exams").document(title).delete()
+    return {"success": True}
 
 
-# ─────────────────────────────────────────────────────────
-# 모의고사 / 퀴즈 / 과제 제출 로직 (학생용)
-# ─────────────────────────────────────────────────────────
 class ExamSubmitRequest(BaseModel):
     school: str
     grade: str
     student_name: str
     title: str
     answers: list
+
 
 @app.post("/api/exam/submit")
 async def submit_exam(req: ExamSubmitRequest):
@@ -603,12 +624,55 @@ async def submit_exam(req: ExamSubmitRequest):
     )
     return {"success": True, "score": actual_score, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
 
+
+# ─────────────────────────────────────────────────────────
+# 관리자 - 퀴즈
+# ─────────────────────────────────────────────────────────
+@app.post("/api/admin/quiz")
+async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "detail": "DB 오류"}
+    req = await request.json()
+    title = req.get("title")
+    if not title or not str(title).strip():
+        raise HTTPException(status_code=400, detail="퀴즈 제목은 필수입니다.")
+
+    safe_title = sanitize_doc_id(title)
+    await asyncio.to_thread(
+        lambda: db.collection("quizzes").document(safe_title).set(
+            {
+                "title": title,
+                "deadline": req.get("deadline"),
+                "time_limit": int(req.get("time_limit", 0)),
+                "questions": req.get("questions", []),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    )
+    return {"success": True}
+
+
+@app.get("/api/quizzes")
+def get_quizzes():
+    if db is None:
+        return {"success": False, "quizzes": []}
+    return {"success": True, "quizzes": [{"id": d.id, **d.to_dict()} for d in db.collection("quizzes").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+
+
+@app.delete("/api/admin/quiz/{title}")
+def delete_quiz(title: str, _: bool = Depends(verify_admin)):
+    if db:
+        db.collection("quizzes").document(title).delete()
+    return {"success": True}
+
+
 class QuizSubmitReq(BaseModel):
     school: str
     grade: str
     student_name: str
     title: str
     answers: list
+
 
 @app.post("/api/quiz/submit")
 async def submit_quiz(req: QuizSubmitReq):
@@ -655,6 +719,89 @@ async def submit_quiz(req: QuizSubmitReq):
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
     return {"success": True, "score": actual_score}
+
+
+# ─────────────────────────────────────────────────────────
+# 관리자 - 문제 생성 스트리밍
+# ─────────────────────────────────────────────────────────
+@app.post("/api/admin/generate_stream")
+async def generate_stream(
+    q_mode: str = Form(...),
+    q_types: str = Form(...),
+    cnt_killer: int = Form(0),
+    cnt_semi: int = Form(0),
+    cnt_high: int = Form(0),
+    cnt_mid: int = Form(0),
+    cnt_low: int = Form(0),
+    q_text: str = Form(""),
+    files: Optional[List[UploadFile]] = File(None),
+    _: bool = Depends(verify_admin),
+):
+    total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+    prompt = f"다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.\n{q_text}"
+    contents = [prompt]
+    try:
+        model = get_best_model()
+        response = model.generate_content(contents, stream=True)
+
+        def iter_response():
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
+        return StreamingResponse(iter_response(), media_type="text/plain")
+    except Exception:
+        def err_response():
+            yield "❌ AI 생성 실패. 잠시 후 다시 시도하세요."
+
+        return StreamingResponse(err_response(), media_type="text/plain")
+
+
+# ─────────────────────────────────────────────────────────
+# 관리자 - 숙제 및 기타
+# ─────────────────────────────────────────────────────────
+@app.get("/api/homeworks")
+def get_homeworks():
+    if db is None:
+        return {"success": False, "homeworks": []}
+    return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+
+
+@app.post("/api/admin/homework")
+async def create_homework(
+    title: str = Form(...),
+    desc: str = Form(""),
+    answer_text: str = Form(""),
+    answer_file: Optional[UploadFile] = File(None),
+    _: bool = Depends(verify_admin),
+):
+    if db is None:
+        return {"success": False}
+    ans_url = ""
+    if answer_file and answer_file.filename:
+        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
+
+    safe_title = sanitize_doc_id(title)
+    await asyncio.to_thread(
+        lambda: db.collection("homeworks").document(safe_title).set(
+            {
+                "title": title,
+                "desc": desc,
+                "answer_text": answer_text,
+                "answer_file": ans_url,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    )
+    return {"success": True}
+
+
+@app.delete("/api/admin/homework/{title}")
+def delete_homework(title: str, _: bool = Depends(verify_admin)):
+    if db:
+        db.collection("homeworks").document(title).delete()
+    return {"success": True}
+
 
 @app.post("/api/homework/submit")
 async def submit_homework(
@@ -709,164 +856,47 @@ async def submit_homework(
     doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(title).get())
     return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else ""}
 
-@app.get("/api/inquiries")
-def get_inquiries():
-    if db is None: return {"success": False, "inquiries": []}
-    return {"success": True, "inquiries": [{"id": d.id, **d.to_dict()} for d in db.collection("inquiries").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+@app.get("/api/board")
+def get_board():
+    if db is None: return {"success": False, "posts": []}
+    return {"success": True, "posts": [{"id": d.id, **d.to_dict()} for d in db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
-@app.post("/api/inquiry")
-def create_inquiry(content: str = Form(...), school: str = Form(""), grade: str = Form(""), student_name: str = Form("")):
-    if db: db.collection("inquiries").add({"content": content, "school": school, "grade": grade, "student_name": student_name, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+@app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
+async def create_board_post_admin(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
+    if db is None: return {"success": False}
+    file_url = ""
+    if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
+    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     return {"success": True}
 
-# ─────────────────────────────────────────────────────────
-# 💡 누락되었던 모든 관리자 기능 (Depends 보안 적용)
-# ─────────────────────────────────────────────────────────
-
-@app.post("/api/admin/exam")
-async def create_exam_admin(
-    title: str = Form(...),
-    objective: str = Form(""),
-    exam_data: str = Form(...),
-    video_url: str = Form(""),
-    explanation_text: str = Form(""),
-    file: Optional[UploadFile] = File(None),
-    ans_file: Optional[UploadFile] = File(None),
-    _: bool = Depends(verify_admin),
-):
-    if db is None:
-        return {"success": False, "detail": "DB 오류"}
-    try:
-        json.loads(exam_data)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="exam_data 형식이 올바르지 않습니다.")
-
-    pdf_url, ans_pdf_url = "", ""
-    if file and file.filename:
-        pdf_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "exams", file.content_type)
-    if ans_file and ans_file.filename:
-        ans_pdf_url = await asyncio.to_thread(save_bytes, await ans_file.read(), ans_file.filename, "exams", ans_file.content_type)
-
-    safe_title = sanitize_doc_id(title)
-    await asyncio.to_thread(
-        lambda: db.collection("exams").document(safe_title).set(
-            {
-                "title": title,
-                "objective": objective,
-                "exam_data": exam_data,
-                "pdf_url": pdf_url,
-                "ans_pdf_url": ans_pdf_url,
-                "video_url": video_url,
-                "explanation_text": explanation_text,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-    )
+@app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
+def delete_board_post_admin(post_id: str):
+    if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
-@app.delete("/api/admin/exam/{title}")
-def delete_exam(title: str, _: bool = Depends(verify_admin)):
-    if db:
-        db.collection("exams").document(title).delete()
+@app.get("/api/lectures")
+def get_lectures():
+    if db is None: return {"success": False, "lectures": []}
+    return {"success": True, "lectures": [{"id": d.id, **d.to_dict()} for d in db.collection("lectures").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+
+class LectureRequest(BaseModel): title: str; desc: str; video_url: str
+@app.post("/api/admin/lecture", dependencies=[Depends(verify_admin)])
+def create_lecture_admin(req: LectureRequest):
+    if db: db.collection("lectures").add({"title": req.title, "desc": req.desc, "video_url": req.video_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
-@app.post("/api/admin/quiz")
-async def create_quiz_admin(request: Request, _: bool = Depends(verify_admin)):
-    if db is None:
-        return {"success": False, "detail": "DB 오류"}
-    req = await request.json()
-    title = req.get("title")
-    if not title or not str(title).strip():
-        raise HTTPException(status_code=400, detail="퀴즈 제목은 필수입니다.")
-
-    safe_title = sanitize_doc_id(title)
-    await asyncio.to_thread(
-        lambda: db.collection("quizzes").document(safe_title).set(
-            {
-                "title": title,
-                "deadline": req.get("deadline"),
-                "time_limit": int(req.get("time_limit", 0)),
-                "questions": req.get("questions", []),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-    )
+@app.delete("/api/admin/lecture/{lecture_id}", dependencies=[Depends(verify_admin)])
+def delete_lecture_admin(lecture_id: str):
+    if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
 
-@app.delete("/api/admin/quiz/{title}")
-def delete_quiz(title: str, _: bool = Depends(verify_admin)):
-    if db:
-        db.collection("quizzes").document(title).delete()
-    return {"success": True}
+@app.get("/api/knowledge")
+def get_knowledge():
+    if db is None: return {"success": False, "knowledge": []}
+    return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
-@app.post("/api/admin/generate_stream")
-async def generate_stream_admin(
-    q_mode: str = Form(...),
-    q_types: str = Form(...),
-    cnt_killer: int = Form(0),
-    cnt_semi: int = Form(0),
-    cnt_high: int = Form(0),
-    cnt_mid: int = Form(0),
-    cnt_low: int = Form(0),
-    q_text: str = Form(""),
-    files: Optional[List[UploadFile]] = File(None),
-    _: bool = Depends(verify_admin),
-):
-    total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.\n{q_text}"
-    contents = [prompt]
-    try:
-        model = get_best_model()
-        response = model.generate_content(contents, stream=True)
-
-        def iter_response():
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
-
-        return StreamingResponse(iter_response(), media_type="text/plain")
-    except Exception:
-        def err_response():
-            yield "❌ AI 생성 실패. 잠시 후 다시 시도하세요."
-
-        return StreamingResponse(err_response(), media_type="text/plain")
-
-@app.post("/api/admin/homework")
-async def create_homework_admin(
-    title: str = Form(...),
-    desc: str = Form(""),
-    answer_text: str = Form(""),
-    answer_file: Optional[UploadFile] = File(None),
-    _: bool = Depends(verify_admin),
-):
-    if db is None:
-        return {"success": False}
-    ans_url = ""
-    if answer_file and answer_file.filename:
-        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
-
-    safe_title = sanitize_doc_id(title)
-    await asyncio.to_thread(
-        lambda: db.collection("homeworks").document(safe_title).set(
-            {
-                "title": title,
-                "desc": desc,
-                "answer_text": answer_text,
-                "answer_file": ans_url,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-    )
-    return {"success": True}
-
-@app.delete("/api/admin/homework/{title}")
-def delete_homework(title: str, _: bool = Depends(verify_admin)):
-    if db:
-        db.collection("homeworks").document(title).delete()
-    return {"success": True}
-
-@app.post("/api/admin/knowledge")
-async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None), _: bool = Depends(verify_admin)):
+@app.post("/api/admin/knowledge", dependencies=[Depends(verify_admin)])
+async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
     final_content = content
     if files:
@@ -879,8 +909,8 @@ async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), f
     await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     return {"success": True}
 
-@app.post("/api/admin/knowledge/bulk")
-async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...), _: bool = Depends(verify_admin)):
+@app.post("/api/admin/knowledge/bulk", dependencies=[Depends(verify_admin)])
+async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...)):
     if db is None: return {"success": False}
     processed = 0
     for file in files:
@@ -899,52 +929,38 @@ async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...), _: bool 
             except: pass
     return {"success": True, "count": processed}
 
-@app.delete("/api/admin/knowledge/{k_id}")
-def delete_knowledge_admin(k_id: str, _: bool = Depends(verify_admin)):
+@app.delete("/api/admin/knowledge/{k_id}", dependencies=[Depends(verify_admin)])
+def delete_knowledge_admin(k_id: str):
     if db: db.collection("knowledge").document(k_id).delete()
     return {"success": True}
 
-@app.delete("/api/admin/inquiry/{i_id}")
-def delete_inquiry_admin(i_id: str, _: bool = Depends(verify_admin)):
+@app.get("/api/inquiries")
+def get_inquiries():
+    if db is None: return {"success": False, "inquiries": []}
+    return {"success": True, "inquiries": [{"id": d.id, **d.to_dict()} for d in db.collection("inquiries").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+
+@app.post("/api/inquiry")
+def create_inquiry(content: str = Form(...), school: str = Form(""), grade: str = Form(""), student_name: str = Form("")):
+    if db: db.collection("inquiries").add({"content": content, "school": school, "grade": grade, "student_name": student_name, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return {"success": True}
+
+@app.delete("/api/admin/inquiry/{i_id}", dependencies=[Depends(verify_admin)])
+def delete_inquiry_admin(i_id: str):
     if db: db.collection("inquiries").document(i_id).delete()
     return {"success": True}
 
 class QuestionSaveReq(BaseModel): title: str; content: str
-@app.post("/api/admin/questions")
-def save_question_admin(req: QuestionSaveReq, _: bool = Depends(verify_admin)):
+@app.post("/api/admin/questions", dependencies=[Depends(verify_admin)])
+def save_question_admin(req: QuestionSaveReq):
     if db: db.collection("questions").add({"title": req.title, "content": req.content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
-@app.get("/api/admin/questions")
-def get_questions_admin(_: bool = Depends(verify_admin)):
+@app.get("/api/admin/questions", dependencies=[Depends(verify_admin)])
+def get_questions_admin():
     if db is None: return {"success": False, "questions": []}
     return {"success": True, "questions": [{"id": d.id, **d.to_dict()} for d in db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
-@app.delete("/api/admin/questions/{q_id}")
-def delete_question_admin(q_id: str, _: bool = Depends(verify_admin)):
+@app.delete("/api/admin/questions/{q_id}", dependencies=[Depends(verify_admin)])
+def delete_question_admin(q_id: str):
     if db: db.collection("questions").document(q_id).delete()
-    return {"success": True}
-
-@app.post("/api/admin/board")
-async def create_board_post_admin(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None), _: bool = Depends(verify_admin)):
-    if db is None: return {"success": False}
-    file_url = ""
-    if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
-    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
-    return {"success": True}
-
-@app.delete("/api/admin/board/{post_id}")
-def delete_board_post_admin(post_id: str, _: bool = Depends(verify_admin)):
-    if db: db.collection("board").document(post_id).delete()
-    return {"success": True}
-
-class LectureRequest(BaseModel): title: str; desc: str; video_url: str
-@app.post("/api/admin/lecture")
-def create_lecture_admin(req: LectureRequest, _: bool = Depends(verify_admin)):
-    if db: db.collection("lectures").add({"title": req.title, "desc": req.desc, "video_url": req.video_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
-
-@app.delete("/api/admin/lecture/{lecture_id}")
-def delete_lecture_admin(lecture_id: str, _: bool = Depends(verify_admin)):
-    if db: db.collection("lectures").document(lecture_id).delete()
     return {"success": True}
