@@ -12,6 +12,24 @@ from firebase_admin import credentials, firestore
 import google.generativeai as genai
 from datetime import datetime
 
+# 🚀 PyMuPDF (PDF 해독기) 탑재
+try:
+    import fitz
+except ImportError:
+    fitz = None
+    print("PyMuPDF 모듈이 설치되지 않았습니다. requirements.txt를 확인하세요.")
+
+def extract_text_from_pdf(file_bytes: bytes) -> str:
+    """PDF 파일 바이트를 읽어 텍스트로 추출하는 도우미 함수"""
+    if not fitz:
+        return ""
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        text = "\n".join([page.get_text() for page in doc])
+        return text
+    except Exception as e:
+        return f"[PDF 추출 오류: {str(e)}]"
+
 os.makedirs("uploads/exams", exist_ok=True)
 os.makedirs("uploads/homeworks", exist_ok=True)
 os.makedirs("uploads/board", exist_ok=True)
@@ -114,8 +132,13 @@ async def chat_with_ai(
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                mime_type = f.content_type or "application/octet-stream"
-                contents.append({"mime_type": mime_type, "data": file_bytes})
+                # 🚀 PDF 파일인 경우 텍스트로 강제 변환 후 전송 (과부하 방지)
+                if f.filename.lower().endswith('.pdf') and fitz:
+                    pdf_text = extract_text_from_pdf(file_bytes)
+                    contents.append(f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}")
+                else:
+                    mime_type = f.content_type or "application/octet-stream"
+                    contents.append({"mime_type": mime_type, "data": file_bytes})
                 
     try:
         res = model.generate_content(contents)
@@ -329,7 +352,12 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
             if file.filename:
                 try:
                     file_bytes = await file.read()
-                    res = model.generate_content(["이 문서의 핵심을 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+                    # 🚀 PDF 자료 학습도 우회
+                    if file.filename.lower().endswith('.pdf') and fitz:
+                        pdf_text = extract_text_from_pdf(file_bytes)
+                        res = model.generate_content([f"이 문서의 핵심을 요약해줘.\n\n[문서 내용]\n{pdf_text}"])
+                    else:
+                        res = model.generate_content(["이 문서의 핵심을 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
                     final_content += f"\n\n[{file.filename}]\n{res.text}"
                 except Exception: pass
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -344,7 +372,13 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
             try:
                 file_bytes = await file.read()
                 title = file.filename.rsplit('.', 1)[0]
-                res = model.generate_content(["이 문서를 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+                # 🚀 벌크 업로드 시 PDF 해독
+                if file.filename.lower().endswith('.pdf') and fitz:
+                    pdf_text = extract_text_from_pdf(file_bytes)
+                    res = model.generate_content([f"이 문서를 요약해줘.\n\n[문서 내용]\n{pdf_text}"])
+                else:
+                    res = model.generate_content(["이 문서를 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+                
                 db.collection("knowledge").add({"title": title, "content": res.text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 processed += 1
             except Exception: pass
@@ -366,7 +400,14 @@ async def generate_stream(
     contents = [prompt]
     if files:
         for f in files:
-            if f.filename: contents.append({"mime_type": f.content_type or "image/jpeg", "data": await f.read()})
+            if f.filename:
+                file_bytes = await f.read()
+                # 🚀 문제 출제 시에도 PDF 고속 해독
+                if f.filename.lower().endswith('.pdf') and fitz:
+                    pdf_text = extract_text_from_pdf(file_bytes)
+                    contents.append(f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}")
+                else:
+                    contents.append({"mime_type": f.content_type or "image/jpeg", "data": file_bytes})
     
     response = model.generate_content(contents, stream=True)
     def iter_response():
@@ -411,7 +452,14 @@ async def grade_essay(school: str = Form(...), grade: str = Form(...), student_n
     if model is None: return {"success": False, "feedback": "AI 에러"}
     try:
         file_bytes = await file.read()
-        res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+        
+        # 🚀 논술 첨삭 시 PDF 고속 해독
+        if file.filename.lower().endswith('.pdf') and fitz:
+            pdf_text = extract_text_from_pdf(file_bytes)
+            res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}\n\n[작성 내용]\n{pdf_text}"])
+        else:
+            res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+            
         db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "첨삭완료"})
         return {"success": True, "feedback": res.text}
     except Exception as e:
