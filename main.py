@@ -50,7 +50,6 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    # 404 에러 방지를 위해 latest 모델 명시 및 안전장치
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
     except:
@@ -85,7 +84,6 @@ def authenticate(req: AuthRequest):
             return {"success": True, "is_admin": False, "student_name": req.student_name}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
-# 만능 데이터 수정 API (모든 관리자 탭 수정용)
 @app.post("/api/admin/universal_update")
 def universal_update(req: UpdateRequest):
     if db is None: return {"success": False}
@@ -151,6 +149,16 @@ def delete_students_bulk(ids: list = Form(...)):
     for student_id in ids:
         batch.delete(db.collection("students").document(student_id))
     batch.commit()
+    return {"success": True}
+
+@app.post("/api/admin/student/update")
+def update_student(old_id: str = Form(...), new_name: str = Form(...), school: str = Form(...), grade: str = Form(...)):
+    if db is None: return {"success": False}
+    if old_id != new_name:
+        db.collection("students").document(new_name).set({"school": school, "grade": grade})
+        db.collection("students").document(old_id).delete()
+    else:
+        db.collection("students").document(old_id).update({"school": school, "grade": grade})
     return {"success": True}
 
 @app.get("/api/admin/reports")
@@ -263,6 +271,8 @@ def submit_exam(req: ExamSubmitRequest):
         for i in range(min(len(req.answers), total)):
             if str(req.answers[i]).strip() == str(correct_answers[i]).strip(): correct_count += 1
             else: wrongs.append(i+1)
+        if len(req.answers) < total:
+            for i in range(len(req.answers), total): wrongs.append(i+1)
         if total > 0: score = int((correct_count / total) * 100)
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "모의고사", "score": score, "wrongs": wrongs})
     return {"success": True, "score": score, "wrongs": wrongs, "explanation_text": doc.to_dict().get("explanation_text", "")}
