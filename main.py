@@ -126,44 +126,18 @@ def send_telegram_message(text: str):
         except: pass
     threading.Thread(target=_send).start()
 
-
-# 💡 404 에러를 영구적으로 차단하는 "자동 모델 스캐너" 엔진
-def get_best_model():
+# 💡 핵심 수정: 구글 서버가 요구한 정확한 모델명 'gemini-3.6-flash' 지정
+def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key: raise Exception("서버 환경변수(GOOGLE_API_KEY)에 API 키가 없습니다.")
+    if not api_key: raise Exception("API 키 오류")
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
     try:
-        # 구글에 직접 물어봐서 현재 API 키로 쓸 수 있는 모델 목록만 싹 다 가져옵니다.
-        models = genai.list_models()
-        available_models = [m.name.replace('models/', '') for m in models if 'generateContent' in m.supported_generation_methods]
-    except Exception as e:
-        raise Exception(f"구글 모델 스캔 실패: {str(e)}")
-        
-    if not available_models:
-        raise Exception("이 API 키로는 사용할 수 있는 구글 AI 모델이 없습니다.")
-        
-    # 우선순위에 따라 스캔된 목록 중 확실히 존재하는 모델만 선택합니다.
-    target_model = None
-    for pref in ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro']:
-        if pref in available_models:
-            target_model = pref
-            break
-            
-    # 선호하는 이름이 없으면 억지 부리지 않고 가용한 첫 번째 모델을 씁니다.
-    if not target_model:
-        target_model = available_models[0]
-        
-    return genai.GenerativeModel(target_model)
-
-def safe_generate(contents, stream=False):
-    try:
-        model = get_best_model()
+        model = genai.GenerativeModel('gemini-3.6-flash')
         return model.generate_content(contents, stream=stream)
     except Exception as e:
-        raise Exception(f"AI 응답 오류: {str(e)}")
-
+        raise Exception(f"{str(e)}")
 
 class ConnectionManager:
     def __init__(self): self.active_connections = {}
@@ -324,10 +298,17 @@ async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), gr
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
     try:
-        response = safe_generate(contents, stream=False)
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key: raise Exception("API 키 오류")
+        clean_key = api_key.strip().replace('"', '').replace("'", "")
+        genai.configure(api_key=clean_key)
+        
+        # 💡 정확한 모델 호출
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        response = model.generate_content(contents, stream=False)
         return {"success": True, "reply": response.text}
     except Exception as e:
-        return {"success": False, "reply": str(e)}
+        return {"success": False, "reply": f"🚨 AI 응답 오류: {str(e)}"}
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
@@ -339,7 +320,13 @@ async def grade_essay(school: str = Form(""), grade: str = Form(""), student_nam
         elif "png" in file.filename.lower(): mime = "image/png"
         elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
         prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식(<b>, <br> 등 사용)으로 작성해주세요."
-        response = safe_generate([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
+        
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        clean_key = api_key.strip().replace('"', '').replace("'", "")
+        genai.configure(api_key=clean_key)
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        response = model.generate_content([prompt, {"mime_type": mime or "application/octet-stream", "data": file_bytes}], stream=False)
+        
         file_url = save_bytes(file_bytes, file.filename, "homeworks", mime)
         if db:
             db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "완료", "file_url": file_url})
@@ -364,7 +351,12 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
                         if "pdf" in file.filename.lower(): mime = "application/pdf"
                         elif "png" in file.filename.lower(): mime = "image/png"
                         elif "jpg" in file.filename.lower() or "jpeg" in file.filename.lower(): mime = "image/jpeg"
-                        response = safe_generate(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
+                        
+                        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+                        clean_key = api_key.strip().replace('"', '').replace("'", "")
+                        genai.configure(api_key=clean_key)
+                        model = genai.GenerativeModel('gemini-3.6-flash')
+                        response = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": mime or "application/pdf", "data": file_bytes}], stream=False)
                         final_content += f"\n\n[{file.filename} 분석]\n{response.text}"
                     except Exception as ai_err:
                         final_content += f"\n\n[{file.filename} 분석 오류: {str(ai_err)}]"
@@ -392,7 +384,13 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
                         extracted_text = file_bytes.decode('utf-8', errors='ignore')
 
                     prompt = f"다음 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.\n\n[문서 내용]\n{extracted_text[:100000]}"
-                    response = safe_generate([prompt], stream=False)
+                    
+                    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+                    clean_key = api_key.strip().replace('"', '').replace("'", "")
+                    genai.configure(api_key=clean_key)
+                    model = genai.GenerativeModel('gemini-3.6-flash')
+                    response = model.generate_content([prompt], stream=False)
+                    
                     db.collection("knowledge").add({"title": title, "content": f"[{title} 요약 및 핵심]\n{response.text}", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                     processed += 1
                 except Exception as e: pass
@@ -692,7 +690,12 @@ async def generate_stream(
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
     try:
-        model = get_best_model()
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        clean_key = api_key.strip().replace('"', '').replace("'", "")
+        genai.configure(api_key=clean_key)
+        
+        # 💡 정확한 모델 호출
+        model = genai.GenerativeModel('gemini-3.6-flash')
         response = model.generate_content(contents, stream=True)
         def iter_response():
             for chunk in response:
