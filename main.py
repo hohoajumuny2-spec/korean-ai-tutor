@@ -64,46 +64,67 @@ if firebase_key_str:
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
-# 🚀 다이렉트 통신망 (REST API) - 무한 로딩 버그 원천 차단
+# 🚀 다이렉트 통신망 (REST API) - 모델 자동 우회 탑재
 def call_gemini_rest_multi(text: str, files_data: list):
     if not gemini_key: raise Exception("API 키 오류")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    
+    models = ["gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-flash"]
     parts = [{"text": text}]
+    
     for fd in files_data:
         b64_data = base64.b64encode(fd["data"]).decode("utf-8")
         parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
     
     payload = {"contents": [{"parts": parts}]}
-    resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
-    if resp.status_code != 200: raise Exception(f"API 에러: {resp.text}")
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    last_error = ""
+    
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        last_error = resp.text
+        
+    raise Exception(f"API 에러: {last_error}")
 
 def call_gemini_stream(text: str, files_data: list):
     if not gemini_key:
         yield "API 키 오류"
         return
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
+        
+    models = ["gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-flash"]
     parts = [{"text": text}]
+    
     for fd in files_data:
         b64_data = base64.b64encode(fd["data"]).decode("utf-8")
         parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
     
     payload = {"contents": [{"parts": parts}]}
-    try:
-        with requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True, timeout=30) as resp:
-            if resp.status_code != 200:
-                yield f"API 에러: {resp.text}"
-                return
-            for line in resp.iter_lines():
-                if line:
-                    decoded = line.decode('utf-8')
-                    if decoded.startswith("data: "):
-                        try:
-                            data = json.loads(decoded[6:])
-                            yield data["candidates"][0]["content"]["parts"][0]["text"]
-                        except: pass
-    except Exception as e:
-        yield f"\n[스트림 통신 오류: {str(e)}]"
+    last_error = ""
+    success = False
+    
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?alt=sse&key={gemini_key}"
+        try:
+            with requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True, timeout=30) as resp:
+                if resp.status_code == 200:
+                    success = True
+                    for line in resp.iter_lines():
+                        if line:
+                            decoded = line.decode('utf-8')
+                            if decoded.startswith("data: "):
+                                try:
+                                    data = json.loads(decoded[6:])
+                                    yield data["candidates"][0]["content"]["parts"][0]["text"]
+                                except: pass
+                    break
+                else:
+                    last_error = resp.text
+        except Exception as e:
+            last_error = str(e)
+            
+    if not success:
+        yield f"API 에러: {last_error}"
 
 class AuthRequest(BaseModel):
     school: str = ""
