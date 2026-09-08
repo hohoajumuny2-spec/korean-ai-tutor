@@ -2,6 +2,8 @@ import os
 import json
 import shutil
 import uuid
+import base64
+import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -9,24 +11,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore
-import google.generativeai as genai
 from datetime import datetime
 
-# 🚀 PyMuPDF (PDF 해독기) 탑재
+# 🚀 PyMuPDF (PDF 고속 해독기)
 try:
     import fitz
 except ImportError:
     fitz = None
-    print("PyMuPDF 모듈이 설치되지 않았습니다. requirements.txt를 확인하세요.")
+    print("PyMuPDF 모듈이 설치되지 않았습니다.")
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """PDF 파일 바이트를 읽어 텍스트로 추출하는 도우미 함수"""
-    if not fitz:
-        return ""
+    if not fitz: return ""
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        text = "\n".join([page.get_text() for page in doc])
-        return text
+        return "\n".join([page.get_text() for page in doc])
     except Exception as e:
         return f"[PDF 추출 오류: {str(e)}]"
 
@@ -65,13 +63,47 @@ if firebase_key_str:
         print("Firebase Error:", e)
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-model = None
-if gemini_key:
-    genai.configure(api_key=gemini_key)
+
+# 🚀 다이렉트 통신망 (REST API) - 무한 로딩 버그 원천 차단
+def call_gemini_rest_multi(text: str, files_data: list):
+    if not gemini_key: raise Exception("API 키 오류")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    parts = [{"text": text}]
+    for fd in files_data:
+        b64_data = base64.b64encode(fd["data"]).decode("utf-8")
+        parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
+    
+    payload = {"contents": [{"parts": parts}]}
+    resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+    if resp.status_code != 200: raise Exception(f"API 에러: {resp.text}")
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+def call_gemini_stream(text: str, files_data: list):
+    if not gemini_key:
+        yield "API 키 오류"
+        return
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
+    parts = [{"text": text}]
+    for fd in files_data:
+        b64_data = base64.b64encode(fd["data"]).decode("utf-8")
+        parts.append({"inline_data": {"mime_type": fd["mime_type"], "data": b64_data}})
+    
+    payload = {"contents": [{"parts": parts}]}
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    except:
-        model = genai.GenerativeModel('gemini-pro')
+        with requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True, timeout=30) as resp:
+            if resp.status_code != 200:
+                yield f"API 에러: {resp.text}"
+                return
+            for line in resp.iter_lines():
+                if line:
+                    decoded = line.decode('utf-8')
+                    if decoded.startswith("data: "):
+                        try:
+                            data = json.loads(decoded[6:])
+                            yield data["candidates"][0]["content"]["parts"][0]["text"]
+                        except: pass
+    except Exception as e:
+        yield f"\n[스트림 통신 오류: {str(e)}]"
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -116,8 +148,6 @@ async def chat_with_ai(
     school: str = Form(""), grade: str = Form(""), student_name: str = Form(""),
     prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)
 ):
-    if model is None: return {"success": False, "reply": "AI 모델 설정 오류입니다. API 키를 확인하세요."}
-    
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
@@ -127,22 +157,20 @@ async def chat_with_ai(
     아래 [로지에듀 공식 자료]를 최우선으로 참고하세요.
     [로지에듀 공식 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"""
     
-    contents = [system_prompt]
+    files_data = []
     if files:
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                # 🚀 PDF 파일인 경우 텍스트로 강제 변환 후 전송 (과부하 방지)
                 if f.filename.lower().endswith('.pdf') and fitz:
                     pdf_text = extract_text_from_pdf(file_bytes)
-                    contents.append(f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}")
+                    system_prompt += f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}"
                 else:
-                    mime_type = f.content_type or "application/octet-stream"
-                    contents.append({"mime_type": mime_type, "data": file_bytes})
+                    files_data.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
                 
     try:
-        res = model.generate_content(contents)
-        return {"success": True, "reply": res.text}
+        reply = call_gemini_rest_multi(system_prompt, files_data)
+        return {"success": True, "reply": reply}
     except Exception as e:
         return {"success": False, "reply": f"AI 통신 오류: {str(e)}"}
 
@@ -347,19 +375,24 @@ def get_knowledge():
 async def add_knowledge(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
     final_content = content
+    files_data = []
+    
     if files:
         for file in files:
             if file.filename:
-                try:
-                    file_bytes = await file.read()
-                    # 🚀 PDF 자료 학습도 우회
-                    if file.filename.lower().endswith('.pdf') and fitz:
-                        pdf_text = extract_text_from_pdf(file_bytes)
-                        res = model.generate_content([f"이 문서의 핵심을 요약해줘.\n\n[문서 내용]\n{pdf_text}"])
-                    else:
-                        res = model.generate_content(["이 문서의 핵심을 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
-                    final_content += f"\n\n[{file.filename}]\n{res.text}"
-                except Exception: pass
+                file_bytes = await file.read()
+                if file.filename.lower().endswith('.pdf') and fitz:
+                    pdf_text = extract_text_from_pdf(file_bytes)
+                    final_content += f"\n\n[{file.filename}]\n{pdf_text}"
+                else:
+                    files_data.append({"mime_type": file.content_type or "image/jpeg", "data": file_bytes})
+    
+    if files_data:
+        try:
+            summary = call_gemini_rest_multi("이 문서의 핵심을 요약해줘.", files_data)
+            final_content += f"\n\n[첨부 요약]\n{summary}"
+        except Exception: pass
+        
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
@@ -372,14 +405,13 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
             try:
                 file_bytes = await file.read()
                 title = file.filename.rsplit('.', 1)[0]
-                # 🚀 벌크 업로드 시 PDF 해독
                 if file.filename.lower().endswith('.pdf') and fitz:
                     pdf_text = extract_text_from_pdf(file_bytes)
-                    res = model.generate_content([f"이 문서를 요약해줘.\n\n[문서 내용]\n{pdf_text}"])
+                    summary = call_gemini_rest_multi(f"이 문서를 요약해줘.\n\n[문서 내용]\n{pdf_text}", [])
                 else:
-                    res = model.generate_content(["이 문서를 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+                    summary = call_gemini_rest_multi("이 문서를 요약해줘.", [{"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
                 
-                db.collection("knowledge").add({"title": title, "content": res.text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                db.collection("knowledge").add({"title": title, "content": summary, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 processed += 1
             except Exception: pass
     return {"success": True, "count": processed}
@@ -397,23 +429,19 @@ async def generate_stream(
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n유형: {q_types}\n총 {total}문항\n[입력자료]\n{q_text}"
-    contents = [prompt]
+    
+    files_data = []
     if files:
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                # 🚀 문제 출제 시에도 PDF 고속 해독
                 if f.filename.lower().endswith('.pdf') and fitz:
                     pdf_text = extract_text_from_pdf(file_bytes)
-                    contents.append(f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}")
+                    prompt += f"\n[첨부된 PDF ({f.filename}) 내용]\n{pdf_text}"
                 else:
-                    contents.append({"mime_type": f.content_type or "image/jpeg", "data": file_bytes})
+                    files_data.append({"mime_type": f.content_type or "image/jpeg", "data": file_bytes})
     
-    response = model.generate_content(contents, stream=True)
-    def iter_response():
-        for chunk in response:
-            if chunk.text: yield chunk.text
-    return StreamingResponse(iter_response(), media_type="text/plain")
+    return StreamingResponse(call_gemini_stream(prompt, files_data), media_type="text/plain")
 
 @app.get("/api/admin/questions")
 def get_questions():
@@ -449,19 +477,17 @@ def delete_lecture(lecture_id: str):
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), topic: str = Form(...), file: UploadFile = File(...)):
-    if model is None: return {"success": False, "feedback": "AI 에러"}
     try:
         file_bytes = await file.read()
-        
-        # 🚀 논술 첨삭 시 PDF 고속 해독
         if file.filename.lower().endswith('.pdf') and fitz:
             pdf_text = extract_text_from_pdf(file_bytes)
-            res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}\n\n[작성 내용]\n{pdf_text}"])
+            reply = call_gemini_rest_multi(f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}\n\n[작성 내용]\n{pdf_text}", [])
         else:
-            res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+            files_data = [{"mime_type": file.content_type or "image/jpeg", "data": file_bytes}]
+            reply = call_gemini_rest_multi(f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}", files_data)
             
         db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "첨삭완료"})
-        return {"success": True, "feedback": res.text}
+        return {"success": True, "feedback": reply}
     except Exception as e:
         return {"success": False, "feedback": str(e)}
 
