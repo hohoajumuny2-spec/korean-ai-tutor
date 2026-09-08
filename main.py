@@ -1,26 +1,23 @@
 import os
 import json
+import time
 import shutil
-import uuid
-import fitz  # PyMuPDF: PDF 해독용[cite: 4]
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from pydantic import BaseModel
+
+import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-import google.generativeai as genai
-from datetime import datetime
 
-os.makedirs("uploads/exams", exist_ok=True)
-os.makedirs("uploads/homeworks", exist_ok=True)
-os.makedirs("uploads/board", exist_ok=True)
-os.makedirs("uploads/chat", exist_ok=True)
+# ==========================================
+# 🚀 FastAPI 앱 및 RAG 지식 베이스 세팅
+# ==========================================
+app = FastAPI(title="LogyEDU 24시 국최 API Engine", version="3.0.0")
 
-app = FastAPI()
-
-# 브라우저 차단(CORS) 방지[cite: 3, 6]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,311 +26,219 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/uploads/{folder}/{filename}")
-def get_upload_file(folder: str, filename: str):
-    filepath = f"uploads/{folder}/{filename}"
-    if os.path.exists(filepath):
-        return FileResponse(filepath)
-    raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+KNOWLEDGE_DIR = "knowledge_base"
+os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
 
-firebase_key_str = os.environ.get("FIREBASE_KEY")
-db = None
-if firebase_key_str:
+# 구글 Gemini 연동
+MY_API_KEY = os.getenv("MY_API_KEY", "YOUR_GEMINI_API_KEY")
+genai.configure(api_key=MY_API_KEY)
+
+# 파이어베이스 초기화
+if not firebase_admin._apps:
     try:
-        cred_dict = json.loads(firebase_key_str)
-        cred = credentials.Certificate(cred_dict)
-        if not firebase_admin._apps:
+        if os.path.exists("firebase_key.json"):
+            cred = credentials.Certificate("firebase_key.json")
             firebase_admin.initialize_app(cred)
-        db = firestore.client()
     except Exception as e:
-        print("Firebase Error:", e)
+        pass
 
-gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-model = None
-if gemini_key:
-    genai.configure(api_key=gemini_key)
-    # 구형 모델 충돌을 막기 위해 최신 flash 모델을 우선 사용[cite: 2]
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    except:
-        model = genai.GenerativeModel('gemini-pro')
+try:
+    db = firestore.client()
+except Exception:
+    db = None
 
-class AuthRequest(BaseModel):
-    school: str = ""
-    grade: str = ""
-    student_name: str
-    admin_password: str = ""
-
-class BulkStudentRequest(BaseModel):
-    students: list
-
-class UpdateRequest(BaseModel):
-    collection: str
-    doc_id: str
-    updates: dict
-
-@app.get("/api/health")
-def health_check(): return {"status": "ok"}
-
-@app.post("/api/auth")
-def authenticate(req: AuthRequest):
-    if req.admin_password == "1234": return {"success": True, "is_admin": True}
-    if db is None: raise HTTPException(status_code=500, detail="DB 오류")
-    
-    doc = db.collection("students").document(req.student_name).get()
-    if doc.exists:
-        data = doc.to_dict()
-        if data.get("school") == req.school and data.get("grade") == req.grade:
-            return {"success": True, "is_admin": False, "student_name": req.student_name}
-    return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
-
-@app.post("/api/chat")
-async def chat_with_ai(
-    school: str = Form(""), grade: str = Form(""), student_name: str = Form(""),
-    prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)
-):
-    if model is None: return {"success": False, "reply": "AI 모델 설정 오류입니다."}
-    
-    knowledge_base = ""
-    if db:
-        kb_docs = db.collection("knowledge").limit(10).stream()
-        knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
-
-    system_prompt = f"""당신은 '로지에듀 최준용 국어학원'의 전용 AI 튜터 '국최'입니다. 학생 이름: {student_name}.
-    아래 [로지에듀 공식 자료]를 최우선으로 참고하세요.
-    [로지에듀 공식 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"""
-    
-    contents = [system_prompt]
-    if files:
-        for f in files:
-            if f.filename:
-                file_bytes = await f.read()
-                if f.filename.lower().endswith(".pdf"):
-                    doc = fitz.open(stream=file_bytes, filetype="pdf")
-                    extracted_text = "".join([page.get_text() for page in doc])
-                    contents[0] += f"\n\n[첨부 문서 내용]\n{extracted_text[:30000]}"
-                else:
-                    mime_type = f.content_type or "application/octet-stream"
-                    contents.append({"mime_type": mime_type, "data": file_bytes})
-                
-    try:
-        res = model.generate_content(contents)
-        return {"success": True, "reply": res.text}
-    except Exception as e:
-        return {"success": False, "reply": f"AI 통신 오류: {str(e)}"}
-
-@app.get("/api/admin/students")
-def get_students():
-    if db is None: return {"success": False, "students": []}
-    return {"success": True, "students": [{"student_name": d.id, **d.to_dict()} for d in db.collection("students").stream()]}
-
-@app.post("/api/admin/student")
-def add_single_student(school: str = Form(...), grade: str = Form(...), name: str = Form(...)):
-    if db: db.collection("students").document(name).set({"school": school, "grade": grade})
-    return {"success": True}
-
-@app.post("/api/admin/student/bulk")
-def add_students_bulk(req: BulkStudentRequest):
-    if db is None: return {"success": False}
-    batch = db.batch()
-    for s in req.students:
-        batch.set(db.collection("students").document(s.get("name")), {"school": s.get("school"), "grade": s.get("grade")})
-    batch.commit()
-    return {"success": True}
-
-@app.get("/api/admin/reports")
-def get_reports():
-    if db is None: return {"success": False, "reports": []}
-    return {"success": True, "reports": [d.to_dict() for d in db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(200).stream()]}
-
-@app.post("/api/admin/homework")
-async def create_homework(title: str = Form(...), desc: str = Form(""), answer_text: str = Form(""), answer_file: Optional[UploadFile] = File(None)):
-    if db is None: return {"success": False}
-    ans_url = ""
-    if answer_file and answer_file.filename:
-        filename = f"{uuid.uuid4()}_{answer_file.filename}"
-        with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(answer_file.file, buffer)
-        ans_url = f"/uploads/homeworks/{filename}"
-    db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
-
-@app.get("/api/homeworks")
-def get_homeworks():
-    if db is None: return {"success": False, "homeworks": []}
-    docs = db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-    return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in docs]}
-
-@app.post("/api/homework/submit")
-async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
-    if db is None: return {"success": False}
-    file_urls = []
-    for file in files:
-        if file.filename:
-            filename = f"{uuid.uuid4()}_{file.filename}"
-            with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-            file_urls.append(f"/uploads/homeworks/{filename}")
-    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": ",".join(file_urls)})
-    doc = db.collection("homeworks").document(title).get()
-    ans_data = doc.to_dict() if doc.exists else {}
-    return {"success": True, "answer_text": ans_data.get("answer_text", ""), "answer_file": ans_data.get("answer_file", "")}
+# 임시 메모리 DB (파이어베이스 대용)
+MEMORY_DB = {
+    "students": [
+        {"class": "고1 미강고", "name": "이연서"},
+        {"class": "고1 미사고", "name": "김민준"},
+        {"class": "고1 하남고", "name": "박서준"},
+        {"class": "논술", "name": "최준용"}
+    ],
+    "omr_tasks": {"고1 미강고": {"미강고 중간고사 대비 1회": ["1", "3", "2", "5", "4", "O", "X", "단답형답"]}},
+    "videos": [],
+    "live_exam": None,
+    "submissions": []
+}
 
 # ==========================================
-# 💡 초정밀 모의고사 방 개설 및 채점 로직 (A~E 난이도 및 가능 점수 통합)[cite: 3]
+# 📄 Request 데이터 모델
 # ==========================================
-@app.post("/api/admin/exam")
-async def create_exam(
-    title: str = Form(...), 
-    exam_data: str = Form(...),
-    file: Optional[UploadFile] = File(None)
-):
-    if db is None: return {"success": False}
-    pdf_url = ""
-    if file and file.filename:
-        filename = f"{uuid.uuid4()}_{file.filename}"
-        with open(f"uploads/exams/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-        pdf_url = f"/uploads/exams/{filename}"
-
-    db.collection("exams").document(title).set({
-        "title": title, "exam_data": exam_data, "pdf_url": pdf_url, 
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-    return {"success": True}
-
-@app.get("/api/exams")
-def get_exams():
-    if db is None: return {"success": False, "exams": []}
-    docs = db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-    return {"success": True, "exams": [{"id": d.id, **d.to_dict()} for d in docs]}
-
-class ExamSubmitRequest(BaseModel):
-    school: str
-    grade: str
+class AuthReq(BaseModel):
+    student_class: str
     student_name: str
+    admin_password: Optional[str] = None
+
+class ChatReq(BaseModel):
+    student_class: str
+    student_name: str
+    prompt: str
+
+class VideoLectureReq(BaseModel):
     title: str
-    answers: list
+    target_class: str
+    youtube_url: str
+    description: Optional[str] = ""
 
-@app.post("/api/exam/submit")
-def submit_exam(req: ExamSubmitRequest):
-    if db is None: return {"success": False}
-    doc = db.collection("exams").document(req.title).get()
-    
-    actual_score = 0
-    wrong_by_diff = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}
-    wrongs = []
-    missed_ab_score = 0
-    missed_c_score = 0
-    
-    if doc.exists:
-        data = doc.to_dict()
-        exam_data = json.loads(data.get("exam_data", "{}"))
-        questions = exam_data.get("questions", [])
-        
-        for i, q in enumerate(questions):
-            student_ans = str(req.answers[i]).strip() if i < len(req.answers) else ""
-            correct_ans = str(q.get("ans", "")).strip()
-            score = int(q.get("score", 0))
-            diff = q.get("diff", "C")
-            
-            if student_ans == correct_ans and student_ans != "":
-                actual_score += score
-            else:
-                wrongs.append(i+1)
-                if diff in wrong_by_diff:
-                    wrong_by_diff[diff] += 1
-                
-                if diff in ["A", "B"]:
-                    missed_ab_score += score
-                elif diff == "C":
-                    missed_c_score += score
-                    
-    potential_ab = actual_score + missed_ab_score
-    potential_abc = potential_ab + missed_c_score
-    
-    db.collection("reports").add({
-        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "student_name": req.student_name, "school": req.school, "grade": req.grade,
-        "task_name": req.title, "type": "모의고사", "score": actual_score, "wrongs": wrongs
-    })
-    
-    return {
-        "success": True, 
-        "score": actual_score, 
-        "wrongs": wrongs,
-        "wrong_by_diff": wrong_by_diff,
-        "potential_ab": potential_ab,
-        "potential_abc": potential_abc
-    }
+class LiveExamStartReq(BaseModel):
+    exam_title: str
+    target_class: str
+    time_limit_minutes: int
+    questions: Optional[List[Dict[str, Any]]] = []
+
+class LiveExamSubmitReq(BaseModel):
+    student_class: str
+    student_name: str
+    exam_title: str
+    answers: List[str]
+
+class OMRSubmitReq(BaseModel):
+    student_class: str
+    student_name: str
+    task_name: str
+    answers: List[str]
 
 # ==========================================
-# 💡 자료 대량 일괄 등록 및 PyMuPDF 적용[cite: 4]
+# 🎯 API Endpoints
 # ==========================================
-@app.post("/api/admin/knowledge/bulk")
-async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
-    if db is None: return {"success": False}
-    processed = 0
-    for file in files:
-        if file.filename:
-            try:
-                file_bytes = await file.read()
-                extracted_text = ""
-                title = file.filename.rsplit('.', 1)[0] 
-                
-                if file.filename.lower().endswith(".pdf"):
-                    doc = fitz.open(stream=file_bytes, filetype="pdf")
-                    for page in doc:
-                        extracted_text += page.get_text()
-                else:
-                    extracted_text = file_bytes.decode('utf-8', errors='ignore')
 
-                prompt = f"다음 문서의 핵심 지식을 상세히 요약하고 핵심 개념을 정리해줘.\n\n[문서 내용]\n{extracted_text[:100000]}"
-                res = model.generate_content([prompt])
-                
-                db.collection("knowledge").add({
-                    "title": title, 
-                    "content": f"[{title} 요약 및 핵심]\n{res.text}", 
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-                processed += 1
-            except Exception as e: 
-                print(f"Parsing Error: {str(e)}")
-                pass
-    return {"success": True, "count": processed}
+# 1. 인증 API
+@app.post("/api/auth")
+def authenticate(req: AuthReq):
+    if req.student_class == "논술" and req.student_name == "최준용":
+        if req.admin_password == "2024":
+            return {"success": True, "is_admin": True, "message": "원장님 관리자 모드가 활성화되었습니다."}
+        raise HTTPException(status_code=401, detail="관리자 비밀번호 불일치")
+    return {"success": True, "is_admin": False, "message": f"{req.student_name} 학생 인증 완료"}
 
-# ==========================================
-# 💡 문제 자동 출제 (PyMuPDF 연동으로 스트리밍 충돌 방지)[cite: 2]
-# ==========================================
-@app.post("/api/admin/generate_stream")
-async def generate_stream(
-    q_mode: str = Form(...), q_types: str = Form(...),
-    cnt_killer: int = Form(0), cnt_semi: int = Form(0), cnt_high: int = Form(0), cnt_mid: int = Form(0), cnt_low: int = Form(0),
-    q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
-):
-    total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt_text = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n유형: {q_types}\n총 {total}문항\n[입력자료]\n{q_text}"
-    
-    contents = [prompt_text]
-    if files:
-        for f in files:
-            if f.filename:
-                file_bytes = await f.read()
-                # PDF는 이미지 형태가 아닌 텍스트로 치환하여 AI 과부하 원천 차단
-                if f.filename.lower().endswith(".pdf"):
-                    doc = fitz.open(stream=file_bytes, filetype="pdf")
-                    extracted = "".join([page.get_text() for page in doc])
-                    contents[0] += f"\n\n[PDF 참고 자료]\n{extracted[:30000]}"
-                else:
-                    mime_type = f.content_type or "image/jpeg"
-                    contents.append({"mime_type": mime_type, "data": file_bytes})
-    
+
+# 2. 🧠 RAG 기반 AI 질문 API
+@app.post("/api/chat")
+async def ai_chat(req: ChatReq):
     try:
-        response = model.generate_content(contents, stream=True)
-        def iter_response():
-            try:
-                for chunk in response:
-                    if chunk.text: yield chunk.text
-            except Exception as inner_e:
-                yield f"\n\n❌ 스트리밍 중 오류 발생: {str(inner_e)}"
-        return StreamingResponse(iter_response(), media_type="text/plain")
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # 지식 베이스 읽기
+        academy_materials = ""
+        for filename in os.listdir(KNOWLEDGE_DIR):
+            if filename.endswith(".txt"):
+                file_path = os.path.join(KNOWLEDGE_DIR, filename)
+                with open(file_path, "r", encoding="utf-8") as f:
+                    academy_materials += f"\n\n[자료명: {filename}]\n{f.read()}"
+
+        system_prompt = f"""
+        당신은 '로지에듀 최준용 국어학원'의 전용 AI 국최입니다. 학생 이름: {req.student_name}, 소속: {req.student_class}.
+        
+        [로지에듀 공식 자료]
+        {academy_materials if academy_materials else "현재 등록된 자료가 없습니다."}
+
+        [🚨 답변 규칙]
+        1. 질문의 답이 [로지에듀 공식 자료]에 있다면 오직 그 내용을 근거로 완벽히 해설하세요.
+        2. 공식 자료에 내용이 없다면 일반 지식으로 대답하되, 마지막에 반드시 "※ 안내: 위 해설은 학원 공식 자료에 없는 내용으로, AI 국최의 외부 지식을 활용하여 답변했습니다." 라고 적으세요.
+        3. 시작할 때 '안녕하세요! AI 국최입니다.'로 인사하세요.
+        """
+        
+        response = model.generate_content(f"{system_prompt}\n\n[학생 질문]: {req.prompt}")
+        return {"success": True, "reply": response.text}
     except Exception as e:
-        def err_response(): yield f"❌ AI 생성 실패 (서버 또는 API 할당량 초과): {str(e)}"
-        return StreamingResponse(err_response(), media_type="text/plain")
+        raise HTTPException(status_code=500, detail=f"AI 오류: {str(e)}")
+
+
+# 3. 🧠 원장님 관제실: RAG 지식 대량 업로드
+@app.post("/api/admin/knowledge/bulk")
+async def upload_knowledge_bulk(files: List[UploadFile] = File(...)):
+    try:
+        saved_count = 0
+        for file in files:
+            file_path = os.path.join(KNOWLEDGE_DIR, file.filename)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            saved_count += 1
+        return {"success": True, "message": f"총 {saved_count}개의 학원 자료가 AI 두뇌에 완벽히 이식되었습니다!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
+
+
+# 4. 동영상 강의 API
+@app.get("/api/videos/{student_class}")
+def get_videos(student_class: str):
+    videos = [v for v in MEMORY_DB["videos"] if v["target_class"] in [student_class, "전체"]]
+    return {"success": True, "videos": videos}
+
+@app.post("/api/admin/videos")
+def add_video(req: VideoLectureReq):
+    video_id = req.youtube_url.split("youtu.be/")[1].split("?")[0] if "youtu.be/" in req.youtube_url else req.youtube_url.split("v=")[1].split("&")[0] if "v=" in req.youtube_url else req.youtube_url
+    new_video = {
+        "id": f"vid-{len(MEMORY_DB['videos'])+1}", "title": req.title,
+        "target_class": req.target_class, "embed_url": f"https://www.youtube.com/embed/{video_id}", "description": req.description
+    }
+    MEMORY_DB["videos"].append(new_video)
+    return {"success": True, "message": "동영상 강의 배포 완료"}
+
+
+# 5. 실시간 모의고사 API
+@app.get("/api/live/status/{student_class}")
+def get_live_exam_status(student_class: str):
+    live_data = MEMORY_DB.get("live_exam")
+    if not live_data or live_data["target_class"] not in [student_class, "전체"]:
+        return {"active": False}
+    
+    remain_ms = live_data["end_timestamp"] - int(time.time() * 1000)
+    if remain_ms <= 0: return {"active": False, "message": "시간 종료"}
+    
+    return {"active": True, "exam_title": live_data["exam_title"], "remaining_ms": remain_ms, "questions": live_data["questions"]}
+
+@app.post("/api/admin/live/start")
+def start_live_exam(req: LiveExamStartReq):
+    MEMORY_DB["live_exam"] = {
+        "exam_title": req.exam_title, "target_class": req.target_class,
+        "end_timestamp": int((datetime.now() + timedelta(minutes=req.time_limit_minutes)).timestamp() * 1000),
+        "questions": [{"text": "1. 다음 중 적절한 것은?", "options": ["1", "2", "3", "4", "5"]}] # 임시 문항 세팅
+    }
+    return {"success": True, "message": f"'{req.exam_title}' 실시간 모의고사 배포 완료"}
+
+@app.post("/api/admin/live/stop")
+def stop_live_exam():
+    MEMORY_DB["live_exam"] = None
+    return {"success": True, "message": "모의고사 강제 종료"}
+
+@app.post("/api/live/submit")
+def submit_live_exam(req: LiveExamSubmitReq):
+    MEMORY_DB["submissions"].append(req.dict())
+    return {"success": True, "message": "답안 제출 완료"}
+
+
+# 6. OMR 자동 채점 API
+@app.post("/api/omr/submit")
+def submit_omr(req: OMRSubmitReq):
+    correct_answers = MEMORY_DB["omr_tasks"].get(req.student_class, {}).get(req.task_name, [])
+    if not correct_answers:
+        raise HTTPException(status_code=404, detail="해당 과제의 정답 세팅 정보가 없습니다.")
+
+    total_q = len(correct_answers)
+    wrongs = []
+    details = []
+
+    for i in range(total_q):
+        s_ans = req.answers[i].strip().lower() if i < len(req.answers) else "미입력"
+        c_ans = correct_answers[i].strip().lower()
+        if s_ans != c_ans:
+            wrongs.append(f"{i+1}번")
+            details.append({"q_num": i+1, "correct": False, "student": s_ans, "answer": c_ans})
+        else:
+            details.append({"q_num": i+1, "correct": True, "student": s_ans, "answer": c_ans})
+
+    score = int(((total_q - len(wrongs)) / total_q) * 100) if total_q > 0 else 0
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    result_data = {
+        "datetime": now_str, "class": req.student_class, "name": req.student_name,
+        "task_name": req.task_name, "score": score, "wrongs": wrongs, "details": details
+    }
+    MEMORY_DB["submissions"].append(result_data)
+    
+    return {"success": True, "score": score, "wrongs": wrongs, "details": details}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
