@@ -64,7 +64,7 @@ if firebase_key_str:
 
 gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
-# 🚀 모델 자동 탐색 엔진 (404 에러 원천 차단)
+# 🚀 모델 자동 탐색 엔진 (구글이 요구한 최신 3.6 버전 최우선 타겟팅)
 _cached_model = None
 
 def get_working_model():
@@ -77,22 +77,23 @@ def get_working_model():
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             models = resp.json().get("models", [])
-            # 1순위: flash 모델 탐색
+            # 1순위: 에러에서 요구한 3.6-flash 모델 최우선 탐색
+            for m in models:
+                name = m.get("name", "")
+                if "generateContent" in m.get("supportedGenerationMethods", []) and "gemini-3.6-flash" in name:
+                    _cached_model = name.replace("models/", "")
+                    return _cached_model
+            # 2순위: 사용 가능한 최신 flash 모델 탐색
             for m in models:
                 name = m.get("name", "")
                 if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in name:
                     _cached_model = name.replace("models/", "")
                     return _cached_model
-            # 2순위: 사용 가능한 아무 텍스트 생성 모델 탐색
-            for m in models:
-                name = m.get("name", "")
-                if "generateContent" in m.get("supportedGenerationMethods", []):
-                    _cached_model = name.replace("models/", "")
-                    return _cached_model
     except Exception:
         pass
     
-    _cached_model = "gemini-1.5-flash"
+    # 탐색 실패 시 구글 에러 메시지가 지시한 모델명으로 강제 고정
+    _cached_model = "gemini-3.6-flash"
     return _cached_model
 
 def call_gemini_rest_multi(text: str, files_data: list):
@@ -462,7 +463,6 @@ def delete_knowledge(doc_id: str):
     if db: db.collection("knowledge").document(doc_id).delete()
     return {"success": True}
 
-# 🚀 프론트엔드 호환성을 위해 /generate (단일 응답)와 /generate_stream (실시간) 동시 지원
 @app.post("/api/admin/generate")
 async def generate_questions_json(
     q_mode: str = Form(""), q_style: str = Form(""), q_type: str = Form(""),
