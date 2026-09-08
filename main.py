@@ -47,10 +47,62 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-XP_REWARD_LOGIN = 50
-XP_REWARD_HOMEWORK = 200
-XP_REWARD_PROFILE = 300
-XP_MULTIPLIER_EXAM = 2
+XP_REWARD_LOGIN = 20
+XP_REWARD_HOMEWORK = 60
+XP_REWARD_ESSAY = 70
+XP_REWARD_PROFILE = 80
+XP_REWARD_CHAT = 8
+XP_REWARD_CHAT_DAILY_MAX_COUNT = 5  # 하루 최대 5회까지만 질문 포인트 인정
+XP_REWARD_QUIZ_BASE = 30
+XP_REWARD_EXAM_BASE = 50
+
+# ─────────────────────────────────────────────────────────
+# 🌱 성장 레벨 시스템 ("씨앗의 여정") — 학생 xp 누적치로 10단계 레벨 계산
+# ─────────────────────────────────────────────────────────
+LEVELS = [
+    {"level": 1, "name": "씨앗", "icon": "🌰", "threshold": 0, "unlock_item": None},
+    {"level": 2, "name": "새싹", "icon": "🌱", "threshold": 150, "unlock_item": {"id": "sprout", "emoji": "🌱", "label": "새싹 배지"}},
+    {"level": 3, "name": "떡잎", "icon": "🌿", "threshold": 350, "unlock_item": {"id": "clover", "emoji": "🍀", "label": "네잎클로버"}},
+    {"level": 4, "name": "줄기", "icon": "🪴", "threshold": 600, "unlock_item": {"id": "bamboo", "emoji": "🎍", "label": "대나무 장식"}},
+    {"level": 5, "name": "봉오리", "icon": "🌸", "threshold": 900, "unlock_item": {"id": "flowerpin", "emoji": "🌸", "label": "꽃 머리핀"}},
+    {"level": 6, "name": "꽃", "icon": "🌼", "threshold": 1300, "unlock_item": {"id": "wreath", "emoji": "🌻", "label": "화관"}},
+    {"level": 7, "name": "열매", "icon": "🍏", "threshold": 1800, "unlock_item": {"id": "grapes", "emoji": "🍇", "label": "열매 목걸이"}},
+    {"level": 8, "name": "잘 익은 열매", "icon": "🍎", "threshold": 2400, "unlock_item": {"id": "crown", "emoji": "👑", "label": "작은 왕관"}},
+    {"level": 9, "name": "빛나는 열매", "icon": "🍎", "threshold": 3200, "unlock_item": {"id": "sparkle", "emoji": "✨", "label": "반짝이는 오라"}},
+    {"level": 10, "name": "황금 열매", "icon": "🏆", "threshold": 4200, "unlock_item": {"id": "trophy", "emoji": "🏆", "label": "황금 트로피"}},
+]
+
+
+def compute_level_info(xp) -> dict:
+    """누적 xp로 현재 레벨/다음 레벨까지 필요한 양/지금까지 잠금해제된 꾸미기 아이템을 계산한다."""
+    try:
+        xp = max(0, int(xp or 0))
+    except (TypeError, ValueError):
+        xp = 0
+
+    current = LEVELS[0]
+    idx = 0
+    for i, lv in enumerate(LEVELS):
+        if xp >= lv["threshold"]:
+            current = lv
+            idx = i
+        else:
+            break
+
+    next_lv = LEVELS[idx + 1] if idx + 1 < len(LEVELS) else None
+    unlocked_items = [lv["unlock_item"] for lv in LEVELS[: idx + 1] if lv["unlock_item"]]
+
+    return {
+        "level": current["level"],
+        "name": current["name"],
+        "icon": current["icon"],
+        "xp": xp,
+        "current_threshold": current["threshold"],
+        "next_threshold": next_lv["threshold"] if next_lv else None,
+        "next_name": next_lv["name"] if next_lv else None,
+        "is_max": next_lv is None,
+        "unlocked_items": unlocked_items,
+    }
 
 # 💡 해결: 파일 업로드 제한을 25MB에서 100MB로 대폭 상향 조정
 ALLOWED_EXTENSIONS = {
@@ -326,7 +378,34 @@ def get_student_profile(student_name: str):
         .limit(100)
         .stream()
     ]
-    return {"success": True, "profile": doc.to_dict(), "reports": reports}
+    profile = doc.to_dict()
+    return {"success": True, "profile": profile, "reports": reports, "level_info": compute_level_info(profile.get("xp"))}
+
+
+class AvatarSaveRequest(BaseModel):
+    student_name: str
+    gender: str
+    item: str = "none"
+
+
+@app.post("/api/student/avatar")
+async def save_avatar(req: AvatarSaveRequest):
+    if db is None:
+        return {"success": False}
+    if req.gender not in ("boy", "girl"):
+        return {"success": False, "detail": "성별 값이 올바르지 않습니다."}
+
+    s_ref = db.collection("students").document(req.student_name)
+    doc = await asyncio.to_thread(s_ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "학생 정보를 찾을 수 없습니다."}
+
+    info = compute_level_info(doc.to_dict().get("xp"))
+    unlocked_ids = {it["id"] for it in info["unlocked_items"]}
+    item = req.item if (req.item == "none" or req.item in unlocked_ids) else "none"
+
+    await asyncio.to_thread(lambda: s_ref.set({"avatar_gender": req.gender, "avatar_item": item}, merge=True))
+    return {"success": True, "gender": req.gender, "item": item}
 
 
 @app.post("/api/student/profile_update")
@@ -427,6 +506,20 @@ def build_safe_knowledge_context() -> str:
     return knowledge_base
 
 
+def grant_chat_xp(student_name: str):
+    """AI 질문 1회당 소량의 성장 포인트를 지급한다 (하루 최대 XP_REWARD_CHAT_DAILY_MAX_COUNT회)."""
+    s_ref = db.collection("students").document(student_name)
+    doc = s_ref.get()
+    if not doc.exists:
+        return
+    data = doc.to_dict()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if data.get("chat_xp_date") != today:
+        s_ref.set({"chat_xp_date": today, "chat_xp_count": 1, "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
+    elif data.get("chat_xp_count", 0) < XP_REWARD_CHAT_DAILY_MAX_COUNT:
+        s_ref.set({"chat_xp_count": firestore.Increment(1), "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
+
+
 @app.post("/api/chat")
 async def chat_with_ai(
     prompt: str = Form(...),
@@ -458,6 +551,11 @@ async def chat_with_ai(
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
     try:
         response = await asyncio.to_thread(safe_generate, contents, False)
+        if db is not None and student_name and student_name != "미상":
+            try:
+                await asyncio.to_thread(grant_chat_xp, student_name)
+            except Exception:
+                pass
         return {"success": True, "reply": response.text}
     except Exception:
         return {"success": False, "reply": "AI 응답 지연이 발생했습니다. 잠시 후 다시 시도해주세요."}
@@ -495,7 +593,7 @@ async def grade_essay(
             )
             await asyncio.to_thread(
                 lambda: db.collection("students").document(student_name).set(
-                    {"xp": firestore.Increment(XP_REWARD_HOMEWORK)}, merge=True
+                    {"xp": firestore.Increment(XP_REWARD_ESSAY)}, merge=True
                 )
             )
         return {"success": True, "feedback": response.text}
@@ -619,7 +717,7 @@ async def submit_exam(req: ExamSubmitRequest):
     )
     await asyncio.to_thread(
         lambda: db.collection("students").document(req.student_name).set(
-            {"xp": firestore.Increment(actual_score * XP_MULTIPLIER_EXAM)}, merge=True
+            {"xp": firestore.Increment(XP_REWARD_EXAM_BASE + actual_score)}, merge=True
         )
     )
     return {"success": True, "score": actual_score, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
@@ -714,7 +812,7 @@ async def submit_quiz(req: QuizSubmitReq):
     )
     await asyncio.to_thread(
         lambda: db.collection("students").document(req.student_name).set(
-            {"xp": firestore.Increment(actual_score)}, merge=True
+            {"xp": firestore.Increment(XP_REWARD_QUIZ_BASE + actual_score)}, merge=True
         )
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
