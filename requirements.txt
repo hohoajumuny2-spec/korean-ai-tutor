@@ -5,3 +5,4 @@ google-generativeai
 firebase-admin
 python-multipart
 requests
+PyMuPDF==1.23.8
