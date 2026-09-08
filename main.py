@@ -126,31 +126,18 @@ def send_telegram_message(text: str):
         except: pass
     threading.Thread(target=_send).start()
 
-# 💡 핵심 수정: 구글 API 키 권한에 맞춰 작동 가능한 AI 모델을 알아서 찾아내는 방탄 코드
+# 💡 복잡한 예비 모델 코드를 싹 다 지우고, 무조건 작동하는 최신 모델로 고정시켰습니다.
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key: raise Exception("API 키 오류")
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    fallback_models = [
-        'gemini-1.5-flash', 
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-pro', 
-        'gemini-pro', 
-        'gemini-1.0-pro'
-    ]
-    
-    last_err = ""
-    for m_name in fallback_models:
-        try:
-            model = genai.GenerativeModel(m_name)
-            return model.generate_content(contents, stream=stream)
-        except Exception as e:
-            last_err = str(e)
-            continue 
-            
-    raise Exception(f"AI 실패: {last_err}")
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        return model.generate_content(contents, stream=stream)
+    except Exception as e:
+        raise Exception(f"{str(e)}")
 
 class ConnectionManager:
     def __init__(self): self.active_connections = {}
@@ -314,7 +301,7 @@ async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), gr
         response = safe_generate(contents, stream=False)
         return {"success": True, "reply": response.text}
     except Exception as e:
-        return {"success": False, "reply": f"🚨 {str(e)}"}
+        return {"success": False, "reply": f"🚨 AI 응답 오류: {str(e)}"}
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
@@ -679,7 +666,8 @@ async def generate_stream(
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
     try:
-        response = safe_generate(contents, stream=True)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(contents, stream=True)
         def iter_response():
             for chunk in response:
                 if chunk.text: yield chunk.text
