@@ -12,7 +12,6 @@ from firebase_admin import credentials, firestore
 import google.generativeai as genai
 from datetime import datetime
 
-# 파일 저장소(폴더) 자동 생성
 os.makedirs("uploads/exams", exist_ok=True)
 os.makedirs("uploads/homeworks", exist_ok=True)
 os.makedirs("uploads/board", exist_ok=True)
@@ -51,7 +50,11 @@ gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"
 model = None
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 404 에러 방지를 위해 latest 모델 명시 및 안전장치
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    except:
+        model = genai.GenerativeModel('gemini-pro')
 
 class AuthRequest(BaseModel):
     school: str = ""
@@ -79,14 +82,12 @@ def authenticate(req: AuthRequest):
     if doc.exists:
         data = doc.to_dict()
         if data.get("school") == req.school and data.get("grade") == req.grade:
-            return {"success": True, "is_admin": False}
+            return {"success": True, "is_admin": False, "student_name": req.student_name}
     return {"success": False, "detail": "명부에 이름이 없거나 학교/학년 정보가 틀립니다."}
 
-# ==========================================
-# 💡 만능 수정(Update) 엔드포인트
-# ==========================================
-@app.post("/api/admin/update")
-def update_document(req: UpdateRequest):
+# 만능 데이터 수정 API (모든 관리자 탭 수정용)
+@app.post("/api/admin/universal_update")
+def universal_update(req: UpdateRequest):
     if db is None: return {"success": False}
     try:
         db.collection(req.collection).document(req.doc_id).update(req.updates)
@@ -94,26 +95,21 @@ def update_document(req: UpdateRequest):
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
-# ==========================================
-# 💡 24시간 AI 국최
-# ==========================================
 @app.post("/api/chat")
 async def chat_with_ai(
     school: str = Form(""), grade: str = Form(""), student_name: str = Form(""),
     prompt: str = Form(...), files: Optional[List[UploadFile]] = File(None)
 ):
-    if model is None: return {"success": False, "reply": "AI 연결 오류."}
+    if model is None: return {"success": False, "reply": "AI 모델 설정 오류입니다. API 키를 확인하세요."}
     
     knowledge_base = ""
     if db:
         kb_docs = db.collection("knowledge").limit(10).stream()
         knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
 
-    system_prompt = f"""
-    당신은 로지에듀 국어학원 최준용 원장님의 AI 튜터 '국최'입니다.
-    아래 [학원 누적 자료]를 최우선으로 참고하여 답변하세요.
-    [학원 누적 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}
-    """
+    system_prompt = f"""당신은 '로지에듀 최준용 국어학원'의 전용 AI 튜터 '국최'입니다. 학생 이름: {student_name}.
+    아래 [로지에듀 공식 자료]를 최우선으로 참고하세요.
+    [로지에듀 공식 자료]\n{knowledge_base}\n\n[학생 질문]\n{prompt}"""
     
     contents = [system_prompt]
     if files:
@@ -127,11 +123,8 @@ async def chat_with_ai(
         res = model.generate_content(contents)
         return {"success": True, "reply": res.text}
     except Exception as e:
-        return {"success": False, "reply": str(e)}
+        return {"success": False, "reply": f"AI 통신 오류: {str(e)}"}
 
-# ==========================================
-# 💡 학생 및 장부 관리
-# ==========================================
 @app.get("/api/admin/students")
 def get_students():
     if db is None: return {"success": False, "students": []}
@@ -139,8 +132,7 @@ def get_students():
 
 @app.post("/api/admin/student")
 def add_single_student(school: str = Form(...), grade: str = Form(...), name: str = Form(...)):
-    if db is None: return {"success": False}
-    db.collection("students").document(name).set({"school": school, "grade": grade})
+    if db: db.collection("students").document(name).set({"school": school, "grade": grade})
     return {"success": True}
 
 @app.post("/api/admin/student/bulk")
@@ -148,8 +140,7 @@ def add_students_bulk(req: BulkStudentRequest):
     if db is None: return {"success": False}
     batch = db.batch()
     for s in req.students:
-        doc_ref = db.collection("students").document(s.get("name"))
-        batch.set(doc_ref, {"school": s.get("school"), "grade": s.get("grade")})
+        batch.set(db.collection("students").document(s.get("name")), {"school": s.get("school"), "grade": s.get("grade")})
     batch.commit()
     return {"success": True}
 
@@ -158,53 +149,29 @@ def delete_students_bulk(ids: list = Form(...)):
     if db is None: return {"success": False}
     batch = db.batch()
     for student_id in ids:
-        doc_ref = db.collection("students").document(student_id)
-        batch.delete(doc_ref)
+        batch.delete(db.collection("students").document(student_id))
     batch.commit()
-    return {"success": True}
-
-@app.post("/api/admin/student/update")
-def update_student(old_id: str = Form(...), new_name: str = Form(...), school: str = Form(...), grade: str = Form(...)):
-    if db is None: return {"success": False}
-    # 이름(문서 ID)이 변경된 경우 새로 생성하고 기존 삭제
-    if old_id != new_name:
-        db.collection("students").document(new_name).set({"school": school, "grade": grade})
-        db.collection("students").document(old_id).delete()
-    else:
-        db.collection("students").document(old_id).update({"school": school, "grade": grade})
     return {"success": True}
 
 @app.get("/api/admin/reports")
 def get_reports():
     if db is None: return {"success": False, "reports": []}
-    return {"success": True, "reports": [d.to_dict() for d in db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(100).stream()]}
+    return {"success": True, "reports": [d.to_dict() for d in db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(200).stream()]}
 
 @app.get("/api/student/profile/{student_name}")
 def get_student_profile(student_name: str):
     if db is None: return {"success": False}
-    docs = db.collection("reports").where("student_name", "==", student_name).stream()
-    return {"success": True, "reports": [d.to_dict() for d in docs]}
+    return {"success": True, "reports": [d.to_dict() for d in db.collection("reports").where("student_name", "==", student_name).stream()]}
 
-# ==========================================
-# 💡 과제 제출 시스템
-# ==========================================
 @app.post("/api/admin/homework")
-async def create_homework(
-    title: str = Form(...), desc: str = Form(""), 
-    answer_text: str = Form(""), answer_file: Optional[UploadFile] = File(None)
-):
+async def create_homework(title: str = Form(...), desc: str = Form(""), answer_text: str = Form(""), answer_file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
     ans_url = ""
     if answer_file and answer_file.filename:
         filename = f"{uuid.uuid4()}_{answer_file.filename}"
-        filepath = f"uploads/homeworks/{filename}"
-        with open(filepath, "wb") as buffer: shutil.copyfileobj(answer_file.file, buffer)
+        with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(answer_file.file, buffer)
         ans_url = f"/uploads/homeworks/{filename}"
-
-    db.collection("homeworks").document(title).set({
-        "title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+    db.collection("homeworks").document(title).set({"title": title, "desc": desc, "answer_text": answer_text, "answer_file": ans_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
 @app.get("/api/homeworks")
@@ -219,42 +186,27 @@ def delete_homework(title: str):
     return {"success": True}
 
 @app.post("/api/homework/submit")
-async def submit_homework(
-    school: str = Form(...), grade: str = Form(...), student_name: str = Form(...),
-    title: str = Form(...), files: List[UploadFile] = File(...)
-):
+async def submit_homework(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
     if db is None: return {"success": False}
     file_urls = []
     for file in files:
         if file.filename:
             filename = f"{uuid.uuid4()}_{file.filename}"
-            filepath = f"uploads/homeworks/{filename}"
-            with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+            with open(f"uploads/homeworks/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             file_urls.append(f"/uploads/homeworks/{filename}")
-    
-    db.collection("reports").add({
-        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "student_name": student_name, "school": school, "grade": grade,
-        "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": ",".join(file_urls)
-    })
-    
+    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": title, "type": "과제 제출", "score": "제출완료", "file_url": ",".join(file_urls)})
     doc = db.collection("homeworks").document(title).get()
     ans_data = doc.to_dict() if doc.exists else {}
     return {"success": True, "answer_text": ans_data.get("answer_text", ""), "answer_file": ans_data.get("answer_file", "")}
 
-# ==========================================
-# 💡 게시판 (자료실) 시스템
-# ==========================================
 @app.post("/api/admin/board")
 async def create_board_post(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
     file_url = ""
     if file and file.filename:
         filename = f"{uuid.uuid4()}_{file.filename}"
-        filepath = f"uploads/board/{filename}"
-        with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+        with open(f"uploads/board/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         file_url = f"/uploads/board/{filename}"
-
     db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
@@ -269,28 +221,15 @@ def delete_board_post(post_id: str):
     if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
-# ==========================================
-# 💡 실시간 모의고사 방
-# ==========================================
 @app.post("/api/admin/exam")
-async def create_exam(
-    title: str = Form(...), time_limit: int = Form(45), answer_key: str = Form(...),
-    file: Optional[UploadFile] = File(None), raw_text: str = Form(""), exam_data: str = Form("{}"),
-    video_url: str = Form(""), explanation_text: str = Form("")
-):
+async def create_exam(title: str = Form(...), time_limit: int = Form(45), answer_key: str = Form(...), file: Optional[UploadFile] = File(None), raw_text: str = Form(""), exam_data: str = Form("{}"), video_url: str = Form(""), explanation_text: str = Form("")):
     if db is None: return {"success": False}
     pdf_url = ""
     if file and file.filename:
         filename = f"{uuid.uuid4()}_{file.filename}"
-        filepath = f"uploads/exams/{filename}"
-        with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+        with open(f"uploads/exams/{filename}", "wb") as buffer: shutil.copyfileobj(file.file, buffer)
         pdf_url = f"/uploads/exams/{filename}"
-
-    db.collection("exams").document(title).set({
-        "title": title, "time_limit": time_limit, "answer_key": answer_key,
-        "exam_data": exam_data, "video_url": video_url, "explanation_text": explanation_text,
-        "pdf_url": pdf_url, "raw_text": raw_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+    db.collection("exams").document(title).set({"title": title, "time_limit": time_limit, "answer_key": answer_key, "exam_data": exam_data, "video_url": video_url, "explanation_text": explanation_text, "pdf_url": pdf_url, "raw_text": raw_text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
 @app.get("/api/exams")
@@ -316,34 +255,21 @@ def submit_exam(req: ExamSubmitRequest):
     if db is None: return {"success": False}
     doc = db.collection("exams").document(req.title).get()
     score = 0; wrongs = []
-    
     if doc.exists:
         data = doc.to_dict()
         correct_answers = [ans.strip() for ans in data.get("answer_key", "").split(",") if ans.strip()]
         total = len(correct_answers)
         correct_count = 0
-        
         for i in range(min(len(req.answers), total)):
             if str(req.answers[i]).strip() == str(correct_answers[i]).strip(): correct_count += 1
             else: wrongs.append(i+1)
-        if len(req.answers) < total:
-            for i in range(len(req.answers), total): wrongs.append(i+1)
         if total > 0: score = int((correct_count / total) * 100)
-    
-    db.collection("reports").add({
-        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "student_name": req.student_name, "school": req.school, "grade": req.grade,
-        "task_name": req.title, "type": "모의고사", "score": score, "wrongs": wrongs
-    })
+    db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "모의고사", "score": score, "wrongs": wrongs})
     return {"success": True, "score": score, "wrongs": wrongs, "explanation_text": doc.to_dict().get("explanation_text", "")}
 
-# ==========================================
-# 💡 퀴즈 및 타임어택
-# ==========================================
 @app.post("/api/admin/quiz")
 async def create_quiz(title: str = Form(...), deadline: str = Form(...), time_limit: int = Form(...), questions: str = Form(...)):
-    if db is None: return {"success": False}
-    db.collection("quizzes").add({"title": title, "deadline": deadline, "time_limit": time_limit, "questions": questions, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    if db: db.collection("quizzes").add({"title": title, "deadline": deadline, "time_limit": time_limit, "questions": questions, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
 
 @app.get("/api/quizzes")
@@ -374,14 +300,10 @@ def submit_quiz(req: QuizSubmitRequest):
         data = doc.to_dict()
         questions = json.loads(data.get("questions", "[]"))
         for i, q in enumerate(questions):
-            if i < len(req.answers) and str(req.answers[i]).strip() == str(q.get("ans")).strip():
-                score += int(q.get("score", 0))
+            if i < len(req.answers) and str(req.answers[i]).strip() == str(q.get("ans")).strip(): score += int(q.get("score", 0))
     db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": req.student_name, "school": req.school, "grade": req.grade, "task_name": req.title, "type": "타임어택 퀴즈", "score": score})
     return {"success": True, "score": score}
 
-# ==========================================
-# 💡 자료 학습(지식) & 생성 API
-# ==========================================
 @app.get("/api/knowledge")
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
@@ -397,8 +319,8 @@ async def add_knowledge(title: str = Form(...), content: str = Form(""), files: 
             if file.filename:
                 try:
                     file_bytes = await file.read()
-                    res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": file.content_type or "application/pdf", "data": file_bytes}])
-                    final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
+                    res = model.generate_content(["이 문서의 핵심을 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
+                    final_content += f"\n\n[{file.filename}]\n{res.text}"
                 except Exception: pass
     db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return {"success": True}
@@ -412,7 +334,7 @@ async def add_knowledge_bulk(files: List[UploadFile] = File(...)):
             try:
                 file_bytes = await file.read()
                 title = file.filename.rsplit('.', 1)[0]
-                res = model.generate_content(["이 문서의 핵심 지식을 요약해줘.", {"mime_type": file.content_type or "application/pdf", "data": file_bytes}])
+                res = model.generate_content(["이 문서를 요약해줘.", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
                 db.collection("knowledge").add({"title": title, "content": res.text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 processed += 1
             except Exception: pass
@@ -430,18 +352,11 @@ async def generate_stream(
     q_text: str = Form(""), files: Optional[List[UploadFile]] = File(None)
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"""로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.
-    - 선택된 문제 유형: {q_types}
-    - 킬러 {cnt_killer}문항, 준킬러 {cnt_semi}문항, 상 {cnt_high}문항, 중 {cnt_mid}문항, 하 {cnt_low}문항 (총 {total}문항)
-    [입력자료]\n{q_text}
-    """
+    prompt = f"로지에듀 국어학원 수석 출제 위원입니다. 오류 없는 문제를 출제하세요.\n유형: {q_types}\n총 {total}문항\n[입력자료]\n{q_text}"
     contents = [prompt]
     if files:
         for f in files:
-            if f.filename:
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": await f.read()})
-    
-    if model is None: raise HTTPException(status_code=500, detail="AI 에러")
+            if f.filename: contents.append({"mime_type": f.content_type or "image/jpeg", "data": await f.read()})
     
     response = model.generate_content(contents, stream=True)
     def iter_response():
@@ -465,9 +380,6 @@ def delete_question(q_id: str):
     if db: db.collection("questions").document(q_id).delete()
     return {"success": True}
 
-# ==========================================
-# 💡 강의 및 에세이 첨삭
-# ==========================================
 @app.post("/api/admin/lecture")
 def create_lecture(title: str = Form(...), desc: str = Form(""), video_url: str = Form(...)):
     if db: db.collection("lectures").add({"title": title, "desc": desc, "video_url": video_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
@@ -485,17 +397,11 @@ def delete_lecture(lecture_id: str):
     return {"success": True}
 
 @app.post("/api/essay/grade")
-async def grade_essay(
-    school: str = Form(...), grade: str = Form(...), student_name: str = Form(...),
-    topic: str = Form(...), file: UploadFile = File(...)
-):
+async def grade_essay(school: str = Form(...), grade: str = Form(...), student_name: str = Form(...), topic: str = Form(...), file: UploadFile = File(...)):
     if model is None: return {"success": False, "feedback": "AI 에러"}
     try:
         file_bytes = await file.read()
-        res = model.generate_content([
-            f"다음 논술/요약을 대치동 1타 강사처럼 예리하게 첨삭하고 평가해줘.\n주제: {topic}",
-            {"mime_type": file.content_type or "application/octet-stream", "data": file_bytes}
-        ])
+        res = model.generate_content([f"다음 논술/요약을 예리하게 첨삭해줘.\n주제: {topic}", {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}])
         db.collection("reports").add({"submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "student_name": student_name, "school": school, "grade": grade, "task_name": topic, "type": "논술 첨삭", "score": "첨삭완료"})
         return {"success": True, "feedback": res.text}
     except Exception as e:
