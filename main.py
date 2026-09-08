@@ -126,18 +126,44 @@ def send_telegram_message(text: str):
         except: pass
     threading.Thread(target=_send).start()
 
-def safe_generate(contents, stream=False):
+
+# 💡 404 에러를 영구적으로 차단하는 "자동 모델 스캐너" 엔진
+def get_best_model():
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key: raise Exception("API 키 오류")
+    if not api_key: raise Exception("서버 환경변수(GOOGLE_API_KEY)에 API 키가 없습니다.")
     clean_key = api_key.strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
     try:
-        # 가장 안정적이고 빠른 최신 모델 하나로만 단독 고정
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 구글에 직접 물어봐서 현재 API 키로 쓸 수 있는 모델 목록만 싹 다 가져옵니다.
+        models = genai.list_models()
+        available_models = [m.name.replace('models/', '') for m in models if 'generateContent' in m.supported_generation_methods]
+    except Exception as e:
+        raise Exception(f"구글 모델 스캔 실패: {str(e)}")
+        
+    if not available_models:
+        raise Exception("이 API 키로는 사용할 수 있는 구글 AI 모델이 없습니다.")
+        
+    # 우선순위에 따라 스캔된 목록 중 확실히 존재하는 모델만 선택합니다.
+    target_model = None
+    for pref in ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro']:
+        if pref in available_models:
+            target_model = pref
+            break
+            
+    # 선호하는 이름이 없으면 억지 부리지 않고 가용한 첫 번째 모델을 씁니다.
+    if not target_model:
+        target_model = available_models[0]
+        
+    return genai.GenerativeModel(target_model)
+
+def safe_generate(contents, stream=False):
+    try:
+        model = get_best_model()
         return model.generate_content(contents, stream=stream)
     except Exception as e:
-        raise Exception(f"{str(e)}")
+        raise Exception(f"AI 응답 오류: {str(e)}")
+
 
 class ConnectionManager:
     def __init__(self): self.active_connections = {}
@@ -301,7 +327,7 @@ async def chat_with_ai(prompt: str = Form(...), school: str = Form("미상"), gr
         response = safe_generate(contents, stream=False)
         return {"success": True, "reply": response.text}
     except Exception as e:
-        return {"success": False, "reply": f"🚨 AI 응답 오류: {str(e)}"}
+        return {"success": False, "reply": str(e)}
 
 @app.post("/api/essay/grade")
 async def grade_essay(school: str = Form(""), grade: str = Form(""), student_name: str = Form(""), topic: str = Form(...), file: UploadFile = File(...)):
@@ -666,7 +692,7 @@ async def generate_stream(
                 elif "jpg" in f.filename.lower() or "jpeg" in f.filename.lower(): mime = "image/jpeg"
                 contents.append({"mime_type": mime or "application/octet-stream", "data": file_bytes})
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = get_best_model()
         response = model.generate_content(contents, stream=True)
         def iter_response():
             for chunk in response:
