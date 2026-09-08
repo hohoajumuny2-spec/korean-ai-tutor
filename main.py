@@ -126,7 +126,6 @@ def send_telegram_message(text: str):
         except: pass
     threading.Thread(target=_send).start()
 
-# 💡 복잡한 예비 모델 코드를 싹 다 지우고, 무조건 작동하는 최신 모델로 고정시켰습니다.
 def safe_generate(contents, stream=False):
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key: raise Exception("API 키 오류")
@@ -134,6 +133,7 @@ def safe_generate(contents, stream=False):
     genai.configure(api_key=clean_key)
     
     try:
+        # 가장 안정적이고 빠른 최신 모델 하나로만 단독 고정
         model = genai.GenerativeModel('gemini-1.5-flash')
         return model.generate_content(contents, stream=stream)
     except Exception as e:
