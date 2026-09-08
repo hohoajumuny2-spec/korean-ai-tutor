@@ -104,6 +104,17 @@ def compute_level_info(xp) -> dict:
         "unlocked_items": unlocked_items,
     }
 
+
+def level_up_info(old_xp, delta):
+    """xp가 old_xp에서 old_xp+delta로 늘어날 때 레벨이 오르면 축하 화면에 쓸 정보를 반환, 아니면 None."""
+    if not delta:
+        return None
+    old_lv = compute_level_info(old_xp)
+    new_lv = compute_level_info((old_xp or 0) + delta)
+    if new_lv["level"] > old_lv["level"]:
+        return {"from": old_lv["level"], "to": new_lv["level"], "name": new_lv["name"], "icon": new_lv["icon"]}
+    return None
+
 # 💡 해결: 파일 업로드 제한을 25MB에서 100MB로 대폭 상향 조정
 ALLOWED_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".hwp", ".doc", ".docx",
@@ -356,14 +367,16 @@ async def authenticate(req: AuthRequest):
         data = doc.to_dict()
         if str(data.get("school", "")).strip() == school and str(data.get("grade", "")).strip() == grade:
             today = datetime.now().strftime("%Y-%m-%d")
+            lvl_up = None
             if data.get("last_login", "") != today:
+                lvl_up = level_up_info(data.get("xp", 0), XP_REWARD_LOGIN)
                 await asyncio.to_thread(
                     lambda: db.collection("students").document(student_name).set(
                         {"last_login": today, "xp": firestore.Increment(XP_REWARD_LOGIN)}, merge=True
                     )
                 )
             send_telegram_message(f"🔔 [접속 알림]\n{school} {grade}학년 {student_name} 학생이 스마트 학습실에 로그인했습니다.")
-            return {"success": True, "is_admin": False}
+            return {"success": True, "is_admin": False, "level_up": lvl_up}
     return {"success": False, "detail": "명부에 이름이 없거나 정보가 틀립니다."}
 
 
@@ -531,17 +544,21 @@ def build_safe_knowledge_context() -> str:
 
 
 def grant_chat_xp(student_name: str):
-    """AI 질문 1회당 소량의 성장 포인트를 지급한다 (하루 최대 XP_REWARD_CHAT_DAILY_MAX_COUNT회)."""
+    """AI 질문 1회당 소량의 성장 포인트를 지급한다 (하루 최대 XP_REWARD_CHAT_DAILY_MAX_COUNT회). 레벨업 시 정보를 반환."""
     s_ref = db.collection("students").document(student_name)
     doc = s_ref.get()
     if not doc.exists:
-        return
+        return None
     data = doc.to_dict()
     today = datetime.now().strftime("%Y-%m-%d")
+    old_xp = data.get("xp", 0)
     if data.get("chat_xp_date") != today:
         s_ref.set({"chat_xp_date": today, "chat_xp_count": 1, "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
+        return level_up_info(old_xp, XP_REWARD_CHAT)
     elif data.get("chat_xp_count", 0) < XP_REWARD_CHAT_DAILY_MAX_COUNT:
         s_ref.set({"chat_xp_count": firestore.Increment(1), "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
+        return level_up_info(old_xp, XP_REWARD_CHAT)
+    return None
 
 
 @app.post("/api/chat")
@@ -575,12 +592,13 @@ async def chat_with_ai(
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
     try:
         response = await asyncio.to_thread(safe_generate, contents, False)
+        lvl_up = None
         if db is not None and student_name and student_name != "미상":
             try:
-                await asyncio.to_thread(grant_chat_xp, student_name)
+                lvl_up = await asyncio.to_thread(grant_chat_xp, student_name)
             except Exception:
                 pass
-        return {"success": True, "reply": response.text}
+        return {"success": True, "reply": response.text, "level_up": lvl_up}
     except Exception:
         return {"success": False, "reply": "AI 응답 지연이 발생했습니다. 잠시 후 다시 시도해주세요."}
 
@@ -599,6 +617,7 @@ async def grade_essay(
 
     try:
         response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False)
+        lvl_up = None
         if db is not None:
             file_url = await asyncio.to_thread(save_bytes, file_bytes, file.filename, "homeworks", file.content_type)
             await asyncio.to_thread(
@@ -615,12 +634,14 @@ async def grade_essay(
                     }
                 )
             )
+            s_ref = db.collection("students").document(student_name)
+            s_doc = await asyncio.to_thread(s_ref.get)
+            old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
+            lvl_up = level_up_info(old_xp, XP_REWARD_ESSAY)
             await asyncio.to_thread(
-                lambda: db.collection("students").document(student_name).set(
-                    {"xp": firestore.Increment(XP_REWARD_ESSAY)}, merge=True
-                )
+                lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_ESSAY)}, merge=True)
             )
-        return {"success": True, "feedback": response.text}
+        return {"success": True, "feedback": response.text, "level_up": lvl_up}
     except Exception:
         return {"success": False, "detail": "첨삭 처리 중 오류 발생"}
 
@@ -739,12 +760,15 @@ async def submit_exam(req: ExamSubmitRequest):
             }
         )
     )
+    exam_xp = XP_REWARD_EXAM_BASE + actual_score
+    s_ref = db.collection("students").document(req.student_name)
+    s_doc = await asyncio.to_thread(s_ref.get)
+    old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
+    lvl_up = level_up_info(old_xp, exam_xp)
     await asyncio.to_thread(
-        lambda: db.collection("students").document(req.student_name).set(
-            {"xp": firestore.Increment(XP_REWARD_EXAM_BASE + actual_score)}, merge=True
-        )
+        lambda: s_ref.set({"xp": firestore.Increment(exam_xp)}, merge=True)
     )
-    return {"success": True, "score": actual_score, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", "")}
+    return {"success": True, "score": actual_score, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", ""), "level_up": lvl_up}
 
 
 # ─────────────────────────────────────────────────────────
@@ -834,13 +858,16 @@ async def submit_quiz(req: QuizSubmitReq):
             }
         )
     )
+    quiz_xp = XP_REWARD_QUIZ_BASE + actual_score
+    s_ref = db.collection("students").document(req.student_name)
+    s_doc = await asyncio.to_thread(s_ref.get)
+    old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
+    lvl_up = level_up_info(old_xp, quiz_xp)
     await asyncio.to_thread(
-        lambda: db.collection("students").document(req.student_name).set(
-            {"xp": firestore.Increment(XP_REWARD_QUIZ_BASE + actual_score)}, merge=True
-        )
+        lambda: s_ref.set({"xp": firestore.Increment(quiz_xp)}, merge=True)
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
-    return {"success": True, "score": actual_score}
+    return {"success": True, "score": actual_score, "level_up": lvl_up}
 
 
 # ─────────────────────────────────────────────────────────
@@ -968,15 +995,18 @@ async def submit_homework(
         )
     )
 
+    lvl_up = None
     if not existing:
+        s_ref = db.collection("students").document(student_name)
+        s_doc = await asyncio.to_thread(s_ref.get)
+        old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
+        lvl_up = level_up_info(old_xp, XP_REWARD_HOMEWORK)
         await asyncio.to_thread(
-            lambda: db.collection("students").document(student_name).set(
-                {"xp": firestore.Increment(XP_REWARD_HOMEWORK)}, merge=True
-            )
+            lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_HOMEWORK)}, merge=True)
         )
 
     doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(title).get())
-    return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else ""}
+    return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else "", "level_up": lvl_up}
 
 @app.get("/api/board")
 def get_board():
