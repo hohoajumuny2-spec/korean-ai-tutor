@@ -957,7 +957,14 @@ async def generate_stream(
     _: bool = Depends(verify_admin),
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
-    prompt = f"다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.\n{q_text}"
+    prompt = f"""다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.
+
+[출력 형식 규칙 - 반드시 지켜야 함]
+- 마크다운 문법을 절대 사용하지 마세요. 굵게 표시하는 ** 기호, 제목에 쓰는 # 또는 ## 기호를 쓰지 마세요.
+- 부등호/꺾쇠 기호 <, >는 절대 사용하지 마세요. "<보기>"라고 쓰지 말고 반드시 대괄호를 사용해 "[보기]"라고 쓰세요 (다른 항목들처럼 [지문], [정답 및 해설], [정답표]와 같은 형식으로 통일).
+- 순수한 일반 텍스트로만 작성하세요. 강조가 필요하면 기호 없이 줄바꿈이나 문장으로 구분하세요.
+
+{q_text}"""
     contents = [prompt]
     try:
         model = get_best_model()
