@@ -966,6 +966,12 @@ async def generate_stream(
 
 {q_text}"""
     contents = [prompt]
+    # 💡 첨부된 자료 파일(교과서 PDF/이미지 등)이 실제로는 AI에게 전달되지 않고 무시되던 버그 수정
+    if files:
+        for f in files:
+            if f.filename:
+                file_bytes = await f.read()
+                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
     try:
         model = get_best_model()
         response = model.generate_content(contents, stream=True)
