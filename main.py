@@ -195,6 +195,9 @@ def save_bytes(file_bytes: bytes, filename: str, folder: str, content_type: str)
             return f"/{filepath}"
         except Exception as e:
             print("Storage Upload Error:", e)
+            # 💡 영구 저장소(Firebase Storage) 업로드가 실패해 임시 저장소로 대체되면 즉시 알림
+            # (서버 재배포 시 임시 저장소의 파일은 사라질 수 있어 확인이 필요함)
+            send_telegram_message(f"⚠️ [저장소 경고]\n'{safe_name}' 파일을 영구 저장소에 올리지 못해 임시 저장소에 저장했습니다.\n서버가 재배포되면 이 파일은 사라질 수 있습니다. 확인이 필요합니다.\n오류: {e}")
 
     with open(filepath, "wb") as buffer:
         buffer.write(file_bytes)
