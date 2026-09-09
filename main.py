@@ -595,6 +595,14 @@ def build_safe_knowledge_context() -> str:
     return knowledge_base
 
 
+def get_ai_guidelines() -> str:
+    """원장님이 설정한 'AI 답변 원칙'(수업 방식/설명 스타일 지침)을 가져온다."""
+    if db is None:
+        return ""
+    doc = db.collection("settings").document("ai_guidelines").get()
+    return doc.to_dict().get("text", "") if doc.exists else ""
+
+
 def grant_chat_xp(student_name: str):
     """AI 질문 1회당 소량의 성장 포인트를 지급한다 (하루 최대 XP_REWARD_CHAT_DAILY_MAX_COUNT회). 레벨업 시 정보를 반환."""
     s_ref = db.collection("students").document(student_name)
@@ -624,11 +632,16 @@ async def chat_with_ai(
     send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
 
     knowledge_base = await asyncio.to_thread(build_safe_knowledge_context)
+    ai_guidelines = await asyncio.to_thread(get_ai_guidelines)
 
     system_prompt = f"""당신은 로지에듀 국어학원 AI 튜터 '국최'입니다.
-아래 [학원 누적 자료]를 최우선으로 참고하여 다정하고 명쾌하게 답변하세요.
+아래 [원장님 답변 원칙]이 있다면 그 방식과 관점을 최우선으로 따라서 설명하세요.
+그 다음으로 [학원 누적 자료]를 참고하여 다정하고 명쾌하게 답변하세요.
 만약 학생이 묻는 내용이 자료에 없더라도, 국어 전문가로서의 지식을 활용해 국어 개념(문법, 표현법 등)을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
 단, 모의고사나 퀴즈의 정답을 직접적으로 물어볼 때는 정답 대신 힌트만 제공하세요.
+
+[원장님 답변 원칙]
+{ai_guidelines or "(설정된 원칙 없음 - 일반적인 국어 교육 원칙에 따라 설명)"}
 
 [학원 누적 자료]
 {knowledge_base}
@@ -665,7 +678,12 @@ async def grade_essay(
 ):
     send_telegram_message(f"✍️ [논술 제출 알림]\n{student_name} 학생이 '{topic}' 논술을 제출했습니다.")
     file_bytes = await file.read()
-    prompt = f"다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}\n이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식으로 작성해주세요."
+    ai_guidelines = await asyncio.to_thread(get_ai_guidelines)
+    prompt = f"""다음은 학생이 작성한 논술/요약문입니다. 논제: {topic}
+이 글을 분석하고, 빨간펜 선생님처럼 다정하지만 예리하게 칭찬과 개선점, 첨삭 피드백을 HTML 형식으로 작성해주세요.
+
+[원장님 답변/채점 원칙 - 최우선으로 반영]
+{ai_guidelines or "(설정된 원칙 없음 - 일반적인 논술 첨삭 기준에 따라 평가)"}"""
 
     try:
         response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False)
@@ -1098,6 +1116,23 @@ def delete_lecture_admin(lecture_id: str):
 def get_knowledge():
     if db is None: return {"success": False, "knowledge": []}
     return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+
+
+@app.get("/api/admin/ai_guidelines", dependencies=[Depends(verify_admin)])
+def get_ai_guidelines_admin():
+    return {"success": True, "text": get_ai_guidelines()}
+
+
+class AIGuidelinesRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/admin/ai_guidelines", dependencies=[Depends(verify_admin)])
+async def save_ai_guidelines(req: AIGuidelinesRequest):
+    if db is None:
+        return {"success": False}
+    await asyncio.to_thread(lambda: db.collection("settings").document("ai_guidelines").set({"text": req.text.strip()}))
+    return {"success": True}
 
 @app.post("/api/admin/knowledge", dependencies=[Depends(verify_admin)])
 async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
