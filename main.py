@@ -149,6 +149,7 @@ if firebase_key_str:
 # ─────────────────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1234")
 _admin_tokens = set()
+STUDENT_SIGNUP_CODE = os.environ.get("STUDENT_SIGNUP_CODE", "logyedu2024")
 
 def issue_admin_token() -> str:
     token = uuid.uuid4().hex
@@ -483,6 +484,45 @@ def get_classes():
         seen.add(key)
         classes.append({"school": school, "grade": grade})
     return {"success": True, "classes": classes}
+
+
+class StudentRegisterRequest(BaseModel):
+    school: str
+    grade: str
+    name: str
+    code: str
+
+
+@app.post("/api/student/register")
+async def register_student(req: StudentRegisterRequest):
+    """학생 자가 회원가입 — 가입 코드(STUDENT_SIGNUP_CODE)를 아는 사람만 스스로 명단에 등록할 수 있음."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    if req.code.strip() != STUDENT_SIGNUP_CODE:
+        return {"success": False, "detail": "가입 코드가 올바르지 않습니다. 원장님께 문의해주세요."}
+
+    school = req.school.strip()
+    grade = req.grade.strip()
+    name = req.name.strip()
+    if not school or not grade or not name:
+        return {"success": False, "detail": "학교, 학년, 이름을 모두 입력해주세요."}
+
+    doc_id = sanitize_doc_id(name)
+    s_ref = db.collection("students").document(doc_id)
+    doc = await asyncio.to_thread(s_ref.get)
+    if doc.exists:
+        data = doc.to_dict()
+        existing_school = str(data.get("school", "")).strip()
+        existing_grade = normalize_grade(str(data.get("grade", "")))
+        if existing_school == school and existing_grade == normalize_grade(grade):
+            # 이미 동일 인물(같은 학교/학년)로 등록되어 있음 — 데이터를 덮어쓰지 않고 그대로 로그인 가능
+            return {"success": True, "already_existed": True}
+        return {"success": False, "detail": "이미 등록된 이름입니다. 동명이인이거나 정보가 다르다면 원장님께 문의해주세요."}
+
+    await asyncio.to_thread(lambda: s_ref.set({"school": school, "grade": grade}, merge=True))
+    send_telegram_message(f"🆕 [학생 자가 회원가입]\n{school} {grade} {name} 학생이 스스로 회원가입했습니다.")
+    return {"success": True, "already_existed": False}
 
 
 # ─────────────────────────────────────────────────────────
