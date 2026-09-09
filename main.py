@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import uuid
 import requests
@@ -209,6 +210,14 @@ def sanitize_doc_id(value: str, fallback: str = "unnamed") -> str:
     return cleaned[:200]
 
 
+def normalize_grade(value: str) -> str:
+    """'고1', '1학년', '1' 처럼 표기가 달라도 같은 학년으로 인식하도록 숫자만 추출해서 비교용으로 씀."""
+    if not value:
+        return ""
+    m = re.search(r"\d+", value)
+    return m.group(0) if m else value.strip()
+
+
 @app.get("/uploads/{folder}/{filename}")
 def get_upload_file(folder: str, filename: str):
     safe_filename = get_safe_filename(filename)
@@ -365,7 +374,7 @@ async def authenticate(req: AuthRequest):
     doc = await asyncio.to_thread(lambda: db.collection("students").document(student_name).get())
     if doc.exists:
         data = doc.to_dict()
-        if str(data.get("school", "")).strip() == school and str(data.get("grade", "")).strip() == grade:
+        if str(data.get("school", "")).strip() == school and normalize_grade(str(data.get("grade", ""))) == normalize_grade(grade):
             today = datetime.now().strftime("%Y-%m-%d")
             lvl_up = None
             if data.get("last_login", "") != today:
