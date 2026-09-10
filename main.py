@@ -286,7 +286,10 @@ _cached_quality_model = None
 # 더 똑똑한 모델(pro)을 우선 사용하도록 분리. (예전엔 flash가 pro보다
 # 먼저 선택되게 되어 있어, 출제되는 문제의 질이 낮다는 피드백이 있었음)
 FAST_MODEL_PREFERENCE = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-QUALITY_MODEL_PREFERENCE = ["gemini-2.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"]
+# 💡 gemini-2.5-pro가 이 계정에서 단종되어 "This model ... is no longer available to
+# new users. ... use models/gemini-3.1-pro-preview" 오류가 발생했음 — 구글이 안내한
+# 대체 모델을 최우선으로, 혹시 이후 이것도 바뀔 경우를 대비해 기존 후보들도 순서대로 남겨둠
+QUALITY_MODEL_PREFERENCE = ["gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"]
 
 
 def get_best_model(prefer_quality: bool = False):
