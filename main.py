@@ -873,6 +873,77 @@ async def submit_exam(req: ExamSubmitRequest):
 
 
 # ─────────────────────────────────────────────────────────
+# 관리자 - 학생별 모의고사 성적 분석
+# (틀린 문제 / 난이도별 정답률 / 직전 시험 대비 변화)
+# ─────────────────────────────────────────────────────────
+DIFFICULTY_TIER_LABELS = {"a": "킬러", "b": "준킬러", "c": "상", "d": "중", "e": "하"}
+
+
+@app.get("/api/admin/exam_report/{student_name}")
+def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "exams": []}
+
+    report_docs = list(
+        db.collection("reports")
+        .where("student_name", "==", student_name)
+        .where("type", "==", "모의고사")
+        .order_by("submitted_at")
+        .stream()
+    )
+
+    exam_cache: dict = {}
+
+    def get_exam(title: str):
+        if title not in exam_cache:
+            doc = db.collection("exams").document(sanitize_doc_id(title)).get()
+            exam_cache[title] = doc.to_dict() if doc.exists else None
+        return exam_cache[title]
+
+    results = []
+    for r in report_docs:
+        data = r.to_dict()
+        title = data.get("task_name", "")
+        wrongs = set(int(w) for w in data.get("wrongs", []))
+
+        breakdown = {
+            key: {"label": label, "total": 0, "correct": 0, "possible_score": 0, "wrong_nums": []}
+            for key, label in DIFFICULTY_TIER_LABELS.items()
+        }
+        total_possible = 0
+
+        exam = get_exam(title)
+        if exam:
+            try:
+                questions = json.loads(exam.get("exam_data", "{}")).get("questions", [])
+            except Exception:
+                questions = []
+            for i, q in enumerate(questions):
+                tier = q.get("diff", "a")
+                if tier not in breakdown:
+                    tier = "a"
+                q_score = int(q.get("score", 0) or 0)
+                breakdown[tier]["total"] += 1
+                breakdown[tier]["possible_score"] += q_score
+                total_possible += q_score
+                if (i + 1) in wrongs:
+                    breakdown[tier]["wrong_nums"].append(i + 1)
+                else:
+                    breakdown[tier]["correct"] += 1
+
+        results.append({
+            "title": title,
+            "submitted_at": data.get("submitted_at", ""),
+            "score": data.get("score", 0),
+            "total_possible": total_possible,
+            "wrongs": sorted(wrongs),
+            "breakdown": breakdown,
+        })
+
+    return {"success": True, "exams": results}
+
+
+# ─────────────────────────────────────────────────────────
 # 관리자 - 퀴즈
 # ─────────────────────────────────────────────────────────
 @app.post("/api/admin/quiz")
