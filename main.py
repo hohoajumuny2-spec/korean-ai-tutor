@@ -279,10 +279,21 @@ def send_telegram_message(text: str):
 # AI 모델 (캐싱 유지)
 # ─────────────────────────────────────────────────────────
 _cached_model = None
+_cached_quality_model = None
 
-def get_best_model():
-    global _cached_model
-    if _cached_model:
+# 💡 채팅처럼 빈도가 높고 속도가 중요한 기능은 빠른 모델(flash)을,
+# 문제 출제/논술 첨삭/해설자료처럼 결과물의 품질이 곧 산출물인 기능은
+# 더 똑똑한 모델(pro)을 우선 사용하도록 분리. (예전엔 flash가 pro보다
+# 먼저 선택되게 되어 있어, 출제되는 문제의 질이 낮다는 피드백이 있었음)
+FAST_MODEL_PREFERENCE = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+QUALITY_MODEL_PREFERENCE = ["gemini-2.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"]
+
+
+def get_best_model(prefer_quality: bool = False):
+    global _cached_model, _cached_quality_model
+    if prefer_quality and _cached_quality_model:
+        return _cached_quality_model
+    if not prefer_quality and _cached_model:
         return _cached_model
 
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -293,21 +304,26 @@ def get_best_model():
     try:
         models = genai.list_models()
         available = [m.name.replace("models/", "") for m in models if "generateContent" in m.supported_generation_methods]
+        preference = QUALITY_MODEL_PREFERENCE if prefer_quality else FAST_MODEL_PREFERENCE
         target_model = next(
-            (m for m in ["gemini-3.6-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"] if m in available),
+            (m for m in preference if m in available),
             available[0] if available else None,
         )
         if not target_model:
             raise Exception("사용 가능한 구글 AI 모델이 없습니다.")
 
-        _cached_model = genai.GenerativeModel(target_model)
-        return _cached_model
+        model = genai.GenerativeModel(target_model)
+        if prefer_quality:
+            _cached_quality_model = model
+        else:
+            _cached_model = model
+        return model
     except Exception as e:
         raise Exception(f"AI 모델 초기화 실패: {str(e)}")
 
 
-def safe_generate(contents, stream=False):
-    model = get_best_model()
+def safe_generate(contents, stream=False, prefer_quality=False):
+    model = get_best_model(prefer_quality=prefer_quality)
     return model.generate_content(contents, stream=stream)
 
 
@@ -717,7 +733,7 @@ async def grade_essay(
 {ai_guidelines or "(설정된 원칙 없음 - 일반적인 논술 첨삭 기준에 따라 평가)"}"""
 
     try:
-        response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False)
+        response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False, True)
         lvl_up = None
         if db is not None:
             file_url = await asyncio.to_thread(save_bytes, file_bytes, file.filename, "homeworks", file.content_type)
@@ -1254,7 +1270,7 @@ async def generate_stream(
                 file_bytes = await f.read()
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
     try:
-        model = get_best_model()
+        model = get_best_model(prefer_quality=True)
         response = model.generate_content(contents, stream=True)
 
         def iter_response():
@@ -1331,7 +1347,7 @@ async def generate_explainer(
 
     contents = [prompt] + file_parts
     try:
-        model = get_best_model()
+        model = get_best_model(prefer_quality=True)
         response = model.generate_content(contents, stream=True)
 
         def iter_response():
