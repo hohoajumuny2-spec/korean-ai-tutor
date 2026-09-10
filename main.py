@@ -899,13 +899,19 @@ def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
     if db is None:
         return {"success": False, "exams": []}
 
-    report_docs = list(
-        db.collection("reports")
-        .where("student_name", "==", student_name)
-        .where("type", "==", "모의고사")
-        .order_by("submitted_at")
-        .stream()
-    )
+    try:
+        # 💡 where() 두 개 + order_by()를 Firestore에 같이 요청하면 복합 색인이 없어
+        # 쿼리가 실패한다. 정렬은 대신 아래에서 Python으로 처리해 색인 없이도 동작하게 함.
+        report_docs = list(
+            db.collection("reports")
+            .where("student_name", "==", student_name)
+            .where("type", "==", "모의고사")
+            .stream()
+        )
+    except Exception as e:
+        return {"success": False, "detail": f"성적 조회 실패: {e}", "exams": []}
+
+    report_docs.sort(key=lambda r: r.to_dict().get("submitted_at", ""))
 
     exam_cache: dict = {}
 
