@@ -1,12 +1,14 @@
 import os
 import re
 import json
+import time
 import uuid
 import requests
 import threading
 import mimetypes
 import urllib.parse
 import asyncio
+from collections import defaultdict
 from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form, WebSocket,
     WebSocketDisconnect, Response, Request, Header, Depends
@@ -307,6 +309,31 @@ def get_best_model():
 def safe_generate(contents, stream=False):
     model = get_best_model()
     return model.generate_content(contents, stream=stream)
+
+
+# ─────────────────────────────────────────────────────────
+# 간단한 요청 속도 제한 (AI 호출은 비용이 들기 때문에, 로그인 없이도 호출
+# 가능한 /api/chat, /api/essay/grade를 무제한으로 외부에서 두들기지 못하게 막는 용도)
+# ─────────────────────────────────────────────────────────
+_rate_limit_hits: dict[str, list[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
+
+
+def check_rate_limit(request: Request, bucket: str, max_calls: int, window_seconds: int):
+    client_ip = request.client.host if request.client else "unknown"
+    key = f"{bucket}:{client_ip}"
+    now = time.time()
+    cutoff = now - window_seconds
+    with _rate_limit_lock:
+        hits = _rate_limit_hits[key]
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= max_calls:
+            raise HTTPException(
+                status_code=429,
+                detail=f"요청이 너무 잦습니다. {window_seconds}초 후 다시 시도해주세요.",
+            )
+        hits.append(now)
 
 
 # ─────────────────────────────────────────────────────────
@@ -623,12 +650,14 @@ def grant_chat_xp(student_name: str):
 
 @app.post("/api/chat")
 async def chat_with_ai(
+    request: Request,
     prompt: str = Form(...),
     school: str = Form("미상"),
     grade: str = Form("미상"),
     student_name: str = Form("미상"),
     files: Optional[List[UploadFile]] = File(None),
 ):
+    check_rate_limit(request, "chat", max_calls=15, window_seconds=60)
     send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
 
     knowledge_base = await asyncio.to_thread(build_safe_knowledge_context)
@@ -670,12 +699,14 @@ async def chat_with_ai(
 
 @app.post("/api/essay/grade")
 async def grade_essay(
+    request: Request,
     school: str = Form(""),
     grade: str = Form(""),
     student_name: str = Form(""),
     topic: str = Form(...),
     file: UploadFile = File(...),
 ):
+    check_rate_limit(request, "essay_grade", max_calls=8, window_seconds=60)
     send_telegram_message(f"✍️ [논술 제출 알림]\n{student_name} 학생이 '{topic}' 논술을 제출했습니다.")
     file_bytes = await file.read()
     ai_guidelines = await asyncio.to_thread(get_ai_guidelines)
@@ -941,6 +972,45 @@ async def submit_quiz(req: QuizSubmitReq):
 
 
 # ─────────────────────────────────────────────────────────
+# 난이도별 출제 원칙 (원장님 지정)
+# ─────────────────────────────────────────────────────────
+DIFFICULTY_PRINCIPLES = {
+    "killer": (
+        "킬러 문항 (최상위권 변별)",
+        "지문의 정보를 고도로 비틀고 외부 사례를 결합하여 완벽한 논리적 이해를 요구합니다.\n"
+        "- 순서 및 인과 도치: 지문에 제시된 인과, 순서, 목적과 방법 등의 내용을 교묘하게 순서를 바꾸어 오답 선지를 설계합니다.\n"
+        "- 대조되는 정보의 교차 함정: 두 개 이상의 대상에 대한 공통점과 차이점을 묻는 문제로, 대조되는 정보들의 차이점 중 하나를 섞어서 문제를 내거나 숨겨진 공통점을 찾도록 유도합니다.\n"
+        "- 심층적 추론과 해석: 지문에 직접적으로 명시되지 않은 정보라도 주어진 명제와 전제들을 결합하여 논리적으로 타당하게 이끌어 낼 수 있는 생략된 정보를 묻습니다.\n"
+        "- 적용적, 비판적 이해: 지문에서 파악한 원리를 구체적인 사례(도표, 그래프, 예시 등)에 대입하여 문제를 해결하게 하거나, 특정 관점에서 다른 관점의 논리적 타당성을 비판하고 평가하도록 출제합니다.",
+    ),
+    "semi": (
+        "준킬러 문항 (상위권 변별)",
+        "킬러 문항과 동일한 출제 원리를 적용하되, 정답을 도출하기 위한 단서를 조금 더 명시적으로 제공합니다.\n"
+        "- 킬러 문항처럼 순서/인과 도치, 대조 정보 분석, 심층적 추론, 비판적 이해의 원리를 바탕으로 문제를 출제합니다.\n"
+        "- 킬러 문항보다는 매력적인 오답(함정)의 개수를 줄이거나 보기(예시)의 복잡도를 낮추어 체감 난이도를 조절합니다.",
+    ),
+    "high": (
+        "난이도 상 (핵심 구조 및 재구성 파악)",
+        "지문의 뼈대를 이해하고, 다른 표현으로 바뀐 정보를 정확히 찾아내는 능력을 평가합니다.\n"
+        "- 고급 사실적 이해: 지문에 명시된 정보의 일치·불일치를 확인하되, 지문의 정보를 다른 어휘나 문장 구조로 재구성(Paraphrasing)하여 선지의 참·거짓을 판별하게 합니다.\n"
+        "- 거시적 구조 파악: 문단별 핵심어, 글 전체의 중심 내용, 표제 및 부제, 글의 전개 방식(서술 방식) 등 지문의 뼈대와 숲을 보는 능력을 묻는 문항으로 설계합니다.",
+    ),
+    "mid": (
+        "난이도 중 (표준 이해력 평가)",
+        "상 난이도와 동일한 평가 요소를 가지나, 지문의 문장을 덜 꼬아내어 직관적인 정답 찾기가 가능하도록 출제합니다.\n"
+        "- 일반적 사실적 이해: 지문 내용의 일치·불일치를 확인하는 가장 기본적인 문항을 출제합니다.\n"
+        "- 주제 및 요지 파악: 글 전체의 중심 내용이나 문단의 요지를 찾는 문제를 평이한 수준의 선지로 구성합니다.",
+    ),
+    "low": (
+        "난이도 하 (기본 내용 확인)",
+        "글을 끝까지 읽었는지 확인하는 수준의 가장 기본적인 문항입니다.\n"
+        "- 지문의 내용을 단순하게 사실적으로 묻는 문제로 출제합니다.\n"
+        "- 복잡한 추론이나 어휘의 변형 없이, 지문에 있는 표현을 거의 그대로 선지에 활용하여 정답을 직관적으로 고를 수 있도록 구성합니다.",
+    ),
+}
+
+
+# ─────────────────────────────────────────────────────────
 # 관리자 - 문제 생성 스트리밍
 # ─────────────────────────────────────────────────────────
 @app.post("/api/admin/generate_stream")
@@ -953,17 +1023,44 @@ async def generate_stream(
     cnt_mid: int = Form(0),
     cnt_low: int = Form(0),
     q_text: str = Form(""),
+    q_principle: str = Form(""),
     files: Optional[List[UploadFile]] = File(None),
     _: bool = Depends(verify_admin),
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+
+    # 난이도별 문항 수 × 원장님이 정한 출제 원칙을, 실제로 출제해야 하는 등급에 대해서만 프롬프트에 명시
+    difficulty_block = ""
+    if q_mode == "신규" and total > 0:
+        difficulty_counts = [
+            ("killer", cnt_killer), ("semi", cnt_semi), ("high", cnt_high),
+            ("mid", cnt_mid), ("low", cnt_low),
+        ]
+        sections = [
+            f"■ {DIFFICULTY_PRINCIPLES[key][0]} — {cnt}문항\n{DIFFICULTY_PRINCIPLES[key][1]}"
+            for key, cnt in difficulty_counts if cnt > 0
+        ]
+        difficulty_block = "\n\n[난이도별 출제 원칙 - 지정된 문항 수와 출제 기준을 반드시 지켜서 출제하세요]\n" + "\n\n".join(sections)
+
+    types_block = ""
+    if q_mode == "신규" and q_types.strip():
+        types_block = f"\n\n[문제 유형]\n다음 유형으로만 문제를 구성하세요: {q_types}"
+
+    principle_block = ""
+    if q_principle.strip():
+        principle_block = f"""
+[출제 원칙 - 원장님이 지정한 지침이므로 아래 형식 규칙 다음으로 최우선 반영]
+{q_principle.strip()}
+"""
+
     prompt = f"""다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.
 
 [출력 형식 규칙 - 반드시 지켜야 함]
 - 마크다운 문법을 절대 사용하지 마세요. 굵게 표시하는 ** 기호, 제목에 쓰는 # 또는 ## 기호를 쓰지 마세요.
 - 부등호/꺾쇠 기호 <, >는 절대 사용하지 마세요. "<보기>"라고 쓰지 말고 반드시 대괄호를 사용해 "[보기]"라고 쓰세요 (다른 항목들처럼 [지문], [정답 및 해설], [정답표]와 같은 형식으로 통일).
 - 순수한 일반 텍스트로만 작성하세요. 강조가 필요하면 기호 없이 줄바꿈이나 문장으로 구분하세요.
-
+{difficulty_block}{types_block}
+{principle_block}
 {q_text}"""
     contents = [prompt]
     # 💡 첨부된 자료 파일(교과서 PDF/이미지 등)이 실제로는 AI에게 전달되지 않고 무시되던 버그 수정
@@ -972,6 +1069,83 @@ async def generate_stream(
             if f.filename:
                 file_bytes = await f.read()
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
+    try:
+        model = get_best_model()
+        response = model.generate_content(contents, stream=True)
+
+        def iter_response():
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
+        return StreamingResponse(iter_response(), media_type="text/plain")
+    except Exception:
+        def err_response():
+            yield "❌ AI 생성 실패. 잠시 후 다시 시도하세요."
+
+        return StreamingResponse(err_response(), media_type="text/plain")
+
+
+@app.post("/api/admin/generate_explainer")
+async def generate_explainer(
+    q_text: str = Form(""),
+    files: Optional[List[UploadFile]] = File(None),
+    _: bool = Depends(verify_admin),
+):
+    """학생에게 그대로 배포할 수 있는 지문 해설 자료 생성.
+    (원문 지문 / 쉬운 설명 / 꼭 알아야 할 내용 / 출제 포인트 / 헷갈리기 쉬운 내용)"""
+    source_text = q_text.strip()
+    file_parts = []
+    if files:
+        for f in files:
+            if not f.filename:
+                continue
+            file_bytes = await f.read()
+            extracted = ""
+            if f.filename.lower().endswith(".pdf"):
+                try:
+                    doc = fitz.open(stream=file_bytes, filetype="pdf")
+                    extracted = "".join(page.get_text() for page in doc)
+                except Exception:
+                    extracted = ""
+            if extracted.strip():
+                source_text = (source_text + "\n\n" + extracted).strip() if source_text else extracted.strip()
+            else:
+                # PDF 텍스트 추출이 안 됐거나(스캔본 등) 이미지 파일이면 원본을 그대로 AI에게 보여준다
+                file_parts.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
+
+    if not source_text.strip() and not file_parts:
+        def empty_response():
+            yield "❌ 지문 내용을 입력하거나 자료 파일을 먼저 업로드해주세요."
+
+        return StreamingResponse(empty_response(), media_type="text/plain")
+
+    prompt = f"""아래 지문을 학생들에게 그대로 나눠줄 수 있는 해설 자료로 정리해줘.
+
+[출력 형식 규칙 - 반드시 지켜야 함]
+- 마크다운 문법을 절대 사용하지 마세요. 굵게 표시하는 ** 기호, 제목에 쓰는 # 또는 ## 기호를 쓰지 마세요.
+- 부등호/꺾쇠 기호 <, >는 절대 사용하지 마세요.
+- 순수한 일반 텍스트로만 작성하고, 아래 5개 섹션을 반드시 이 순서대로, 각 제목을 대괄호로 표시해서 작성하세요.
+
+[원문 지문]
+아래 [지문]에 주어진 내용을 한 글자도 바꾸거나 요약하지 말고 그대로 옮기세요. 파일에서 추출되어 줄바꿈이나 띄어쓰기가 어색한 부분이 있다면 문단 구분만 자연스럽게 정리하고, 문장 내용 자체는 절대 고치지 마세요.
+
+[쉬운 설명]
+지문의 핵심 내용과 전체 흐름을 학생 눈높이에 맞춰 쉬운 말로 풀어서 설명하세요. 어려운 개념이나 용어가 있으면 비유나 구체적인 예시를 들어 이해를 도와주세요.
+
+[꼭 알아야 할 내용]
+이 지문에서 학생이 반드시 이해하고 넘어가야 하는 핵심 포인트를 항목별로 정리하세요.
+
+[출제 포인트]
+이 지문으로 실제 시험(내신/모의고사)을 낸다면 주로 어떤 부분이, 어떤 방식으로 출제되는지 구체적으로 설명하세요.
+
+[헷갈리기 쉬운 내용]
+학생들이 이 지문에서 자주 착각하거나 헷갈려하는 지점을 짚어주고, 왜 헷갈리는지와 정확한 이해를 함께 제시하세요.
+
+[지문]
+{source_text}"""
+
+    contents = [prompt] + file_parts
     try:
         model = get_best_model()
         response = model.generate_content(contents, stream=True)
