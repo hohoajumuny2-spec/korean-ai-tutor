@@ -1305,14 +1305,22 @@ async def generate_stream(
         response = model.generate_content(contents, stream=True)
 
         def iter_response():
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
+            try:
+                for chunk in response:
+                    if chunk.text:
+                        yield chunk.text
+            except Exception as stream_err:
+                # 💡 스트리밍 도중(레이트리밋, 세이프티 차단 등) 실패도 화면에 실제 사유가 보이게 함
+                yield f"\n\n❌ AI 생성 중 오류가 발생했습니다: {stream_err}"
 
         return StreamingResponse(iter_response(), media_type="text/plain")
-    except Exception:
+    except Exception as e:
+        # 💡 이전엔 무슨 오류든 똑같은 안내문만 보여줘서 원인 파악이 불가능했음.
+        # 실제 예외 메시지(모델 이름 오류, 429 레이트리밋, 세이프티 차단 등)를 그대로 노출.
+        err_msg = str(e)
+
         def err_response():
-            yield "❌ AI 생성 실패. 잠시 후 다시 시도하세요."
+            yield f"❌ AI 생성 실패: {err_msg}"
 
         return StreamingResponse(err_response(), media_type="text/plain")
 
@@ -1382,14 +1390,22 @@ async def generate_explainer(
         response = model.generate_content(contents, stream=True)
 
         def iter_response():
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
+            try:
+                for chunk in response:
+                    if chunk.text:
+                        yield chunk.text
+            except Exception as stream_err:
+                # 💡 스트리밍 도중(레이트리밋, 세이프티 차단 등) 실패도 화면에 실제 사유가 보이게 함
+                yield f"\n\n❌ AI 생성 중 오류가 발생했습니다: {stream_err}"
 
         return StreamingResponse(iter_response(), media_type="text/plain")
-    except Exception:
+    except Exception as e:
+        # 💡 이전엔 무슨 오류든 똑같은 안내문만 보여줘서 원인 파악이 불가능했음.
+        # 실제 예외 메시지(모델 이름 오류, 429 레이트리밋, 세이프티 차단 등)를 그대로 노출.
+        err_msg = str(e)
+
         def err_response():
-            yield "❌ AI 생성 실패. 잠시 후 다시 시도하세요."
+            yield f"❌ AI 생성 실패: {err_msg}"
 
         return StreamingResponse(err_response(), media_type="text/plain")
 
