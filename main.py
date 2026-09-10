@@ -911,7 +911,13 @@ def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
     except Exception as e:
         return {"success": False, "detail": f"성적 조회 실패: {e}", "exams": []}
 
-    report_docs.sort(key=lambda r: r.to_dict().get("submitted_at", ""))
+    report_docs.sort(key=lambda r: r.to_dict().get("submitted_at") or "")
+
+    def _safe_int(v, default=0):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
 
     exam_cache: dict = {}
 
@@ -923,43 +929,49 @@ def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
 
     results = []
     for r in report_docs:
-        data = r.to_dict()
-        title = data.get("task_name", "")
-        wrongs = set(int(w) for w in data.get("wrongs", []))
+        try:
+            data = r.to_dict() or {}
+            title = data.get("task_name") or ""
+            wrongs = {_safe_int(w) for w in (data.get("wrongs") or [])}
 
-        breakdown = {
-            key: {"label": label, "total": 0, "correct": 0, "possible_score": 0, "wrong_nums": []}
-            for key, label in DIFFICULTY_TIER_LABELS.items()
-        }
-        total_possible = 0
+            breakdown = {
+                key: {"label": label, "total": 0, "correct": 0, "possible_score": 0, "wrong_nums": []}
+                for key, label in DIFFICULTY_TIER_LABELS.items()
+            }
+            total_possible = 0
 
-        exam = get_exam(title)
-        if exam:
-            try:
-                questions = json.loads(exam.get("exam_data", "{}")).get("questions", [])
-            except Exception:
-                questions = []
-            for i, q in enumerate(questions):
-                tier = q.get("diff", "a")
-                if tier not in breakdown:
-                    tier = "a"
-                q_score = int(q.get("score", 0) or 0)
-                breakdown[tier]["total"] += 1
-                breakdown[tier]["possible_score"] += q_score
-                total_possible += q_score
-                if (i + 1) in wrongs:
-                    breakdown[tier]["wrong_nums"].append(i + 1)
-                else:
-                    breakdown[tier]["correct"] += 1
+            exam = get_exam(title)
+            if exam:
+                try:
+                    questions = json.loads(exam.get("exam_data") or "{}").get("questions", [])
+                except Exception:
+                    questions = []
+                for i, q in enumerate(questions):
+                    if not isinstance(q, dict):
+                        continue
+                    tier = q.get("diff", "a")
+                    if tier not in breakdown:
+                        tier = "a"
+                    q_score = _safe_int(q.get("score"), 0)
+                    breakdown[tier]["total"] += 1
+                    breakdown[tier]["possible_score"] += q_score
+                    total_possible += q_score
+                    if (i + 1) in wrongs:
+                        breakdown[tier]["wrong_nums"].append(i + 1)
+                    else:
+                        breakdown[tier]["correct"] += 1
 
-        results.append({
-            "title": title,
-            "submitted_at": data.get("submitted_at", ""),
-            "score": data.get("score", 0),
-            "total_possible": total_possible,
-            "wrongs": sorted(wrongs),
-            "breakdown": breakdown,
-        })
+            results.append({
+                "title": title,
+                "submitted_at": data.get("submitted_at") or "",
+                "score": _safe_int(data.get("score"), 0),
+                "total_possible": total_possible,
+                "wrongs": sorted(wrongs),
+                "breakdown": breakdown,
+            })
+        except Exception as e:
+            print(f"exam_report: skip malformed report {r.id}: {e}")
+            continue
 
     return {"success": True, "exams": results}
 
