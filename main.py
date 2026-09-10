@@ -64,15 +64,15 @@ XP_REWARD_EXAM_BASE = 50
 # ─────────────────────────────────────────────────────────
 LEVELS = [
     {"level": 1, "name": "씨앗", "icon": "🌰", "threshold": 0, "unlock_item": None},
-    {"level": 2, "name": "새싹", "icon": "🌱", "threshold": 150, "unlock_item": {"id": "sprout", "emoji": "🌱", "label": "새싹 배지"}},
-    {"level": 3, "name": "떡잎", "icon": "🌿", "threshold": 350, "unlock_item": {"id": "clover", "emoji": "🍀", "label": "네잎클로버"}},
-    {"level": 4, "name": "줄기", "icon": "🪴", "threshold": 600, "unlock_item": {"id": "bamboo", "emoji": "🎍", "label": "대나무 장식"}},
-    {"level": 5, "name": "봉오리", "icon": "🌸", "threshold": 900, "unlock_item": {"id": "flowerpin", "emoji": "🌸", "label": "꽃 머리핀"}},
-    {"level": 6, "name": "꽃", "icon": "🌼", "threshold": 1300, "unlock_item": {"id": "wreath", "emoji": "🌻", "label": "화관"}},
-    {"level": 7, "name": "열매", "icon": "🍏", "threshold": 1800, "unlock_item": {"id": "grapes", "emoji": "🍇", "label": "열매 목걸이"}},
-    {"level": 8, "name": "잘 익은 열매", "icon": "🍎", "threshold": 2400, "unlock_item": {"id": "crown", "emoji": "👑", "label": "작은 왕관"}},
-    {"level": 9, "name": "빛나는 열매", "icon": "🍎", "threshold": 3200, "unlock_item": {"id": "sparkle", "emoji": "✨", "label": "반짝이는 오라"}},
-    {"level": 10, "name": "황금 열매", "icon": "🏆", "threshold": 4200, "unlock_item": {"id": "trophy", "emoji": "🏆", "label": "황금 트로피"}},
+    {"level": 2, "name": "새싹", "icon": "🌱", "threshold": 300, "unlock_item": {"id": "sprout", "emoji": "🌱", "label": "새싹 배지"}},
+    {"level": 3, "name": "떡잎", "icon": "🌿", "threshold": 700, "unlock_item": {"id": "clover", "emoji": "🍀", "label": "네잎클로버"}},
+    {"level": 4, "name": "줄기", "icon": "🪴", "threshold": 1200, "unlock_item": {"id": "bamboo", "emoji": "🎍", "label": "대나무 장식"}},
+    {"level": 5, "name": "봉오리", "icon": "🌸", "threshold": 1800, "unlock_item": {"id": "flowerpin", "emoji": "🌸", "label": "꽃 머리핀"}},
+    {"level": 6, "name": "꽃", "icon": "🌼", "threshold": 2600, "unlock_item": {"id": "wreath", "emoji": "🌻", "label": "화관"}},
+    {"level": 7, "name": "열매", "icon": "🍏", "threshold": 3600, "unlock_item": {"id": "grapes", "emoji": "🍇", "label": "열매 목걸이"}},
+    {"level": 8, "name": "잘 익은 열매", "icon": "🍎", "threshold": 4800, "unlock_item": {"id": "crown", "emoji": "👑", "label": "작은 왕관"}},
+    {"level": 9, "name": "빛나는 열매", "icon": "🍎", "threshold": 6400, "unlock_item": {"id": "sparkle", "emoji": "✨", "label": "반짝이는 오라"}},
+    {"level": 10, "name": "황금 열매", "icon": "🏆", "threshold": 8400, "unlock_item": {"id": "trophy", "emoji": "🏆", "label": "황금 트로피"}},
 ]
 
 
@@ -861,7 +861,7 @@ async def submit_exam(req: ExamSubmitRequest):
             }
         )
     )
-    exam_xp = XP_REWARD_EXAM_BASE + actual_score
+    exam_xp = XP_REWARD_EXAM_BASE + actual_score // 2  # 💡 고득점자가 지나치게 빨리 레벨업하지 않도록 점수 반영 비중을 절반으로 축소
     s_ref = db.collection("students").document(req.student_name)
     s_doc = await asyncio.to_thread(s_ref.get)
     old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
@@ -1143,7 +1143,7 @@ async def submit_quiz(req: QuizSubmitReq):
             }
         )
     )
-    quiz_xp = XP_REWARD_QUIZ_BASE + actual_score
+    quiz_xp = XP_REWARD_QUIZ_BASE + actual_score // 2  # 💡 고득점자가 지나치게 빨리 레벨업하지 않도록 점수 반영 비중을 절반으로 축소
     s_ref = db.collection("students").document(req.student_name)
     s_doc = await asyncio.to_thread(s_ref.get)
     old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
