@@ -876,7 +876,22 @@ async def submit_exam(req: ExamSubmitRequest):
 # 관리자 - 학생별 모의고사 성적 분석
 # (틀린 문제 / 난이도별 정답률 / 직전 시험 대비 변화)
 # ─────────────────────────────────────────────────────────
-DIFFICULTY_TIER_LABELS = {"a": "킬러", "b": "준킬러", "c": "상", "d": "중", "e": "하"}
+# 문항 난이도(diff)는 실제 응시자 기준 정답률 구간으로 정의된다.
+# a: 정답률 80~100 (하) — b: 65~79 (중) — c: 45~64 (상) — d: 20~44 (준킬러) — e: 0~19 (킬러)
+DIFFICULTY_TIER_LABELS = {"a": "하", "b": "중", "c": "상", "d": "준킬러", "e": "킬러"}
+
+
+def correct_rate_to_tier(correct_rate: float) -> str:
+    """정답률(%)을 문항 난이도(a~e) 구간으로 변환."""
+    if correct_rate >= 80:
+        return "a"
+    if correct_rate >= 65:
+        return "b"
+    if correct_rate >= 45:
+        return "c"
+    if correct_rate >= 20:
+        return "d"
+    return "e"
 
 
 @app.get("/api/admin/exam_report/{student_name}")
@@ -941,6 +956,86 @@ def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
         })
 
     return {"success": True, "exams": results}
+
+
+@app.post("/api/admin/exam/{title}/auto_difficulty")
+async def auto_difficulty_from_photo(
+    title: str,
+    file: UploadFile = File(...),
+    _: bool = Depends(verify_admin),
+):
+    """EBS 등에서 제공하는 오답률표 사진을 AI로 읽어, 해당 문항들의 난이도(diff)를
+    실제 정답률 구간(a~e)으로 자동 반영한다. 사진에 없는 나머지 문항은 'a'(하)로 둔다."""
+    if db is None:
+        return {"success": False, "detail": "DB 오류"}
+
+    safe_title = sanitize_doc_id(title)
+    doc = await asyncio.to_thread(lambda: db.collection("exams").document(safe_title).get())
+    if not doc.exists:
+        return {"success": False, "detail": "해당 시험을 찾을 수 없습니다."}
+
+    exam = doc.to_dict()
+    try:
+        exam_data = json.loads(exam.get("exam_data", "{}"))
+    except Exception:
+        return {"success": False, "detail": "시험 데이터 형식이 올바르지 않습니다."}
+
+    questions = exam_data.get("questions", [])
+    if not questions:
+        return {"success": False, "detail": "이 시험에는 등록된 문항이 없습니다."}
+
+    file_bytes = await file.read()
+    prompt = """이 이미지는 모의고사/문제집의 오답률(정답률) 통계표입니다.
+표에 나온 문항 번호와 오답률(%)을 정확히 읽어서, 다른 설명 없이 아래 형식의 JSON 배열만 출력하세요.
+
+[{"number": 문항번호(정수), "wrong_rate": 오답률(0~100 사이 숫자, % 기호 없이)}, ...]
+
+표에 나오지 않은 문항은 포함하지 마세요."""
+
+    try:
+        response = await asyncio.to_thread(
+            safe_generate, [prompt, {"mime_type": file.content_type or "image/jpeg", "data": file_bytes}], False
+        )
+        raw = re.sub(r"^```(?:json)?|```$", "", response.text.strip(), flags=re.MULTILINE).strip()
+        extracted = json.loads(raw)
+        if not isinstance(extracted, list):
+            raise ValueError("응답이 목록 형식이 아닙니다.")
+    except Exception as e:
+        return {"success": False, "detail": f"사진 분석에 실패했습니다: {e}"}
+
+    applied = []
+    for entry in extracted:
+        try:
+            num = int(entry.get("number"))
+            wrong_rate = float(entry.get("wrong_rate"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (1 <= num <= len(questions)):
+            continue
+        correct_rate = max(0.0, min(100.0, 100.0 - wrong_rate))
+        tier = correct_rate_to_tier(correct_rate)
+        questions[num - 1]["diff"] = tier
+        applied.append({"number": num, "wrong_rate": wrong_rate, "tier": tier, "tier_label": DIFFICULTY_TIER_LABELS[tier]})
+
+    # 표에 없는 나머지 문항은 기본값 'a'(하)로 설정
+    applied_nums = {a["number"] for a in applied}
+    for i, q in enumerate(questions):
+        if (i + 1) not in applied_nums:
+            q["diff"] = "a"
+
+    exam_data["questions"] = questions
+    await asyncio.to_thread(
+        lambda: db.collection("exams").document(safe_title).set(
+            {"exam_data": json.dumps(exam_data, ensure_ascii=False)}, merge=True
+        )
+    )
+
+    return {
+        "success": True,
+        "total_questions": len(questions),
+        "applied": sorted(applied, key=lambda x: x["number"]),
+        "default_count": len(questions) - len(applied),
+    }
 
 
 # ─────────────────────────────────────────────────────────
