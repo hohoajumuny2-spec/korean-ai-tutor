@@ -1227,10 +1227,12 @@ async def generate_stream(
     cnt_low: int = Form(0),
     q_text: str = Form(""),
     q_principle: str = Form(""),
+    start_num: int = Form(1),
     files: Optional[List[UploadFile]] = File(None),
     _: bool = Depends(verify_admin),
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+    start_num = max(1, start_num)
 
     # 난이도별 문항 수 × 원장님이 정한 출제 원칙을, 실제로 출제해야 하는 등급에 대해서만 프롬프트에 명시
     difficulty_block = ""
@@ -1268,7 +1270,7 @@ async def generate_stream(
 - 문항은 난이도 순서(킬러→준킬러→...→하 또는 그 반대)대로 배치하지 말고, 지정된 난이도별 문항 수는 정확히 지키되 문항이 나오는 순서는 섞어서 배치하세요. 예를 들어 1번이 쉬운 문제, 2번이 어려운 문제, 3번이 중간 난이도인 식으로 난이도를 예측할 수 없게 구성하세요."""
 
     example_block = """
-[좋은 문항 예시 - 아래와 같은 형식/수준으로 출제하세요. 내용 자체는 예시일 뿐이며, 실제로는 주어진 지문의 내용으로 출제하세요]
+[좋은 문항 예시 - 아래와 같은 형식/수준으로 출제하세요. 내용과 문항 번호(1번)는 예시일 뿐이며, 실제로는 주어진 지문 내용과 지정된 시작 번호를 따르세요]
 [지문]
 (여기에는 실제로 출제에 사용한 지문 전체가 한 글자도 바뀌지 않고 그대로 들어갑니다. 예시에서는 생략합니다.)
 1. 윗글에 대한 이해로 가장 적절한 것은?
@@ -1284,6 +1286,7 @@ async def generate_stream(
 [정답표]
 1번 ②"""
 
+    end_num = start_num + total - 1
     prompt = f"""다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.
 
 [출력 형식 규칙 - 반드시 지켜야 함]
@@ -1291,6 +1294,7 @@ async def generate_stream(
 - 부등호/꺾쇠 기호 <, >는 절대 사용하지 마세요.
 - 순수한 일반 텍스트로만 작성하세요. 강조가 필요하면 기호 없이 줄바꿈이나 문장으로 구분하세요.
 - 반드시 다음 순서로, 각 섹션을 정확히 한 번씩만 출력하세요: [지문] (문제 출제에 사용한 지문 전체를 한 글자도 바꾸거나 생략하지 말고 그대로 먼저 제시) → 문항들(①②③④⑤ 선지 포함) → [정답 및 해설] → [정답표]. [지문]이 없으면 학생이 무엇을 보고 푸는지 알 수 없으니 절대 빠뜨리지 마세요.
+- 문항 번호는 1번이 아니라 반드시 {start_num}번부터 시작해서 {end_num}번까지 순서대로 매기세요 (예: {start_num}. ... {start_num + 1}. ... 식으로). [정답 및 해설]과 [정답표]에서도 같은 번호를 그대로 사용하세요.
 {option_quality_block}
 {example_block}
 {difficulty_block}{types_block}
