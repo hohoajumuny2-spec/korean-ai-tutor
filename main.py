@@ -712,8 +712,10 @@ async def chat_with_ai(
             except Exception:
                 pass
         return {"success": True, "reply": response.text, "level_up": lvl_up}
-    except Exception:
-        return {"success": False, "reply": "AI 응답 지연이 발생했습니다. 잠시 후 다시 시도해주세요."}
+    except Exception as e:
+        # 💡 예전엔 무슨 오류든 "AI 응답 지연"으로만 뭉뚱그려서 원인 파악이 불가능했음.
+        # 실제 예외 메시지(모델 단종, 레이트리밋 등)를 그대로 보여주도록 수정.
+        return {"success": False, "reply": f"AI 응답 실패: {e}"}
 
 
 @app.post("/api/essay/grade")
@@ -762,8 +764,8 @@ async def grade_essay(
                 lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_ESSAY)}, merge=True)
             )
         return {"success": True, "feedback": response.text, "level_up": lvl_up}
-    except Exception:
-        return {"success": False, "detail": "첨삭 처리 중 오류 발생"}
+    except Exception as e:
+        return {"success": False, "detail": f"첨삭 처리 중 오류 발생: {e}"}
 
 
 # ─────────────────────────────────────────────────────────
