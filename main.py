@@ -3,6 +3,7 @@ import re
 import json
 import time
 import uuid
+import random
 import requests
 import threading
 import mimetypes
@@ -1260,18 +1261,29 @@ async def generate_stream(
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     start_num = max(1, start_num)
 
-    # 난이도별 문항 수 × 원장님이 정한 출제 원칙을, 실제로 출제해야 하는 등급에 대해서만 프롬프트에 명시
-    difficulty_block = ""
-    if q_mode == "신규" and total > 0:
-        difficulty_counts = [
-            ("killer", cnt_killer), ("semi", cnt_semi), ("high", cnt_high),
-            ("mid", cnt_mid), ("low", cnt_low),
-        ]
-        sections = [
-            f"■ {DIFFICULTY_PRINCIPLES[key][0]} — {cnt}문항\n{DIFFICULTY_PRINCIPLES[key][1]}"
-            for key, cnt in difficulty_counts if cnt > 0
-        ]
-        difficulty_block = "\n\n[난이도별 출제 원칙 - 지정된 문항 수와 출제 기준을 반드시 지켜서 출제하세요]\n" + "\n\n".join(sections)
+    # 💡 한 번에 너무 많은 문항을 요청하면 응답이 길어져 품질이 떨어지고 실패/비용 부담도 커져서,
+    # 20문항씩 나눠 여러 번 요청한 뒤 결과를 합친다.
+    QUESTIONS_PER_BATCH = 20
+
+    # 난이도를 미리 섞어서 배치에 나눠 담는다 — 배치마다 난이도가 골고루 섞이고,
+    # 문항이 난이도 순서대로 줄 서는 것도 자연히 방지된다.
+    tier_pool = (
+        ["killer"] * cnt_killer + ["semi"] * cnt_semi + ["high"] * cnt_high
+        + ["mid"] * cnt_mid + ["low"] * cnt_low
+    )
+    random.shuffle(tier_pool)
+    batches = [tier_pool[i:i + QUESTIONS_PER_BATCH] for i in range(0, len(tier_pool), QUESTIONS_PER_BATCH)] or [[]]
+
+    def build_difficulty_block(tiers):
+        """이번 배치에 실제로 포함된 난이도만 원칙과 함께 프롬프트에 싣는다."""
+        if q_mode != "신규" or not tiers:
+            return ""
+        sections = []
+        for key in ("killer", "semi", "high", "mid", "low"):
+            cnt = tiers.count(key)
+            if cnt > 0:
+                sections.append(f"■ {DIFFICULTY_PRINCIPLES[key][0]} — {cnt}문항\n{DIFFICULTY_PRINCIPLES[key][1]}")
+        return "\n\n[난이도별 출제 원칙 - 지정된 문항 수와 출제 기준을 반드시 지켜서 출제하세요]\n" + "\n\n".join(sections)
 
     types_block = ""
     if q_mode == "신규" and q_types.strip():
@@ -1353,51 +1365,78 @@ async def generate_stream(
 1번 ⑤
 2번 ①"""
 
-    end_num = start_num + total - 1
-    prompt = f"""다음 지문을 바탕으로 {total}문항의 객관식 문제를 출제해줘.
+    def build_prompt(tiers, batch_start, include_passage):
+        n = len(tiers) if tiers else total
+        batch_end = batch_start + n - 1
+        if include_passage:
+            order_rule = "- 반드시 다음 순서로, 각 섹션을 정확히 한 번씩만 출력하세요: [지문] (문제 출제에 사용한 지문 전체를 한 글자도 바꾸거나 생략하지 말고 그대로 먼저 제시) → 문항들(①②③④⑤ 선지 포함) → [정답 및 해설] → [정답표]. [지문]이 없으면 학생이 무엇을 보고 푸는지 알 수 없으니 절대 빠뜨리지 마세요."
+        else:
+            order_rule = "- 지문은 앞 회차에서 이미 제시했으므로 [지문] 섹션을 절대 다시 출력하지 마세요. 곧바로 문항부터 시작해서 문항들 → [정답 및 해설] → [정답표] 순서로만 출력하세요. 단, 지문에 표시했던 ㉠ ⓐ [A] 등의 기호는 앞 회차와 동일한 위치를 가리키도록 일관되게 사용하세요."
+        return f"""다음 지문을 바탕으로 {n}문항의 객관식 문제를 출제해줘.
 
 [출력 형식 규칙 - 반드시 지켜야 함]
 - 마크다운 문법을 절대 사용하지 마세요. 굵게 표시하는 ** 기호, 제목에 쓰는 # 또는 ## 기호를 쓰지 마세요.
 - 부등호/꺾쇠 기호 <, >는 절대 사용하지 마세요.
 - 순수한 일반 텍스트로만 작성하세요. 강조가 필요하면 기호 없이 줄바꿈이나 문장으로 구분하세요.
-- 반드시 다음 순서로, 각 섹션을 정확히 한 번씩만 출력하세요: [지문] (문제 출제에 사용한 지문 전체를 한 글자도 바꾸거나 생략하지 말고 그대로 먼저 제시) → 문항들(①②③④⑤ 선지 포함) → [정답 및 해설] → [정답표]. [지문]이 없으면 학생이 무엇을 보고 푸는지 알 수 없으니 절대 빠뜨리지 마세요.
-- 문항 번호는 1번이 아니라 반드시 {start_num}번부터 시작해서 {end_num}번까지 순서대로 매기세요 (예: {start_num}. ... {start_num + 1}. ... 식으로). [정답 및 해설]과 [정답표]에서도 같은 번호를 그대로 사용하세요.
+{order_rule}
+- 문항 번호는 1번이 아니라 반드시 {batch_start}번부터 시작해서 {batch_end}번까지 순서대로 매기세요 (예: {batch_start}. ... {batch_start + 1}. ... 식으로). [정답 및 해설]과 [정답표]에서도 같은 번호를 그대로 사용하세요.
 {exam_style_block}
 {option_quality_block}
 {example_block}
-{difficulty_block}{types_block}
+{build_difficulty_block(tiers)}{types_block}
 {principle_block}
 {q_text}"""
-    contents = [prompt]
-    # 💡 첨부된 자료 파일(교과서 PDF/이미지 등)이 실제로는 AI에게 전달되지 않고 무시되던 버그 수정
+
+    # 💡 첨부된 자료 파일(교과서 PDF/이미지 등)은 모든 회차에 동일하게 전달한다.
+    file_parts = []
     if files:
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
-    try:
-        model = get_best_model(prefer_quality=True)
-        response = model.generate_content(contents, stream=True)
+                file_parts.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
 
-        def iter_response():
+    def split_sections(text: str):
+        """AI 출력에서 (지문+문항) / [정답 및 해설] / [정답표] 세 부분을 분리한다."""
+        body, expl, table = text, "", ""
+        if "[정답표]" in body:
+            body, table = body.rsplit("[정답표]", 1)
+        if "[정답 및 해설]" in body:
+            body, expl = body.split("[정답 및 해설]", 1)
+        return body.strip(), expl.strip(), table.strip()
+
+    async def iter_batches():
+        try:
+            model = get_best_model(prefer_quality=True)
+        except Exception as e:
+            yield f"❌ AI 생성 실패: {e}"
+            return
+
+        explanations, answer_tables = [], []
+        cursor = start_num
+        for idx, tiers in enumerate(batches):
+            prompt = build_prompt(tiers, cursor, include_passage=(idx == 0))
             try:
-                for chunk in response:
-                    if chunk.text:
-                        yield chunk.text
-            except Exception as stream_err:
-                # 💡 스트리밍 도중(레이트리밋, 세이프티 차단 등) 실패도 화면에 실제 사유가 보이게 함
-                yield f"\n\n❌ AI 생성 중 오류가 발생했습니다: {stream_err}"
+                resp = await asyncio.to_thread(model.generate_content, [prompt] + file_parts)
+                text = resp.text
+            except Exception as e:
+                yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다: {e}"
+                return
 
-        return StreamingResponse(iter_response(), media_type="text/plain")
-    except Exception as e:
-        # 💡 이전엔 무슨 오류든 똑같은 안내문만 보여줘서 원인 파악이 불가능했음.
-        # 실제 예외 메시지(모델 이름 오류, 429 레이트리밋, 세이프티 차단 등)를 그대로 노출.
-        err_msg = str(e)
+            body, expl, table = split_sections(text)
+            if body:
+                yield body + "\n\n"
+            if expl:
+                explanations.append(expl)
+            if table:
+                answer_tables.append(table)
+            cursor += len(tiers) if tiers else total
 
-        def err_response():
-            yield f"❌ AI 생성 실패: {err_msg}"
+        if explanations:
+            yield "[정답 및 해설]\n" + "\n\n".join(explanations) + "\n\n"
+        if answer_tables:
+            yield "[정답표]\n" + "\n".join(answer_tables) + "\n"
 
-        return StreamingResponse(err_response(), media_type="text/plain")
+    return StreamingResponse(iter_batches(), media_type="text/plain")
 
 
 @app.post("/api/admin/generate_explainer")
