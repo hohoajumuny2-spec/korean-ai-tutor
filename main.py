@@ -257,12 +257,12 @@ def get_upload_file(folder: str, filename: str):
 
 
 def send_telegram_message(text: str):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # 💡 Render에는 TELEGRAM_TOKEN이라는 이름으로 저장돼 있는데 코드는 TELEGRAM_BOT_TOKEN을
+    # 찾고 있어서, 값이 설정돼 있어도 계속 못 찾아 알림이 전혀 안 가던 문제. 두 이름 다 확인.
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        # 💡 예전엔 환경변수가 없으면 그냥 조용히 아무 알림도 안 갔음 — 서버 로그에라도 남겨서
-        # "텔레그램이 왜 안 오지?"를 Render 로그로 바로 확인할 수 있게 함
-        print("Telegram 알림 건너뜀: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+        print("Telegram 알림 건너뜀: TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
         return
 
     def _send():
