@@ -260,17 +260,22 @@ def send_telegram_message(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
+        # 💡 예전엔 환경변수가 없으면 그냥 조용히 아무 알림도 안 갔음 — 서버 로그에라도 남겨서
+        # "텔레그램이 왜 안 오지?"를 Render 로그로 바로 확인할 수 있게 함
+        print("Telegram 알림 건너뜀: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
         return
 
     def _send():
         try:
-            requests.post(
+            res = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={"chat_id": chat_id, "text": text},
-                timeout=3,
+                timeout=5,
             )
-        except Exception:
-            pass
+            if not res.ok:
+                print(f"Telegram 알림 전송 실패: [{res.status_code}] {res.text}")
+        except Exception as e:
+            print(f"Telegram 알림 전송 오류: {e}")
 
     threading.Thread(target=_send).start()
 
@@ -437,6 +442,21 @@ async def authenticate(req: AuthRequest):
                         {"last_login": today, "xp": firestore.Increment(XP_REWARD_LOGIN)}, merge=True
                     )
                 )
+            # 💡 로그인 자체는 reports 컬렉션에 전혀 기록되지 않아, 관리자 화면의
+            # "로그인 이력"이 항상 비어있던 버그 수정 — 매 로그인마다 기록을 남김
+            await asyncio.to_thread(
+                lambda: db.collection("reports").add(
+                    {
+                        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "student_name": student_name,
+                        "school": school,
+                        "grade": grade,
+                        "task_name": "로그인",
+                        "type": "로그인",
+                        "score": "",
+                    }
+                )
+            )
             send_telegram_message(f"🔔 [접속 알림]\n{school} {grade}학년 {student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "level_up": lvl_up}
     return {"success": False, "detail": "명부에 이름이 없거나 정보가 틀립니다."}
