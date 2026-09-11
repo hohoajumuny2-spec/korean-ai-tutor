@@ -761,7 +761,8 @@ async def grade_essay(
 {ai_guidelines or "(설정된 원칙 없음 - 일반적인 논술 첨삭 기준에 따라 평가)"}"""
 
     try:
-        response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False, True)
+        # 💡 비용 절감: 논술 첨삭도 빠른(저렴한) 모델 사용. pro 모델은 '문제 출제'에만 적용
+        response = await asyncio.to_thread(safe_generate, [prompt, {"mime_type": file.content_type, "data": file_bytes}], False)
         lvl_up = None
         if db is not None:
             file_url = await asyncio.to_thread(save_bytes, file_bytes, file.filename, "homeworks", file.content_type)
@@ -1460,7 +1461,8 @@ async def generate_explainer(
 
     contents = [prompt] + file_parts
     try:
-        model = get_best_model(prefer_quality=True)
+        # 💡 비용 절감: 해설자료는 빠른(저렴한) 모델 사용. 품질이 가장 중요한 '문제 출제'에만 pro 모델을 씀
+        model = get_best_model()
         response = model.generate_content(contents, stream=True)
 
         def iter_response():
