@@ -608,12 +608,15 @@ class SingleStudentRequest(BaseModel):
     school: str
     grade: str
     name: str
+    class_name: str = ""
 
 @app.post("/api/admin/student")
 def add_single_student(req: SingleStudentRequest, _: bool = Depends(verify_admin)):
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
-    db.collection("students").document(sanitize_doc_id(req.name)).set({"school": req.school, "grade": req.grade}, merge=True)
+    db.collection("students").document(sanitize_doc_id(req.name)).set(
+        {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip()}, merge=True
+    )
     return {"success": True}
 
 class BulkDeleteReq(BaseModel):
@@ -630,6 +633,7 @@ class StudentUpdateReq(BaseModel):
     new_name: str
     school: str
     grade: str
+    class_name: str = None
 
 @app.post("/api/admin/student/update")
 def update_student(req: StudentUpdateReq, _: bool = Depends(verify_admin)):
@@ -639,11 +643,122 @@ def update_student(req: StudentUpdateReq, _: bool = Depends(verify_admin)):
     if doc.exists:
         data = doc.to_dict()
         data['school'] = req.school; data['grade'] = req.grade
+        if req.class_name is not None:
+            data['class_name'] = req.class_name.strip()
         if req.old_id != req.new_name:
             db.collection("students").document(req.new_name).set(data)
             doc_ref.delete()
         else: doc_ref.set(data, merge=True)
     return {"success": True}
+
+# ─────────────────────────────────────────────────────────
+# 관리자 - 반(班) 관리
+#   학생 명단을 반별로 묶고, 반마다 수업 요일/시간을 기록한다.
+#   로그인 방식(학교+학년+이름)과는 완전히 분리되어 있어서,
+#   반을 만들거나 바꿔도 학생 로그인에는 아무 영향이 없다.
+# ─────────────────────────────────────────────────────────
+DAY_ORDER = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def _class_doc(d) -> dict:
+    data = d.to_dict() or {}
+    return {
+        "id": d.id,
+        "name": str(data.get("name") or d.id),
+        "days": str(data.get("days") or ""),
+        "start_time": str(data.get("start_time") or ""),
+        "end_time": str(data.get("end_time") or ""),
+        "memo": str(data.get("memo") or ""),
+    }
+
+
+def _class_sort_key(c: dict):
+    """요일(월→일) → 시작 시각 → 이름 순으로 시간표처럼 정렬."""
+    days = [x.strip() for x in c.get("days", "").split(",") if x.strip()]
+    first_day = min((DAY_ORDER.index(x) for x in days if x in DAY_ORDER), default=99)
+    return (first_day, c.get("start_time") or "99:99", c.get("name", ""))
+
+
+@app.get("/api/admin/classes")
+def get_admin_classes(_: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "classes": []}
+    classes = [_class_doc(d) for d in db.collection("classes").stream()]
+    classes.sort(key=_class_sort_key)
+    return {"success": True, "classes": classes}
+
+
+class ClassUpsertReq(BaseModel):
+    old_name: str = ""
+    name: str
+    days: str = ""
+    start_time: str = ""
+    end_time: str = ""
+    memo: str = ""
+
+
+@app.post("/api/admin/class")
+def upsert_class(req: ClassUpsertReq, _: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.name.strip()
+    if not name:
+        return {"success": False, "detail": "반 이름을 입력해주세요."}
+
+    old_name = (req.old_name or "").strip()
+    payload = {
+        "name": name,
+        "days": req.days.strip(),
+        "start_time": req.start_time.strip(),
+        "end_time": req.end_time.strip(),
+        "memo": req.memo.strip(),
+    }
+    db.collection("classes").document(sanitize_doc_id(name)).set(payload, merge=True)
+
+    # 반 이름을 바꾼 경우 — 예전 반 문서를 지우고, 그 반에 속한 학생들도 새 이름으로 옮겨준다
+    if old_name and old_name != name:
+        db.collection("classes").document(sanitize_doc_id(old_name)).delete()
+        for d in db.collection("students").where("class_name", "==", old_name).stream():
+            d.reference.set({"class_name": name}, merge=True)
+    return {"success": True}
+
+
+class ClassDeleteReq(BaseModel):
+    name: str
+
+
+@app.post("/api/admin/class/delete")
+def delete_class(req: ClassDeleteReq, _: bool = Depends(verify_admin)):
+    """반만 삭제한다. 학생은 절대 지우지 않고 '미배정'으로 돌려놓을 뿐이다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.name.strip()
+    if not name:
+        return {"success": False, "detail": "반 이름이 비어 있습니다."}
+    db.collection("classes").document(sanitize_doc_id(name)).delete()
+    moved = 0
+    for d in db.collection("students").where("class_name", "==", name).stream():
+        d.reference.set({"class_name": ""}, merge=True)
+        moved += 1
+    return {"success": True, "unassigned": moved}
+
+
+class AssignClassReq(BaseModel):
+    ids: list = None
+    class_name: str = ""
+
+
+@app.post("/api/admin/student/assign_class")
+def assign_class(req: AssignClassReq, _: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    target = (req.class_name or "").strip()
+    count = 0
+    for sid in (req.ids or []):
+        db.collection("students").document(sid).set({"class_name": target}, merge=True)
+        count += 1
+    return {"success": True, "updated": count}
+
 
 @app.get("/api/admin/reports")
 def get_reports(_: bool = Depends(verify_admin)):
