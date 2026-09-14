@@ -1832,6 +1832,38 @@ async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...)):
             except: pass
     return {"success": True, "count": processed}
 
+class KnowledgeUpdateReq(BaseModel):
+    id: str
+    title: str
+    content: str
+
+
+@app.post("/api/admin/knowledge/update", dependencies=[Depends(verify_admin)])
+def update_knowledge_admin(req: KnowledgeUpdateReq):
+    """이미 올려둔 자료의 제목·내용을 고친다.
+    예전에는 수정이 없어서 지우고 다시 올려야 했고, 그때마다 등록일이 바뀌어
+    목록 순서가 뒤엉켰다. 여기서는 등록일을 건드리지 않고 내용만 갈아끼운다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    title = req.title.strip()
+    content = req.content.strip()
+    if not title:
+        return {"success": False, "detail": "자료 제목을 입력해주세요."}
+    if not content:
+        return {"success": False, "detail": "자료 내용이 비어 있습니다."}
+
+    ref = db.collection("knowledge").document(req.id)
+    if not ref.get().exists:
+        return {"success": False, "detail": "이미 삭제된 자료입니다."}
+
+    ref.set({
+        "title": title,
+        "content": content,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, merge=True)
+    return {"success": True}
+
+
 @app.delete("/api/admin/knowledge/{k_id}", dependencies=[Depends(verify_admin)])
 def delete_knowledge_admin(k_id: str):
     if db: db.collection("knowledge").document(k_id).delete()
