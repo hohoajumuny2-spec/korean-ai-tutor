@@ -976,6 +976,67 @@ class ExamSubmitRequest(BaseModel):
     answers: list
 
 
+@app.post("/api/admin/extract_answers_image", dependencies=[Depends(verify_admin)])
+async def extract_answers_image(files: List[UploadFile] = File(...)):
+    """정답표를 찍거나 캡처한 이미지에서 문항별 정답을 읽어낸다.
+    해답지를 PDF로 만들어 올리는 것이 번거롭다는 요청으로 추가 — 화면을 캡처해
+    그대로 붙여넣으면 된다. 여러 장을 한 번에 올려도 합쳐서 읽는다."""
+    parts = []
+    for f in files:
+        if not f.filename:
+            continue
+        raw = await f.read()
+        if raw:
+            parts.append({"mime_type": f.content_type or "image/png", "data": raw})
+    if not parts:
+        return {"success": False, "detail": "이미지를 찾지 못했습니다."}
+
+    prompt = """첨부된 이미지는 시험의 정답표(또는 해설지의 정답 부분)입니다.
+문항 번호와 그 문항의 정답을 모두 읽어내세요.
+
+[반드시 지킬 것]
+- 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
+- 형식: {"answers": {"1": 3, "2": 5, "3": 1}}
+- 키는 문항 번호를 큰따옴표로 감싼 문자열, 값은 1~5 사이의 정수입니다.
+- ①②③④⑤ 같은 원문자는 1,2,3,4,5로 바꿔서 적으세요.
+- 이미지에 보이지 않는 문항은 아예 넣지 마세요. 추측해서 채우지 마세요.
+- 주관식이거나 번호로 읽을 수 없는 문항은 건너뛰세요.
+- 이미지가 여러 장이면 모두 합쳐서 하나의 JSON으로 만드세요."""
+
+    try:
+        resp = await asyncio.to_thread(lambda: safe_generate([prompt] + parts))
+        text = (resp.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"이미지 분석 실패: {str(e)}"}
+
+    # 코드블록이나 앞뒤 군말이 섞여 와도 JSON 덩어리만 뽑아낸다
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return {"success": False, "detail": "정답을 읽지 못했습니다. 번호와 정답이 또렷하게 보이는 이미지인지 확인해주세요."}
+
+    try:
+        parsed = json.loads(match.group(0))
+    except ValueError:
+        return {"success": False, "detail": "정답을 읽지 못했습니다. 조금 더 선명한 이미지로 다시 시도해주세요."}
+
+    raw_answers = parsed.get("answers", parsed) or {}
+    answers = {}
+    for k, v in raw_answers.items():
+        try:
+            num = int(str(k).strip())
+            val = int(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        if num >= 1 and 1 <= val <= 5:
+            answers[str(num)] = val
+
+    if not answers:
+        return {"success": False, "detail": "이미지에서 문항 번호와 정답을 찾지 못했습니다."}
+
+    return {"success": True, "answers": answers, "count": len(answers),
+            "max_no": max(int(k) for k in answers)}
+
+
 @app.post("/api/exam/submit")
 async def submit_exam(req: ExamSubmitRequest):
     if db is None:
@@ -999,14 +1060,31 @@ async def submit_exam(req: ExamSubmitRequest):
     actual_score = 0
     wrongs = []
 
+    details = []
+    total_possible = 0
     if data:
         exam_data = json.loads(data.get("exam_data", "{}"))
         for i, q in enumerate(exam_data.get("questions", [])):
             student_ans = str(req.answers[i]).strip() if i < len(req.answers) else ""
-            if student_ans == str(q.get("ans", "")).strip() and student_ans != "":
-                actual_score += int(q.get("score", 0))
+            correct_ans = str(q.get("ans", "")).strip()
+            point = int(q.get("score", 0) or 0)
+            total_possible += point
+            is_ok = bool(student_ans) and student_ans == correct_ans
+            if is_ok:
+                actual_score += point
             else:
                 wrongs.append(i + 1)
+            # 💡 학생이 제출 직후 "몇 점인지, 무엇을 틀렸는지"를 바로 보려면
+            #    문항별 내 답/정답/배점이 필요해서 함께 돌려준다.
+            details.append({
+                "no": i + 1,
+                "my": student_ans,
+                "ans": correct_ans,
+                "score": point,
+                "ok": is_ok,
+                "blank": not student_ans,
+                "tier": str(q.get("tier", "") or ""),
+            })
 
     await asyncio.to_thread(
         lambda: db.collection("reports").add(
@@ -1019,6 +1097,9 @@ async def submit_exam(req: ExamSubmitRequest):
                 "type": "모의고사",
                 "score": actual_score,
                 "wrongs": wrongs,
+                "total_score": total_possible,
+                "question_count": len(details),
+                "correct_count": sum(1 for d in details if d["ok"]),
             }
         )
     )
@@ -1030,7 +1111,18 @@ async def submit_exam(req: ExamSubmitRequest):
     await asyncio.to_thread(
         lambda: s_ref.set({"xp": firestore.Increment(exam_xp)}, merge=True)
     )
-    return {"success": True, "score": actual_score, "video_url": data.get("video_url", ""), "explanation_text": data.get("explanation_text", ""), "level_up": lvl_up}
+    return {
+        "success": True,
+        "score": actual_score,
+        "total_score": total_possible,
+        "wrongs": wrongs,
+        "details": details,
+        "correct_count": sum(1 for d in details if d["ok"]),
+        "question_count": len(details),
+        "video_url": data.get("video_url", ""),
+        "explanation_text": data.get("explanation_text", ""),
+        "level_up": lvl_up,
+    }
 
 
 # ─────────────────────────────────────────────────────────
