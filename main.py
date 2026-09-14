@@ -2394,11 +2394,25 @@ def summarize_naesin(rows: list, scale: str = "9") -> dict:
     }
 
 
+# 수능·모의고사에서 절대평가로 치르는 과목 — 백분위가 나오지 않고 등급만 나온다.
+ABSOLUTE_SUBJECTS = ("영어", "한국사", "제2외국어", "한문", "아랍어", "일본어", "중국어",
+                     "독일어", "프랑스어", "스페인어", "러시아어", "베트남어")
+
+
+def is_absolute_subject(name: str) -> bool:
+    n = str(name or "").strip()
+    return any(k in n for k in ABSOLUTE_SUBJECTS)
+
+
 def summarize_mock(rows: list) -> dict:
-    """가장 최근 시행월의 국·수·영·탐 평균 등급과 백분위를 낸다."""
+    """가장 최근 시행월의 성적을 정리한다.
+    💡 영어·한국사는 절대평가라 백분위가 없고 등급만 나온다. 이 과목들을
+       상대평가 과목(국어·수학·탐구)과 섞어 평균을 내면 정시 판단이 어긋나므로,
+       평균은 상대평가 과목만으로 내고 절대평가 과목은 등급을 따로 보여준다."""
     valid = [r for r in (rows or []) if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None]
     if not valid:
-        return {"avg": None, "pct_avg": None, "latest": None, "count": 0, "by_date": []}
+        return {"avg": None, "pct_avg": None, "latest": None, "count": 0,
+                "by_date": [], "absolute": [], "abs_text": ""}
 
     by_date = {}
     for r in valid:
@@ -2406,22 +2420,34 @@ def summarize_mock(rows: list) -> dict:
         by_date.setdefault(d, []).append(r)
 
     def block(rows_):
-        gs = [_num(x.get("grade")) for x in rows_ if _num(x.get("grade")) is not None]
-        ps = [_num(x.get("percentile")) for x in rows_ if _num(x.get("percentile")) is not None]
+        rel = [x for x in rows_ if not is_absolute_subject(x.get("subject"))]
+        absolute = [x for x in rows_ if is_absolute_subject(x.get("subject"))]
+        gs = [_num(x.get("grade")) for x in rel if _num(x.get("grade")) is not None]
+        ps = [_num(x.get("percentile")) for x in rel if _num(x.get("percentile")) is not None]
+        abs_list = [{"subject": str(x.get("subject", "")).strip(),
+                     "grade": _num(x.get("grade"))}
+                    for x in absolute if _num(x.get("grade")) is not None]
         return {
             "avg": round(sum(gs) / len(gs), 2) if gs else None,
             "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
+            "rel_count": len(rel),
+            "absolute": abs_list,
         }
 
     dates = sorted(by_date.keys())
     trend = [{"date": d, **block(by_date[d])} for d in dates]
     latest = trend[-1] if trend else None
+    absolute = latest["absolute"] if latest else []
+    abs_text = " · ".join(f"{a['subject']} {int(a['grade']) if float(a['grade']).is_integer() else a['grade']}등급"
+                          for a in absolute)
     return {
         "avg": latest["avg"] if latest else None,
         "pct_avg": latest["pct_avg"] if latest else None,
         "latest": latest["date"] if latest else None,
         "count": len(valid),
         "by_date": trend,
+        "absolute": absolute,
+        "abs_text": abs_text,
     }
 
 
@@ -2539,7 +2565,8 @@ def fmt_grade_block(view: dict) -> str:
         f"- 내신 등급 체계: {scale_txt} (2025학년도 고1부터 5등급제로 바뀌어 학년마다 체계가 다름)",
         f"- 내신 평균 등급: {n['avg'] if n['avg'] is not None else '미입력'}{conv} (주요과목 {n['main_avg'] if n['main_avg'] is not None else '-'}, 반영 {n['count']}과목)",
         f"- 학기별 내신: " + (", ".join(f"{x['term']} {x['avg']}등급" for x in n["by_term"]) or "미입력"),
-        f"- 모의고사 최근({m['latest'] or '-'}) 평균 등급: {m['avg'] if m['avg'] is not None else '미입력'}, 평균 백분위: {m['pct_avg'] if m['pct_avg'] is not None else '-'}",
+        f"- 모의고사 최근({m['latest'] or '-'}) 상대평가 과목(국어·수학·탐구) 평균 등급: {m['avg'] if m['avg'] is not None else '미입력'}, 평균 백분위: {m['pct_avg'] if m['pct_avg'] is not None else '-'}",
+        f"- 절대평가 과목(영어·한국사 등): {m.get('abs_text') or '미입력'} (백분위가 없고 등급만 나오는 과목이므로 위 평균에는 넣지 않았음)",
         f"- 모의고사 추이: " + (", ".join(f"{x['date']} {x['avg']}등급" for x in m["by_date"] if x["avg"] is not None) or "미입력"),
         f"- 내신·모의 격차 판정: {t['verdict']} ({t['reason']})",
     ]
@@ -2733,8 +2760,12 @@ async def analyze_counsel(req: CounselNameReq):
     """성적 → 수시/정시 비중, 가능 대학 라인, 맞춤 학습 프로그램."""
     name = req.student_name.strip()
     view = build_counsel_view(name)
-    if view["naesin"]["avg"] is None and view["mock"]["avg"] is None:
-        return {"success": False, "detail": "내신 또는 모의고사 성적을 먼저 입력해주세요."}
+    # 💡 정시만 준비하는 학생은 내신을 넣지 않고, 고1은 모의고사가 없을 수 있다.
+    #    둘 중 하나만 있어도 분석하고, 없는 쪽은 '미입력'으로 두고 넘어간다.
+    has_naesin = view["naesin"]["avg"] is not None
+    has_mock = view["mock"]["avg"] is not None or bool(view["mock"].get("absolute"))
+    if not has_naesin and not has_mock:
+        return {"success": False, "detail": "내신이나 모의고사 중 한 가지는 입력해주세요. 둘 다 채우실 필요는 없습니다."}
 
     prompt = f"""당신은 20년 경력의 대입 진학 상담 전문가입니다. 아래 학생의 성적 자료를 보고 상담문을 작성하세요.
 
@@ -2757,6 +2788,8 @@ async def analyze_counsel(req: CounselNameReq):
 2. 구체적인 입시 경쟁률·컷·환산점수 같은 수치를 지어내지 마세요. 확인되지 않은 수치는 절대 쓰지 않습니다.
 3. 수시와 정시는 '둘 다 준비한다'가 전제입니다. 어느 쪽을 버리라고 말하지 말고, 비중을 어떻게 나눌지로 설명하세요.
 4. 학생과 학부모가 함께 읽는 문서입니다. 단정적으로 겁주지 말고, 근거를 들어 차분하게 쓰세요.
+5. 내신이나 모의고사 중 한쪽이 '미입력'이면, 그 부분은 "아직 자료가 없어 판단을 미룬다"고만 적고 넘어가세요. 없는 성적을 추정해서 쓰지 마세요. 정시만 준비하는 학생은 내신이 없을 수 있고, 고1은 모의고사가 없을 수 있습니다.
+6. 영어와 한국사는 절대평가라 백분위가 없습니다. 이 과목은 등급만 가지고 이야기하고, 다른 과목 평균과 섞지 마세요.
 
 [출력 형식 — 아래 제목을 그대로 쓰고 순서도 지킬 것]
 ## 1. 현재 성적 진단
@@ -2854,6 +2887,68 @@ async def analyze_tendency(req: CounselNameReq):
 
 
 # ── 3) 학생부 정성 평가 ─────────────────────────────────
+DEFAULT_RECORD_CRITERIA = """[평가 영역과 기준]
+
+■ 학업 역량 — 교과 학습의 깊이, 지적 호기심이 실제 탐구 활동으로 이어졌는가
+  A: 교과 내용을 넘어선 심화 탐구가 있고, 그 과정과 결과가 구체적으로 적혀 있다
+  B: 교과 관련 탐구가 있으나 깊이가 얕거나 결과 서술이 빈약하다
+  C: 수업 참여는 성실하나 스스로 파고든 흔적이 드러나지 않는다
+  D: 학업에 대한 태도나 역량을 읽어낼 근거가 거의 없다
+
+■ 진로 역량 — 희망 전공과 활동의 연결성, 탐구의 일관성과 심화 정도
+  A: 학년이 올라가며 전공 관련 활동이 이어지고 점점 깊어진다
+  B: 전공 관련 활동이 있으나 단발적이거나 연결이 느슨하다
+  C: 활동은 많으나 전공과의 관련성이 잘 드러나지 않는다
+  D: 진로 방향을 읽어낼 근거가 거의 없다
+
+■ 공동체 역량 — 협업·나눔·성실성이 구체적 장면으로 드러나는가
+  A: 구체적 상황과 행동이 적혀 있어 인성이 장면으로 보인다
+  B: 긍정적 평가는 있으나 추상적 칭찬에 가깝다
+  C: 형식적인 문구 위주다
+  D: 관련 서술이 거의 없다
+
+■ 서술의 구체성 — 추상적 칭찬이 아니라 '무엇을 어떻게 했는지'가 적혀 있는가
+  A: 활동의 동기·과정·결과·변화가 모두 드러난다
+  B: 활동 내용은 있으나 과정이나 변화가 빠져 있다
+  C: 결과만 나열되어 있다
+  D: 무엇을 했는지조차 파악하기 어렵다
+
+[추가 지침]
+- 위 기준에 없는 잣대를 새로 만들어 쓰지 마세요.
+"""
+
+
+def get_record_criteria() -> str:
+    if db is None:
+        return DEFAULT_RECORD_CRITERIA
+    try:
+        doc = db.collection("settings").document("record_criteria").get()
+        if doc.exists:
+            t = str((doc.to_dict() or {}).get("text", "")).strip()
+            if t:
+                return t
+    except Exception:
+        pass
+    return DEFAULT_RECORD_CRITERIA
+
+
+@app.get("/api/admin/counsel/record_criteria", dependencies=[Depends(verify_admin)])
+def get_record_criteria_admin():
+    return {"success": True, "text": get_record_criteria(), "default": DEFAULT_RECORD_CRITERIA}
+
+
+class RecordCriteriaReq(BaseModel):
+    text: str
+
+
+@app.post("/api/admin/counsel/record_criteria", dependencies=[Depends(verify_admin)])
+def save_record_criteria(req: RecordCriteriaReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    db.collection("settings").document("record_criteria").set({"text": req.text.strip()})
+    return {"success": True}
+
+
 class RecordEvalReq(BaseModel):
     student_name: str
     record_text: str
@@ -2868,7 +2963,8 @@ async def eval_record(req: RecordEvalReq):
         return {"success": False, "detail": "학생부 내용을 조금 더 붙여넣어 주세요. (최소 50자)"}
 
     view = build_counsel_view(name)
-    major = req.target_major.strip() or "미정"
+    major = req.target_major.strip() or (view.get("profile") or {}).get("target_major") or "미정"
+    criteria = get_record_criteria()
     prompt = f"""당신은 대학 학생부종합전형 서류평가 경험이 있는 평가자입니다.
 아래 학생부 기록을 실제 서류평가 관점에서 정성적으로 평가하세요.
 
@@ -2881,13 +2977,11 @@ async def eval_record(req: RecordEvalReq):
 [학생부 원문]
 {body[:12000]}
 
-[평가 기준 — 4개 영역을 각각 A/B/C/D 4단계로 매기고 근거를 댈 것]
-- 학업 역량: 교과 학습의 깊이, 지적 호기심이 실제 활동으로 이어졌는가
-- 진로 역량: 희망 전공과 활동의 연결성, 탐구의 일관성과 심화 정도
-- 공동체 역량: 협업·나눔·성실성이 구체적 장면으로 드러나는가
-- 서술의 구체성: 추상적 칭찬이 아니라 '무엇을 어떻게 했는지'가 적혀 있는가
+[평가 기준 — 이 학원의 기준입니다. 반드시 이 기준만 사용하세요]
+{criteria}
 
 [반드시 지킬 것]
+0. 위 [평가 기준]에 적힌 영역과 등급 잣대만 사용하세요. 기준에 없는 영역을 새로 만들거나, 기준과 다른 잣대로 등급을 매기지 마세요.
 1. 반드시 원문에 실제로 적힌 문장을 근거로 인용하며 평가하세요. 원문에 없는 활동을 지어내지 마세요.
 2. 합격/불합격이나 합격 확률을 단정하지 마세요.
 3. 좋은 점만 나열하지 말고, 평가자 눈에 약해 보이는 지점을 분명히 지적하세요.
@@ -2897,7 +2991,7 @@ async def eval_record(req: RecordEvalReq):
 (3~4문장. 이 학생부가 남기는 전체 인상)
 
 ## 2. 영역별 평가
-(위 4개 영역 각각: 등급 / 근거가 된 원문 대목 / 평가 사유를 적을 것)
+(위 [평가 기준]에 적힌 영역을 하나도 빠짐없이, 각각: 등급 / 근거가 된 원문 대목 / 평가 사유를 적을 것)
 
 ## 3. 강점 — 이 기록의 무기
 (2~3가지. 어느 대목이 왜 강한지)
@@ -2989,7 +3083,7 @@ async def make_summary(req: CounselNameReq):
     if view.get("record_eval"): has.append("학생부평가")
     if view.get("logs"): has.append("학습기록")
     if not has:
-        return {"success": False, "detail": "먼저 성적·성향검사·학생부·학습기록 중 하나 이상을 채워주세요."}
+        return {"success": False, "detail": "성적·성향검사·학생부·학습기록 중 아무거나 하나만 채우시면 소견서를 만들 수 있습니다."}
 
     prompt = f"""당신은 학원 원장님을 대신해 학부모 상담 소견서를 쓰는 진학 상담 전문가입니다.
 아래 자료를 종합해 학부모님께 그대로 전달할 수 있는 한 장짜리 소견서를 작성하세요.
