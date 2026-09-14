@@ -1867,3 +1867,762 @@ def get_questions_admin():
 def delete_question_admin(q_id: str):
     if db: db.collection("questions").document(q_id).delete()
     return {"success": True}
+
+
+# ═════════════════════════════════════════════════════════
+# 상담 프로그램 (통합)
+#   1) 성적 분석  → 수시/정시 비중 + 가능 대학 라인 + 맞춤 학습 프로그램
+#   2) 학습 성향 검사 → 문제점 / 발전 가능성 / 개선점
+#   3) 학생부 정성 평가
+#   4) 개인별 학습 기록·점수 누적
+#   네 가지가 학생 한 명의 '상담 카드' 하나에 모두 쌓인다.
+# ═════════════════════════════════════════════════════════
+
+# ── 학습 성향 검사 문항 ──────────────────────────────────
+# 국어 학원 맥락에 맞춰 7개 축 × 4문항 = 28문항. 5점 척도(1 전혀 아니다 ~ 5 매우 그렇다).
+# reverse=True인 문항은 뒤집어서 채점한다(점수가 높을수록 좋은 상태가 되도록).
+TENDENCY_AXES = [
+    {"key": "motive",  "name": "학습 동기",        "desc": "공부할 이유가 스스로 분명한가"},
+    {"key": "plan",    "name": "계획·시간관리",    "desc": "계획을 세우고 지켜내는가"},
+    {"key": "focus",   "name": "집중 지속력",      "desc": "한 번에 얼마나 오래 몰입하는가"},
+    {"key": "meta",    "name": "메타인지",         "desc": "아는 것과 모르는 것을 구분하는가"},
+    {"key": "review",  "name": "오답·피드백",      "desc": "틀린 것을 되짚고 지적을 받아들이는가"},
+    {"key": "emotion", "name": "시험 태도",        "desc": "긴장과 시간 압박을 다스리는가"},
+    {"key": "reading", "name": "국어 독해 습관",   "desc": "글을 구조와 근거로 읽는가"},
+]
+
+TENDENCY_QUESTIONS = [
+    {"id": 1,  "axis": "motive",  "text": "국어 공부를 할 때 '왜 이걸 배우는지' 스스로 납득이 되어야 집중이 된다."},
+    {"id": 2,  "axis": "motive",  "text": "성적과 상관없이 새로운 글을 읽고 이해하는 일 자체가 재미있다."},
+    {"id": 3,  "axis": "motive",  "text": "부모님이나 선생님이 시키지 않아도 스스로 공부를 시작한다."},
+    {"id": 4,  "axis": "motive",  "text": "목표하는 대학이나 진로가 뚜렷해서 공부할 이유가 분명하다."},
+
+    {"id": 5,  "axis": "plan",    "text": "하루 또는 일주일 단위로 공부 계획을 세우고 기록한다."},
+    {"id": 6,  "axis": "plan",    "text": "계획을 세우면 대체로 그대로 지키는 편이다."},
+    {"id": 7,  "axis": "plan",    "text": "시험 2~3주 전부터 과목별 일정을 나눠서 준비한다."},
+    {"id": 8,  "axis": "plan",    "text": "미루다가 마감 직전에 몰아서 하는 편이다.", "reverse": True},
+
+    {"id": 9,  "axis": "focus",   "text": "한번 앉으면 50분 이상 흐름이 끊기지 않고 공부한다."},
+    {"id": 10, "axis": "focus",   "text": "공부 중 휴대폰 알림이 오면 바로 확인하게 된다.", "reverse": True},
+    {"id": 11, "axis": "focus",   "text": "긴 지문을 읽을 때 중간에 딴생각이 자주 든다.", "reverse": True},
+    {"id": 12, "axis": "focus",   "text": "주변이 조금 시끄러워도 할 일에 몰입할 수 있다."},
+
+    {"id": 13, "axis": "meta",    "text": "문제를 풀고 나면 내가 무엇을 알고 무엇을 모르는지 구분할 수 있다."},
+    {"id": 14, "axis": "meta",    "text": "답을 맞혔어도 '왜' 맞았는지 설명할 수 있는지 스스로 확인한다."},
+    {"id": 15, "axis": "meta",    "text": "공부한 내용을 누군가에게 설명하듯 정리해 본다."},
+    {"id": 16, "axis": "meta",    "text": "시험 점수가 나오면 그 원인을 구체적으로 짚어낼 수 있다."},
+
+    {"id": 17, "axis": "review",  "text": "틀린 문제는 반드시 다시 풀어보고 넘어간다."},
+    {"id": 18, "axis": "review",  "text": "오답 노트나 그에 준하는 기록을 꾸준히 남긴다."},
+    {"id": 19, "axis": "review",  "text": "선생님의 지적을 들으면 기분이 상해 받아들이기 어렵다.", "reverse": True},
+    {"id": 20, "axis": "review",  "text": "같은 유형에서 반복해 틀리는 부분이 무엇인지 알고 있다."},
+
+    {"id": 21, "axis": "emotion", "text": "시험 때 아는 문제도 긴장해서 틀린 적이 많다.", "reverse": True},
+    {"id": 22, "axis": "emotion", "text": "시간이 부족할 것 같으면 마음이 급해져 실수가 늘어난다.", "reverse": True},
+    {"id": 23, "axis": "emotion", "text": "어려운 문제를 만나면 일단 넘기고 뒤를 먼저 푼다."},
+    {"id": 24, "axis": "emotion", "text": "시험이 끝나면 결과와 상관없이 감정을 빨리 추스른다."},
+
+    {"id": 25, "axis": "reading", "text": "글을 읽을 때 문단별 중심 내용을 표시하거나 정리한다."},
+    {"id": 26, "axis": "reading", "text": "모르는 어휘가 나오면 확인하지 않고 그냥 넘어간다.", "reverse": True},
+    {"id": 27, "axis": "reading", "text": "선택지를 지문의 근거와 일일이 대조하며 지운다."},
+    {"id": 28, "axis": "reading", "text": "비문학 지문의 글 구조(대조·인과·분류 등)를 의식하며 읽는다."},
+]
+
+
+def score_tendency(answers: dict) -> list:
+    """문항 응답(1~5)을 축별 0~100점으로 환산."""
+    buckets = {a["key"]: [] for a in TENDENCY_AXES}
+    for q in TENDENCY_QUESTIONS:
+        raw = answers.get(str(q["id"]), answers.get(q["id"]))
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            continue
+        v = max(1, min(5, v))
+        if q.get("reverse"):
+            v = 6 - v
+        buckets[q["axis"]].append(v)
+
+    out = []
+    for axis in TENDENCY_AXES:
+        vals = buckets[axis["key"]]
+        pct = round((sum(vals) / len(vals) - 1) / 4 * 100) if vals else 0
+        out.append({**axis, "score": pct, "answered": len(vals)})
+    return out
+
+
+# ── 대학 라인 기준표 ────────────────────────────────────
+# 실제 입결은 해마다 바뀌므로 AI에게 지어내게 하지 않고, 원장님이 직접
+# 고치는 기준표를 근거로 삼는다. 아래는 초기값일 뿐이며 관리자 화면에서 수정 가능.
+DEFAULT_ADMISSION_TABLE = {
+    "susi": [
+        {"upto": 1.3, "tier": "최상위권", "examples": "서울대 · 연세대 · 고려대"},
+        {"upto": 1.8, "tier": "상위권",   "examples": "서강대 · 성균관대 · 한양대 · 중앙대 · 경희대"},
+        {"upto": 2.4, "tier": "중상위권", "examples": "한국외대 · 서울시립대 · 건국대 · 동국대 · 홍익대"},
+        {"upto": 3.0, "tier": "중위권",   "examples": "숙명여대 · 국민대 · 숭실대 · 세종대 · 인하대 · 아주대"},
+        {"upto": 4.0, "tier": "중하위권", "examples": "광운대 · 명지대 · 가천대 · 단국대 · 경기권 대학"},
+        {"upto": 5.0, "tier": "하위권",   "examples": "경기·인천권 대학 · 지방 거점 국립대"},
+        {"upto": 9.0, "tier": "기초 재정비 구간", "examples": "지방 사립대 · 전문대 (성적 향상이 최우선)"},
+    ],
+    "jeongsi": [
+        {"from_pct": 96, "tier": "최상위권", "examples": "서울대 · 연세대 · 고려대"},
+        {"from_pct": 92, "tier": "상위권",   "examples": "서강대 · 성균관대 · 한양대 · 중앙대 · 경희대"},
+        {"from_pct": 86, "tier": "중상위권", "examples": "한국외대 · 서울시립대 · 건국대 · 동국대 · 홍익대"},
+        {"from_pct": 78, "tier": "중위권",   "examples": "숭실대 · 국민대 · 세종대 · 인하대 · 아주대"},
+        {"from_pct": 65, "tier": "중하위권", "examples": "광운대 · 명지대 · 가천대 · 단국대 · 경기권 대학"},
+        {"from_pct": 50, "tier": "하위권",   "examples": "경기·인천권 대학 · 지방 거점 국립대"},
+        {"from_pct": 0,  "tier": "기초 재정비 구간", "examples": "지방 사립대 · 전문대 (성적 향상이 최우선)"},
+    ],
+    "note": "학원 자체 기준표입니다. 실제 입시 결과에 맞게 원장님이 직접 수정해 사용하세요.",
+}
+
+
+def load_admission_table() -> dict:
+    if db is None:
+        return DEFAULT_ADMISSION_TABLE
+    try:
+        doc = db.collection("settings").document("admission_table").get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            if data.get("susi") and data.get("jeongsi"):
+                return data
+    except Exception:
+        pass
+    return DEFAULT_ADMISSION_TABLE
+
+
+MAIN_SUBJECT_KEYWORDS = ("국어", "영어", "수학", "사회", "과학", "한국사", "문학", "독서", "화법", "언어", "미적분", "확률", "기하", "물리", "화학", "생명", "지구", "통합")
+
+
+def _num(v, default=None):
+    try:
+        if v is None or v == "":
+            return default
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def summarize_naesin(rows: list) -> dict:
+    """단위수 가중 평균 등급을 낸다. 단위수가 없으면 1로 본다."""
+    tot_w = tot_wg = 0.0
+    main_w = main_wg = 0.0
+    by_term = {}
+    for r in rows or []:
+        g = _num(r.get("grade"))
+        if g is None:
+            continue
+        w = _num(r.get("unit"), 1) or 1
+        tot_w += w; tot_wg += g * w
+        name = str(r.get("subject", ""))
+        if any(k in name for k in MAIN_SUBJECT_KEYWORDS):
+            main_w += w; main_wg += g * w
+        term = str(r.get("term", "")).strip() or "기타"
+        t = by_term.setdefault(term, {"w": 0.0, "wg": 0.0})
+        t["w"] += w; t["wg"] += g * w
+
+    terms = [{"term": k, "avg": round(v["wg"] / v["w"], 2)} for k, v in sorted(by_term.items()) if v["w"]]
+    return {
+        "avg": round(tot_wg / tot_w, 2) if tot_w else None,
+        "main_avg": round(main_wg / main_w, 2) if main_w else None,
+        "total_units": round(tot_w, 1),
+        "count": len([r for r in (rows or []) if _num(r.get("grade")) is not None]),
+        "by_term": terms,
+    }
+
+
+def summarize_mock(rows: list) -> dict:
+    """가장 최근 시행월의 국·수·영·탐 평균 등급과 백분위를 낸다."""
+    valid = [r for r in (rows or []) if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None]
+    if not valid:
+        return {"avg": None, "pct_avg": None, "latest": None, "count": 0, "by_date": []}
+
+    by_date = {}
+    for r in valid:
+        d = str(r.get("date", "")).strip() or "미상"
+        by_date.setdefault(d, []).append(r)
+
+    def block(rows_):
+        gs = [_num(x.get("grade")) for x in rows_ if _num(x.get("grade")) is not None]
+        ps = [_num(x.get("percentile")) for x in rows_ if _num(x.get("percentile")) is not None]
+        return {
+            "avg": round(sum(gs) / len(gs), 2) if gs else None,
+            "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
+        }
+
+    dates = sorted(by_date.keys())
+    trend = [{"date": d, **block(by_date[d])} for d in dates]
+    latest = trend[-1] if trend else None
+    return {
+        "avg": latest["avg"] if latest else None,
+        "pct_avg": latest["pct_avg"] if latest else None,
+        "latest": latest["date"] if latest else None,
+        "count": len(valid),
+        "by_date": trend,
+    }
+
+
+def pick_tier(table: dict, naesin_avg, pct_avg) -> dict:
+    out = {"susi": None, "jeongsi": None}
+    if naesin_avg is not None:
+        for row in table.get("susi", []):
+            if naesin_avg <= _num(row.get("upto"), 99):
+                out["susi"] = row
+                break
+    if pct_avg is not None:
+        for row in table.get("jeongsi", []):
+            if pct_avg >= _num(row.get("from_pct"), 0):
+                out["jeongsi"] = row
+                break
+    return out
+
+
+def judge_track(naesin_avg, mock_avg) -> dict:
+    """내신과 모의고사 중 어느 쪽이 유리한지 숫자로 먼저 가른다."""
+    if naesin_avg is None and mock_avg is None:
+        return {"verdict": "판단 보류", "gap": None, "susi_weight": 50, "jeongsi_weight": 50,
+                "reason": "내신과 모의고사 성적이 아직 입력되지 않았습니다."}
+    if mock_avg is None:
+        return {"verdict": "수시 우선(모의고사 미입력)", "gap": None, "susi_weight": 70, "jeongsi_weight": 30,
+                "reason": "모의고사 성적이 없어 내신만으로 판단했습니다. 정시 판단을 위해 모의고사 성적을 입력해주세요."}
+    if naesin_avg is None:
+        return {"verdict": "정시 우선(내신 미입력)", "gap": None, "susi_weight": 30, "jeongsi_weight": 70,
+                "reason": "내신 성적이 없어 모의고사만으로 판단했습니다. 수시 판단을 위해 내신 성적을 입력해주세요."}
+
+    gap = round(naesin_avg - mock_avg, 2)   # 음수면 내신이 더 좋다(등급은 낮을수록 우수)
+    if gap <= -1.0:
+        v, sw = "수시 중심", 75
+        reason = f"내신 평균({naesin_avg})이 모의고사 평균({mock_avg})보다 {abs(gap)}등급 앞섭니다. 학생부 기반 수시가 뚜렷하게 유리합니다."
+    elif gap <= -0.4:
+        v, sw = "수시 우세", 65
+        reason = f"내신({naesin_avg})이 모의고사({mock_avg})보다 {abs(gap)}등급 좋습니다. 수시를 주력으로 두되 정시도 함께 준비해야 합니다."
+    elif gap < 0.4:
+        v, sw = "수시·정시 병행", 50
+        reason = f"내신({naesin_avg})과 모의고사({mock_avg})의 차이가 {abs(gap)}등급으로 크지 않습니다. 어느 쪽도 버릴 수 없는 구간입니다."
+    elif gap < 1.0:
+        v, sw = "정시 우세", 35
+        reason = f"모의고사({mock_avg})가 내신({naesin_avg})보다 {gap}등급 좋습니다. 정시를 주력으로 두되 수시 카드도 확보해야 합니다."
+    else:
+        v, sw = "정시 중심", 25
+        reason = f"모의고사({mock_avg})가 내신({naesin_avg})보다 {gap}등급 앞섭니다. 수능 위주 정시가 뚜렷하게 유리합니다."
+    return {"verdict": v, "gap": gap, "susi_weight": sw, "jeongsi_weight": 100 - sw, "reason": reason}
+
+
+def counsel_ref(student_name: str):
+    return db.collection("counsel").document(sanitize_doc_id(student_name))
+
+
+def load_counsel(student_name: str) -> dict:
+    if db is None:
+        return {}
+    doc = counsel_ref(student_name).get()
+    return doc.to_dict() if doc.exists else {}
+
+
+def build_counsel_view(student_name: str) -> dict:
+    """상담 카드 한 장에 필요한 모든 계산을 끝낸 형태로 돌려준다."""
+    data = load_counsel(student_name)
+    naesin = summarize_naesin(data.get("naesin", []))
+    mock = summarize_mock(data.get("mock", []))
+    table = load_admission_table()
+    track = judge_track(naesin["avg"], mock["avg"])
+    tiers = pick_tier(table, naesin["avg"], mock["pct_avg"])
+
+    logs = data.get("logs", [])
+    scored = [l for l in logs if _num(l.get("score")) is not None and _num(l.get("max_score")) not in (None, 0)]
+    log_avg = round(sum(_num(l["score"]) / _num(l["max_score"]) * 100 for l in scored) / len(scored), 1) if scored else None
+
+    return {
+        "student_name": student_name,
+        "naesin_rows": data.get("naesin", []),
+        "mock_rows": data.get("mock", []),
+        "naesin": naesin,
+        "mock": mock,
+        "track": track,
+        "tiers": tiers,
+        "table_note": table.get("note", ""),
+        "tendency": data.get("tendency"),
+        "record_text": data.get("record_text", ""),
+        "record_eval": data.get("record_eval", ""),
+        "record_eval_at": data.get("record_eval_at", ""),
+        "analysis": data.get("analysis"),
+        "summary": data.get("summary"),
+        "logs": logs,
+        "log_avg": log_avg,
+        "updated_at": data.get("updated_at", ""),
+    }
+
+
+def fmt_grade_block(view: dict) -> str:
+    n, m, t = view["naesin"], view["mock"], view["track"]
+    lines = [
+        f"- 내신 평균 등급: {n['avg'] if n['avg'] is not None else '미입력'} (주요과목 {n['main_avg'] if n['main_avg'] is not None else '-'}, 반영 {n['count']}과목)",
+        f"- 학기별 내신: " + (", ".join(f"{x['term']} {x['avg']}등급" for x in n["by_term"]) or "미입력"),
+        f"- 모의고사 최근({m['latest'] or '-'}) 평균 등급: {m['avg'] if m['avg'] is not None else '미입력'}, 평균 백분위: {m['pct_avg'] if m['pct_avg'] is not None else '-'}",
+        f"- 모의고사 추이: " + (", ".join(f"{x['date']} {x['avg']}등급" for x in m["by_date"] if x["avg"] is not None) or "미입력"),
+        f"- 내신·모의 격차 판정: {t['verdict']} ({t['reason']})",
+    ]
+    susi, jeongsi = view["tiers"]["susi"], view["tiers"]["jeongsi"]
+    if susi:
+        lines.append(f"- 학원 기준표상 수시 라인: {susi['tier']} / {susi['examples']}")
+    if jeongsi:
+        lines.append(f"- 학원 기준표상 정시 라인: {jeongsi['tier']} / {jeongsi['examples']}")
+    return "\n".join(lines)
+
+
+def fmt_tendency_block(view: dict) -> str:
+    t = view.get("tendency") or {}
+    axes = t.get("axes") or []
+    if not axes:
+        return "- 학습 성향 검사 미실시"
+    return "\n".join(f"- {a['name']}: {a['score']}점 / 100 ({a['desc']})" for a in axes)
+
+
+def fmt_log_block(view: dict) -> str:
+    logs = view.get("logs", [])[:15]
+    if not logs:
+        return "- 원내 학습 기록 없음"
+    out = []
+    for l in logs:
+        s = ""
+        if _num(l.get("score")) is not None:
+            s = f" — {l.get('score')}/{l.get('max_score', '?')}점"
+        out.append(f"- {l.get('date', '')} {l.get('title', '')}{s} {l.get('memo', '')}".rstrip())
+    return "\n".join(out)
+
+
+# ── 조회 ────────────────────────────────────────────────
+@app.get("/api/counsel/tendency_questions")
+def get_tendency_questions():
+    """학습 성향 검사 문항 — 학생이 직접 응시하므로 로그인 없이도 문항만은 볼 수 있다."""
+    return {"success": True, "axes": TENDENCY_AXES, "questions": TENDENCY_QUESTIONS}
+
+
+class TendencySubmitReq(BaseModel):
+    student_name: str
+    answers: dict
+
+
+@app.post("/api/counsel/tendency_submit")
+async def submit_tendency(req: TendencySubmitReq):
+    """학생 본인이 검사를 제출한다. 채점은 서버에서만 한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+
+    s_doc = await asyncio.to_thread(lambda: db.collection("students").document(sanitize_doc_id(name)).get())
+    if not s_doc.exists:
+        return {"success": False, "detail": "등록된 학생이 아닙니다."}
+
+    axes = score_tendency(req.answers or {})
+    if sum(a["answered"] for a in axes) < len(TENDENCY_QUESTIONS):
+        return {"success": False, "detail": "모든 문항에 답해주세요."}
+
+    payload = {
+        "answers": {str(k): v for k, v in (req.answers or {}).items()},
+        "axes": axes,
+        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "analysis": "",
+    }
+    await asyncio.to_thread(lambda: counsel_ref(name).set(
+        {"student_name": name, "tendency": payload, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}, merge=True
+    ))
+    send_telegram_message(f"🧭 [학습 성향 검사]\n{name} 학생이 검사를 마쳤습니다.")
+    return {"success": True, "axes": axes}
+
+
+@app.get("/api/counsel/me/{student_name}")
+def get_my_counsel(student_name: str):
+    """학생 본인이 보는 상담 카드 — 원장님만 보는 항목(학생부 원문 등)은 빼고 준다."""
+    if db is None:
+        return {"success": False}
+    v = build_counsel_view(urllib.parse.unquote(student_name))
+    return {"success": True, "counsel": {
+        "naesin": v["naesin"], "mock": v["mock"], "track": v["track"], "tiers": v["tiers"],
+        "table_note": v["table_note"],
+        "tendency": v["tendency"], "analysis": v["analysis"], "summary": v["summary"],
+        "logs": v["logs"], "log_avg": v["log_avg"],
+    }}
+
+
+# ── 1) 성적 입력 & 분석 ─────────────────────────────────
+class GradeSaveReq(BaseModel):
+    student_name: str
+    naesin: list = None
+    mock: list = None
+
+
+@app.post("/api/admin/counsel/grades", dependencies=[Depends(verify_admin)])
+def save_grades(req: GradeSaveReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    payload = {"student_name": name, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if req.naesin is not None:
+        payload["naesin"] = req.naesin[:200]
+    if req.mock is not None:
+        payload["mock"] = req.mock[:200]
+    counsel_ref(name).set(payload, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
+class CounselNameReq(BaseModel):
+    student_name: str
+
+
+@app.post("/api/admin/counsel/analyze", dependencies=[Depends(verify_admin)])
+async def analyze_counsel(req: CounselNameReq):
+    """성적 → 수시/정시 비중, 가능 대학 라인, 맞춤 학습 프로그램."""
+    name = req.student_name.strip()
+    view = build_counsel_view(name)
+    if view["naesin"]["avg"] is None and view["mock"]["avg"] is None:
+        return {"success": False, "detail": "내신 또는 모의고사 성적을 먼저 입력해주세요."}
+
+    prompt = f"""당신은 20년 경력의 대입 진학 상담 전문가입니다. 아래 학생의 성적 자료를 보고 상담문을 작성하세요.
+
+[학생] {name}
+
+[성적 및 사전 판정]
+{fmt_grade_block(view)}
+
+[학습 성향 검사]
+{fmt_tendency_block(view)}
+
+[원내 학습 기록]
+{fmt_log_block(view)}
+
+[반드시 지킬 것]
+1. 위에 적힌 '학원 기준표상 라인'은 이 학원이 관리하는 기준표에서 계산된 것입니다. 그 라인을 벗어난 다른 대학 이름을 새로 지어내지 마세요. 대학 이름은 위에 적힌 것만 사용합니다.
+2. 구체적인 입시 경쟁률·컷·환산점수 같은 수치를 지어내지 마세요. 확인되지 않은 수치는 절대 쓰지 않습니다.
+3. 수시와 정시는 '둘 다 준비한다'가 전제입니다. 어느 쪽을 버리라고 말하지 말고, 비중을 어떻게 나눌지로 설명하세요.
+4. 학생과 학부모가 함께 읽는 문서입니다. 단정적으로 겁주지 말고, 근거를 들어 차분하게 쓰세요.
+
+[출력 형식 — 아래 제목을 그대로 쓰고 순서도 지킬 것]
+## 1. 현재 성적 진단
+(내신과 모의고사를 각각 한 문단으로. 강한 쪽과 약한 쪽을 분명히 짚을 것)
+
+## 2. 수시 · 정시 비중
+(위 판정과 비중 퍼센트를 근거와 함께 설명. 왜 그 비중인지 성적 숫자로 설명할 것)
+
+## 3. 현재 지원 가능 라인
+(수시 라인과 정시 라인을 각각 설명. 위에 주어진 대학 이름만 사용.
+ 지금 성적을 유지했을 때와, 한 등급 올렸을 때 어디까지 달라지는지도 함께 적을 것)
+
+## 4. 맞춤 학습 프로그램
+(국어 과목을 중심으로, 지금 당장 해야 할 것을 4~6개 항목으로.
+ 각 항목은 '무엇을 / 얼마나 자주 / 어떻게 확인할지'가 들어가야 함.
+ 학습 성향 검사 결과가 있다면 그 약점을 반영할 것)
+
+## 5. 앞으로 3개월 로드맵
+(1개월 / 2개월 / 3개월 차에 각각 무엇을 달성해야 하는지)
+"""
+    try:
+        res = await asyncio.to_thread(lambda: safe_generate(prompt))
+        text = (res.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 분석 실패: {str(e)}"}
+
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    counsel_ref(name).set({"analysis": {"text": text, "at": at}, "updated_at": at}, merge=True)
+    return {"success": True, "analysis": {"text": text, "at": at}}
+
+
+# ── 2) 학습 성향 분석 ───────────────────────────────────
+@app.post("/api/admin/counsel/tendency_analyze", dependencies=[Depends(verify_admin)])
+async def analyze_tendency(req: CounselNameReq):
+    name = req.student_name.strip()
+    view = build_counsel_view(name)
+    t = view.get("tendency") or {}
+    if not t.get("axes"):
+        return {"success": False, "detail": "학생이 아직 학습 성향 검사를 하지 않았습니다."}
+
+    answered = []
+    for q in TENDENCY_QUESTIONS:
+        v = (t.get("answers") or {}).get(str(q["id"]))
+        if v is not None:
+            answered.append(f"- ({q['axis']}) {q['text']} → {v}점")
+
+    prompt = f"""당신은 학습 코칭 전문가입니다. 아래 학습 성향 검사 결과를 해석해 주세요.
+
+[학생] {name}
+[척도] 각 축은 0~100점이며, 점수가 높을수록 그 영역이 잘 갖춰진 상태입니다.
+
+[축별 점수]
+{fmt_tendency_block(view)}
+
+[문항별 응답] (5점 척도, 역채점 문항은 이미 뒤집어 계산됨)
+{chr(10).join(answered)}
+
+[성적 참고]
+{fmt_grade_block(view)}
+
+[반드시 지킬 것]
+1. 성격을 단정하거나 낙인찍지 마세요. '지금의 습관'에 대한 이야기로 쓰세요.
+2. 점수가 낮은 축을 지적할 때는 반드시 바꿀 방법을 함께 제시하세요.
+3. 학생이 직접 읽습니다. 존중하는 어조로 쓰되, 문제는 분명히 짚으세요.
+4. 국어 학습과 연결지어 구체적으로 쓰세요.
+
+[출력 형식 — 제목을 그대로 쓸 것]
+## 1. 한눈에 보는 학습 성향
+(가장 높은 축 2개와 가장 낮은 축 2개를 근거로 3~4문장 요약)
+
+## 2. 지금 가장 큰 문제점
+(낮은 축 중심으로 2~3가지. 각각 '이 습관이 시험장에서 어떤 결과로 나타나는지'까지 적을 것)
+
+## 3. 발전 가능성
+(높은 축을 지렛대 삼아 어디까지 좋아질 수 있는지. 근거 있는 기대치로)
+
+## 4. 개선해야 할 점 — 실행 목록
+(4~6개. 각 항목은 '이번 주부터 할 수 있는 행동' 수준으로 아주 구체적으로.
+ 예: '지문 읽기 전 발문 먼저 읽기' 같은 식)
+
+## 5. 원장님께 드리는 지도 제안
+(이 학생을 가르칠 때 어떤 점을 신경 써야 하는지 3가지)
+"""
+    try:
+        res = await asyncio.to_thread(lambda: safe_generate(prompt))
+        text = (res.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 분석 실패: {str(e)}"}
+
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    t["analysis"] = text
+    t["analyzed_at"] = at
+    counsel_ref(name).set({"tendency": t, "updated_at": at}, merge=True)
+    return {"success": True, "analysis": text, "at": at}
+
+
+# ── 3) 학생부 정성 평가 ─────────────────────────────────
+class RecordEvalReq(BaseModel):
+    student_name: str
+    record_text: str
+    target_major: str = ""
+
+
+@app.post("/api/admin/counsel/record_eval", dependencies=[Depends(verify_admin)])
+async def eval_record(req: RecordEvalReq):
+    name = req.student_name.strip()
+    body = (req.record_text or "").strip()
+    if len(body) < 50:
+        return {"success": False, "detail": "학생부 내용을 조금 더 붙여넣어 주세요. (최소 50자)"}
+
+    view = build_counsel_view(name)
+    major = req.target_major.strip() or "미정"
+    prompt = f"""당신은 대학 학생부종합전형 서류평가 경험이 있는 평가자입니다.
+아래 학생부 기록을 실제 서류평가 관점에서 정성적으로 평가하세요.
+
+[학생] {name}
+[희망 전공] {major}
+
+[성적 참고]
+{fmt_grade_block(view)}
+
+[학생부 원문]
+{body[:12000]}
+
+[평가 기준 — 4개 영역을 각각 A/B/C/D 4단계로 매기고 근거를 댈 것]
+- 학업 역량: 교과 학습의 깊이, 지적 호기심이 실제 활동으로 이어졌는가
+- 진로 역량: 희망 전공과 활동의 연결성, 탐구의 일관성과 심화 정도
+- 공동체 역량: 협업·나눔·성실성이 구체적 장면으로 드러나는가
+- 서술의 구체성: 추상적 칭찬이 아니라 '무엇을 어떻게 했는지'가 적혀 있는가
+
+[반드시 지킬 것]
+1. 반드시 원문에 실제로 적힌 문장을 근거로 인용하며 평가하세요. 원문에 없는 활동을 지어내지 마세요.
+2. 합격/불합격이나 합격 확률을 단정하지 마세요.
+3. 좋은 점만 나열하지 말고, 평가자 눈에 약해 보이는 지점을 분명히 지적하세요.
+
+[출력 형식 — 제목을 그대로 쓸 것]
+## 1. 총평
+(3~4문장. 이 학생부가 남기는 전체 인상)
+
+## 2. 영역별 평가
+(위 4개 영역 각각: 등급 / 근거가 된 원문 대목 / 평가 사유를 적을 것)
+
+## 3. 강점 — 이 기록의 무기
+(2~3가지. 어느 대목이 왜 강한지)
+
+## 4. 약점 — 평가자가 걸릴 지점
+(2~3가지. 구체적으로)
+
+## 5. 남은 학기 보완 전략
+(앞으로 어떤 활동·탐구를 채워야 하는지 4~5개. 실행 가능한 수준으로)
+"""
+    try:
+        res = await asyncio.to_thread(lambda: safe_generate(prompt))
+        text = (res.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 평가 실패: {str(e)}"}
+
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    counsel_ref(name).set({
+        "student_name": name, "record_text": body, "target_major": major,
+        "record_eval": text, "record_eval_at": at, "updated_at": at,
+    }, merge=True)
+    return {"success": True, "record_eval": text, "at": at}
+
+
+# ── 4) 학습 기록 누적 ───────────────────────────────────
+class CounselLogReq(BaseModel):
+    student_name: str
+    date: str = ""
+    title: str
+    content: str = ""
+    score: str = ""
+    max_score: str = ""
+    memo: str = ""
+
+
+@app.post("/api/admin/counsel/log", dependencies=[Depends(verify_admin)])
+def add_counsel_log(req: CounselLogReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name or not req.title.strip():
+        return {"success": False, "detail": "학생과 제목을 입력해주세요."}
+
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "date": req.date.strip() or datetime.now().strftime("%Y-%m-%d"),
+        "title": req.title.strip(),
+        "content": req.content.strip(),
+        "score": req.score.strip(),
+        "max_score": req.max_score.strip(),
+        "memo": req.memo.strip(),
+    }
+    data = load_counsel(name)
+    logs = data.get("logs", [])
+    logs.insert(0, entry)
+    counsel_ref(name).set({
+        "student_name": name, "logs": logs[:300],
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
+class CounselLogDeleteReq(BaseModel):
+    student_name: str
+    log_id: str
+
+
+@app.post("/api/admin/counsel/log/delete", dependencies=[Depends(verify_admin)])
+def delete_counsel_log(req: CounselLogDeleteReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    data = load_counsel(name)
+    logs = [l for l in data.get("logs", []) if l.get("id") != req.log_id]
+    counsel_ref(name).set({"logs": logs, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
+# ── 통합 종합 소견 ──────────────────────────────────────
+@app.post("/api/admin/counsel/summary", dependencies=[Depends(verify_admin)])
+async def make_summary(req: CounselNameReq):
+    """1~4번을 한 장으로 묶어 학부모 상담에 그대로 쓸 수 있는 소견서를 만든다."""
+    name = req.student_name.strip()
+    view = build_counsel_view(name)
+
+    has = []
+    if view["naesin"]["avg"] is not None or view["mock"]["avg"] is not None: has.append("성적")
+    if (view.get("tendency") or {}).get("axes"): has.append("성향검사")
+    if view.get("record_eval"): has.append("학생부평가")
+    if view.get("logs"): has.append("학습기록")
+    if not has:
+        return {"success": False, "detail": "먼저 성적·성향검사·학생부·학습기록 중 하나 이상을 채워주세요."}
+
+    prompt = f"""당신은 학원 원장님을 대신해 학부모 상담 소견서를 쓰는 진학 상담 전문가입니다.
+아래 자료를 종합해 학부모님께 그대로 전달할 수 있는 한 장짜리 소견서를 작성하세요.
+
+[학생] {name}
+[확보된 자료] {', '.join(has)}
+
+[성적]
+{fmt_grade_block(view)}
+
+[학습 성향]
+{fmt_tendency_block(view)}
+
+[성향 해석]
+{(view.get('tendency') or {}).get('analysis', '') or '분석 전'}
+
+[학생부 정성 평가]
+{view.get('record_eval', '') or '평가 전'}
+
+[원내 학습 기록]
+{fmt_log_block(view)}
+{f"(기록된 점수 평균 {view['log_avg']}%)" if view.get('log_avg') is not None else ''}
+
+[반드시 지킬 것]
+1. 위 자료에 없는 사실을 지어내지 마세요. 빠진 자료는 '아직 확보되지 않았다'고 적으세요.
+2. 대학 이름은 위 성적 항목에 적힌 라인의 대학만 쓰세요.
+3. 학부모님이 읽습니다. 전문 용어는 풀어 쓰고, 아이를 깎아내리지 마세요.
+4. 전체 분량은 A4 한 장 정도로 압축하세요.
+
+[출력 형식 — 제목을 그대로 쓸 것]
+## 한 줄 요약
+(이 학생을 한 문장으로)
+
+## 지금 어디에 서 있는가
+(성적과 학습 태도를 묶어 4~6문장)
+
+## 수시 · 정시 전략
+(비중과 이유, 현재 가능 라인을 3~5문장으로)
+
+## 이 아이의 가장 큰 강점
+(2가지)
+
+## 반드시 고쳐야 할 것
+(2가지. 무엇을 어떻게 바꿀지까지)
+
+## 앞으로 학원에서 할 지도
+(4가지. 원장님이 실제로 실행할 항목으로)
+
+## 가정에서 도와주실 일
+(2~3가지)
+"""
+    try:
+        res = await asyncio.to_thread(lambda: safe_generate(prompt))
+        text = (res.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 소견 작성 실패: {str(e)}"}
+
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    counsel_ref(name).set({"summary": {"text": text, "at": at}, "updated_at": at}, merge=True)
+    return {"success": True, "summary": {"text": text, "at": at}}
+
+
+# ── 대학 라인 기준표 관리 ───────────────────────────────
+@app.get("/api/admin/counsel/admission_table", dependencies=[Depends(verify_admin)])
+def get_admission_table():
+    return {"success": True, "table": load_admission_table(), "default": DEFAULT_ADMISSION_TABLE}
+
+
+class AdmissionTableReq(BaseModel):
+    susi: list
+    jeongsi: list
+    note: str = ""
+
+
+@app.post("/api/admin/counsel/admission_table", dependencies=[Depends(verify_admin)])
+def save_admission_table(req: AdmissionTableReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    db.collection("settings").document("admission_table").set({
+        "susi": req.susi, "jeongsi": req.jeongsi,
+        "note": req.note.strip() or DEFAULT_ADMISSION_TABLE["note"],
+    })
+    return {"success": True, "table": load_admission_table()}
+
+
+# ⚠️ 이 라우트는 반드시 파일에서 가장 마지막에 등록되어야 한다.
+#    FastAPI는 먼저 등록된 경로부터 맞춰보기 때문에, 이 {student_name} 라우트가
+#    위에 있으면 /api/admin/counsel/admission_table 까지 학생 이름으로 삼켜버린다.
+@app.get("/api/admin/counsel/{student_name}", dependencies=[Depends(verify_admin)])
+def get_counsel_admin(student_name: str):
+    if db is None:
+        return {"success": False}
+    return {"success": True, "counsel": build_counsel_view(urllib.parse.unquote(student_name))}
