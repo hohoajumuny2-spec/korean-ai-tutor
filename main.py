@@ -2245,6 +2245,99 @@ def load_admission_table() -> dict:
     return DEFAULT_ADMISSION_TABLE
 
 
+# ── 내신 9등급제 ↔ 5등급제 환산 ───────────────────────
+# 2025학년도 고1부터 내신이 5등급제로 바뀌어, 학년마다 등급 체계가 다르다.
+# 두 체계는 '누적 비율'이 달라서 등급 숫자를 그대로 비교할 수 없다.
+#   9등급제 누적: 4 / 11 / 23 / 40 / 60 / 77 / 89 / 96 / 100 (%)
+#   5등급제 누적: 10 / 34 / 66 / 90 / 100 (%)
+# 그래서 등급을 '그 등급 구간의 한가운데 백분율'로 바꾼 뒤,
+# 상대 체계에서 같은 백분율이 몇 등급인지 되짚는 방식으로 환산한다.
+GRADE_CUTS = {
+    "9": [4, 11, 23, 40, 60, 77, 89, 96, 100],
+    "5": [10, 34, 66, 90, 100],
+}
+
+
+def _band_midpoints(cuts):
+    mids, prev = [], 0
+    for c in cuts:
+        mids.append((prev + c) / 2)
+        prev = c
+    return mids
+
+
+GRADE_MIDS = {k: _band_midpoints(v) for k, v in GRADE_CUTS.items()}
+
+
+def normalize_scale(value) -> str:
+    """'9', 9, '9등급제' 무엇이 와도 '9' 또는 '5'로 정리한다. 기본은 9등급제."""
+    s = str(value or "").strip()
+    return "5" if s.startswith("5") else "9"
+
+
+def _grade_to_pct(grade: float, scale: str) -> float:
+    """등급(소수 가능) → 누적 백분율. 등급 사이는 직선으로 잇는다."""
+    mids = GRADE_MIDS[scale]
+    g = max(1.0, min(float(len(mids)), float(grade)))
+    lo = int(g) - 1
+    if lo >= len(mids) - 1:
+        return mids[-1]
+    frac = g - int(g)
+    return mids[lo] + frac * (mids[lo + 1] - mids[lo])
+
+
+def _pct_to_grade(pct: float, scale: str) -> float:
+    """누적 백분율 → 등급(소수). _grade_to_pct의 역방향."""
+    mids = GRADE_MIDS[scale]
+    if pct <= mids[0]:
+        return 1.0
+    if pct >= mids[-1]:
+        return float(len(mids))
+    for i in range(len(mids) - 1):
+        if mids[i] <= pct <= mids[i + 1]:
+            span = mids[i + 1] - mids[i]
+            frac = 0 if span == 0 else (pct - mids[i]) / span
+            return round((i + 1) + frac, 2)
+    return float(len(mids))
+
+
+def convert_grade_scale(grade, frm, to):
+    """등급 하나를 다른 체계로 환산한다. 같은 체계면 그대로 돌려준다."""
+    g = _num(grade)
+    if g is None:
+        return None
+    frm, to = normalize_scale(frm), normalize_scale(to)
+    if frm == to:
+        return round(g, 2)
+    return round(_pct_to_grade(_grade_to_pct(g, frm), to), 2)
+
+
+def convert_grade_band(grade, frm, to):
+    """과목 하나의 정수 등급은 '몇~몇 등급'처럼 폭으로 보는 것이 정확하다.
+    예) 9등급제 2등급(상위 4~11%)은 5등급제로 1~2등급에 걸친다."""
+    g = _num(grade)
+    if g is None:
+        return None
+    frm, to = normalize_scale(frm), normalize_scale(to)
+    if frm == to:
+        return {"low": int(g), "high": int(g), "text": f"{int(g)}등급"}
+
+    idx = max(1, min(len(GRADE_CUTS[frm]), int(round(g))))
+    lo_pct = 0 if idx == 1 else GRADE_CUTS[frm][idx - 2]
+    hi_pct = GRADE_CUTS[frm][idx - 1]
+
+    def band_of(pct):
+        for i, c in enumerate(GRADE_CUTS[to]):
+            if pct <= c:
+                return i + 1
+        return len(GRADE_CUTS[to])
+
+    low = band_of(lo_pct + 0.01)
+    high = band_of(max(lo_pct + 0.01, hi_pct - 0.01))
+    text = f"{low}등급" if low == high else f"{low}~{high}등급"
+    return {"low": low, "high": high, "text": text}
+
+
 MAIN_SUBJECT_KEYWORDS = ("국어", "영어", "수학", "사회", "과학", "한국사", "문학", "독서", "화법", "언어", "미적분", "확률", "기하", "물리", "화학", "생명", "지구", "통합")
 
 
@@ -2257,8 +2350,10 @@ def _num(v, default=None):
         return default
 
 
-def summarize_naesin(rows: list) -> dict:
+def summarize_naesin(rows: list, scale: str = "9") -> dict:
     """단위수 가중 평균 등급을 낸다. 단위수가 없으면 1로 본다."""
+    scale = normalize_scale(scale)
+    other = "5" if scale == "9" else "9"
     tot_w = tot_wg = 0.0
     main_w = main_wg = 0.0
     by_term = {}
@@ -2275,10 +2370,24 @@ def summarize_naesin(rows: list) -> dict:
         t = by_term.setdefault(term, {"w": 0.0, "wg": 0.0})
         t["w"] += w; t["wg"] += g * w
 
-    terms = [{"term": k, "avg": round(v["wg"] / v["w"], 2)} for k, v in sorted(by_term.items()) if v["w"]]
+    terms = []
+    for k, v in sorted(by_term.items()):
+        if not v["w"]:
+            continue
+        a = round(v["wg"] / v["w"], 2)
+        terms.append({"term": k, "avg": a, "avg_other": convert_grade_scale(a, scale, other)})
+
+    avg = round(tot_wg / tot_w, 2) if tot_w else None
+    main_avg = round(main_wg / main_w, 2) if main_w else None
     return {
-        "avg": round(tot_wg / tot_w, 2) if tot_w else None,
-        "main_avg": round(main_wg / main_w, 2) if main_w else None,
+        "avg": avg,
+        "main_avg": main_avg,
+        # 💡 2025학년도부터 내신이 5등급제로 바뀌어 학년마다 체계가 다르다.
+        #    입력한 체계와 반대쪽 체계의 환산값을 항상 함께 내놓는다.
+        "scale": scale,
+        "other_scale": other,
+        "avg_other": convert_grade_scale(avg, scale, other),
+        "main_avg_other": convert_grade_scale(main_avg, scale, other),
         "total_units": round(tot_w, 1),
         "count": len([r for r in (rows or []) if _num(r.get("grade")) is not None]),
         "by_term": terms,
@@ -2376,7 +2485,8 @@ def load_counsel(student_name: str) -> dict:
 def build_counsel_view(student_name: str) -> dict:
     """상담 카드 한 장에 필요한 모든 계산을 끝낸 형태로 돌려준다."""
     data = load_counsel(student_name)
-    naesin = summarize_naesin(data.get("naesin", []))
+    scale = normalize_scale(data.get("naesin_scale"))
+    naesin = summarize_naesin(data.get("naesin", []), scale)
     mock = summarize_mock(data.get("mock", []))
     table = load_admission_table()
     track = judge_track(naesin["avg"], mock["avg"])
@@ -2386,9 +2496,20 @@ def build_counsel_view(student_name: str) -> dict:
     scored = [l for l in logs if _num(l.get("score")) is not None and _num(l.get("max_score")) not in (None, 0)]
     log_avg = round(sum(_num(l["score"]) / _num(l["max_score"]) * 100 for l in scored) / len(scored), 1) if scored else None
 
+    # 과목 하나하나에도 반대 체계 환산을 달아준다
+    other = "5" if scale == "9" else "9"
+    naesin_rows = []
+    for r in data.get("naesin", []):
+        row = dict(r)
+        band = convert_grade_band(r.get("grade"), scale, other)
+        row["grade_other"] = band["text"] if band else ""
+        naesin_rows.append(row)
+
     return {
         "student_name": student_name,
-        "naesin_rows": data.get("naesin", []),
+        "profile": data.get("profile", {}),
+        "naesin_scale": scale,
+        "naesin_rows": naesin_rows,
         "mock_rows": data.get("mock", []),
         "naesin": naesin,
         "mock": mock,
@@ -2409,8 +2530,14 @@ def build_counsel_view(student_name: str) -> dict:
 
 def fmt_grade_block(view: dict) -> str:
     n, m, t = view["naesin"], view["mock"], view["track"]
+    scale_txt = f"{n.get('scale', '9')}등급제"
+    other_txt = f"{n.get('other_scale', '5')}등급제"
+    conv = ""
+    if n.get("avg") is not None and n.get("avg_other") is not None:
+        conv = f" / {other_txt} 환산 {n['avg_other']}등급"
     lines = [
-        f"- 내신 평균 등급: {n['avg'] if n['avg'] is not None else '미입력'} (주요과목 {n['main_avg'] if n['main_avg'] is not None else '-'}, 반영 {n['count']}과목)",
+        f"- 내신 등급 체계: {scale_txt} (2025학년도 고1부터 5등급제로 바뀌어 학년마다 체계가 다름)",
+        f"- 내신 평균 등급: {n['avg'] if n['avg'] is not None else '미입력'}{conv} (주요과목 {n['main_avg'] if n['main_avg'] is not None else '-'}, 반영 {n['count']}과목)",
         f"- 학기별 내신: " + (", ".join(f"{x['term']} {x['avg']}등급" for x in n["by_term"]) or "미입력"),
         f"- 모의고사 최근({m['latest'] or '-'}) 평균 등급: {m['avg'] if m['avg'] is not None else '미입력'}, 평균 백분위: {m['pct_avg'] if m['pct_avg'] is not None else '-'}",
         f"- 모의고사 추이: " + (", ".join(f"{x['date']} {x['avg']}등급" for x in m["by_date"] if x["avg"] is not None) or "미입력"),
@@ -2422,6 +2549,17 @@ def fmt_grade_block(view: dict) -> str:
     if jeongsi:
         lines.append(f"- 학원 기준표상 정시 라인: {jeongsi['tier']} / {jeongsi['examples']}")
     return "\n".join(lines)
+
+
+def fmt_profile_block(view: dict) -> str:
+    p = view.get("profile") or {}
+    labels = [
+        ("target_univ", "희망 대학"), ("target_major", "희망 학과"), ("track", "계열"),
+        ("enrolled_at", "학원 등록일"), ("prev_academy", "이전 학습 이력"),
+        ("strength", "강점"), ("weakness", "약점"), ("note", "특이사항"),
+    ]
+    lines = [f"- {label}: {p[key]}" for key, label in labels if p.get(key)]
+    return "\n".join(lines) if lines else "- 인적사항 미입력"
 
 
 def fmt_tendency_block(view: dict) -> str:
@@ -2506,6 +2644,7 @@ class GradeSaveReq(BaseModel):
     student_name: str
     naesin: list = None
     mock: list = None
+    naesin_scale: str = ""
 
 
 @app.post("/api/admin/counsel/grades", dependencies=[Depends(verify_admin)])
@@ -2516,11 +2655,72 @@ def save_grades(req: GradeSaveReq):
     if not name:
         return {"success": False, "detail": "학생을 먼저 선택해주세요."}
     payload = {"student_name": name, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if req.naesin_scale:
+        payload["naesin_scale"] = normalize_scale(req.naesin_scale)
     if req.naesin is not None:
         payload["naesin"] = req.naesin[:200]
     if req.mock is not None:
         payload["mock"] = req.mock[:200]
     counsel_ref(name).set(payload, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
+# ── 학생 인적사항 (상담 기초 자료) ─────────────────────
+PROFILE_FIELDS = [
+    "phone", "parent_phone", "parent_relation", "birth", "enrolled_at",
+    "prev_academy", "target_univ", "target_major", "track",
+    "strength", "weakness", "note",
+]
+
+
+class ProfileSaveReq(BaseModel):
+    student_name: str
+    school: str = ""
+    grade: str = ""
+    class_name: str = ""
+    profile: dict = None
+    create: bool = False
+
+
+@app.post("/api/admin/counsel/profile", dependencies=[Depends(verify_admin)])
+def save_counsel_profile(req: ProfileSaveReq):
+    """상담 카드의 학생 인적사항을 저장한다.
+    create=True면 명단에 없는 학생도 새로 등록하면서 인적사항을 함께 넣는다.
+    (새 학생이 들어오면 상담 자료부터 만들어 두고 싶다는 요청)"""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생 이름을 입력해주세요."}
+
+    s_ref = db.collection("students").document(sanitize_doc_id(name))
+    exists = s_ref.get().exists
+    if req.create and exists:
+        return {"success": False, "detail": "이미 명단에 있는 이름입니다. 동명이인이면 이름 뒤에 구분을 붙여주세요."}
+    if not req.create and not exists:
+        return {"success": False, "detail": "명단에 없는 학생입니다."}
+
+    student_patch = {}
+    if req.school.strip():
+        student_patch["school"] = req.school.strip()
+    if req.grade.strip():
+        student_patch["grade"] = req.grade.strip()
+    if req.create or req.class_name:
+        student_patch["class_name"] = req.class_name.strip()
+    if student_patch or req.create:
+        s_ref.set(student_patch, merge=True)
+
+    # 상담 카드에는 알려진 항목만 담는다 (엉뚱한 값이 섞이지 않도록)
+    incoming = req.profile or {}
+    clean = {k: str(incoming.get(k, "") or "").strip() for k in PROFILE_FIELDS}
+    counsel_ref(name).set({
+        "student_name": name,
+        "profile": clean,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }, merge=True)
+
+    if req.create:
+        send_telegram_message(f"🆕 [신규 학생 등록]\n{req.school.strip()} {req.grade.strip()} {name} 학생이 명단에 추가되었습니다.")
     return {"success": True, "counsel": build_counsel_view(name)}
 
 
@@ -2539,6 +2739,9 @@ async def analyze_counsel(req: CounselNameReq):
     prompt = f"""당신은 20년 경력의 대입 진학 상담 전문가입니다. 아래 학생의 성적 자료를 보고 상담문을 작성하세요.
 
 [학생] {name}
+
+[학생 기본 정보]
+{fmt_profile_block(view)}
 
 [성적 및 사전 판정]
 {fmt_grade_block(view)}
@@ -2793,6 +2996,9 @@ async def make_summary(req: CounselNameReq):
 
 [학생] {name}
 [확보된 자료] {', '.join(has)}
+
+[학생 기본 정보]
+{fmt_profile_block(view)}
 
 [성적]
 {fmt_grade_block(view)}
