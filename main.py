@@ -1378,10 +1378,41 @@ async def submit_quiz(req: QuizSubmitReq):
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     actual_score = 0
+    total_possible = 0
+    details = []
     if doc.exists:
         for i, q in enumerate(doc.to_dict().get("questions", [])):
-            if i < len(req.answers) and str(req.answers[i]) == str(q.get("answer")):
-                actual_score += int(q.get("score", 0))
+            raw = req.answers[i] if i < len(req.answers) else None
+            # 0이나 빈 값은 '고르지 않음'으로 본다 (퀴즈는 0으로 초기화되어 있음)
+            my_ans = "" if raw in (None, "", 0, "0") else str(raw).strip()
+            correct_ans = str(q.get("answer", "")).strip()
+            point = int(q.get("score", 0) or 0)
+            total_possible += point
+            is_ok = bool(my_ans) and my_ans == correct_ans
+            if is_ok:
+                actual_score += point
+            options = [str(o) for o in (q.get("options") or [])]
+
+            def pick(n):
+                try:
+                    idx = int(n) - 1
+                except (TypeError, ValueError):
+                    return ""
+                return options[idx] if 0 <= idx < len(options) else ""
+
+            # 💡 퀴즈를 내고 나면 점수도 오답도 볼 수 없다는 요청 — 문항 내용과
+            #    내가 고른 보기·정답 보기를 그대로 실어 보낸다.
+            details.append({
+                "no": i + 1,
+                "q_text": str(q.get("q_text", "")),
+                "my": my_ans,
+                "my_text": pick(my_ans),
+                "ans": correct_ans,
+                "ans_text": pick(correct_ans),
+                "score": point,
+                "ok": is_ok,
+                "blank": not my_ans,
+            })
 
     await asyncio.to_thread(
         lambda: db.collection("reports").add(
@@ -1393,6 +1424,10 @@ async def submit_quiz(req: QuizSubmitReq):
                 "task_name": req.title,
                 "type": "타임어택 퀴즈",
                 "score": actual_score,
+                "total_score": total_possible,
+                "question_count": len(details),
+                "correct_count": sum(1 for d in details if d["ok"]),
+                "wrongs": [d["no"] for d in details if not d["ok"]],
             }
         )
     )
@@ -1405,7 +1440,16 @@ async def submit_quiz(req: QuizSubmitReq):
         lambda: s_ref.set({"xp": firestore.Increment(quiz_xp)}, merge=True)
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
-    return {"success": True, "score": actual_score, "level_up": lvl_up}
+    return {
+        "success": True,
+        "score": actual_score,
+        "total_score": total_possible,
+        "details": details,
+        "correct_count": sum(1 for d in details if d["ok"]),
+        "question_count": len(details),
+        "wrongs": [d["no"] for d in details if not d["ok"]],
+        "level_up": lvl_up,
+    }
 
 
 # ─────────────────────────────────────────────────────────
