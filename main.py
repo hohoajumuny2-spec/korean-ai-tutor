@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import json
@@ -2531,7 +2532,7 @@ def build_counsel_view(student_name: str) -> dict:
         row["grade_other"] = band["text"] if band else ""
         naesin_rows.append(row)
 
-    return {
+    result = {
         "student_name": student_name,
         "profile": data.get("profile", {}),
         "naesin_scale": scale,
@@ -2552,6 +2553,8 @@ def build_counsel_view(student_name: str) -> dict:
         "log_avg": log_avg,
         "updated_at": data.get("updated_at", ""),
     }
+    result["target_gap"] = build_target_gap(result)
+    return result
 
 
 def fmt_grade_block(view: dict) -> str:
@@ -2777,6 +2780,9 @@ async def analyze_counsel(req: CounselNameReq):
 [성적 및 사전 판정]
 {fmt_grade_block(view)}
 
+[목표 대학까지의 거리 — 학원이 보유한 입결 자료 기준]
+{fmt_target_block(view)}
+
 [학습 성향 검사]
 {fmt_tendency_block(view)}
 
@@ -2798,9 +2804,12 @@ async def analyze_counsel(req: CounselNameReq):
 ## 2. 수시 · 정시 비중
 (위 판정과 비중 퍼센트를 근거와 함께 설명. 왜 그 비중인지 성적 숫자로 설명할 것)
 
-## 3. 현재 지원 가능 라인
+## 3. 현재 지원 가능 라인과 목표까지의 거리
 (수시 라인과 정시 라인을 각각 설명. 위에 주어진 대학 이름만 사용.
- 지금 성적을 유지했을 때와, 한 등급 올렸을 때 어디까지 달라지는지도 함께 적을 것)
+ 지금 성적을 유지했을 때와, 한 등급 올렸을 때 어디까지 달라지는지도 함께 적을 것.
+ [목표 대학까지의 거리]에 자료가 있으면, 목표까지 몇 등급/몇 백분위가 더 필요한지
+ 그 숫자를 그대로 인용해 알려주고, 그 차이를 메우려면 무엇을 해야 하는지 적을 것.
+ 자료가 없다고 적혀 있으면 그 사실만 밝히고 수치를 지어내지 마세요.)
 
 ## 4. 맞춤 학습 프로그램
 (국어 과목을 중심으로, 지금 당장 해야 할 것을 4~6개 항목으로.
@@ -3147,6 +3156,281 @@ async def make_summary(req: CounselNameReq):
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     counsel_ref(name).set({"summary": {"text": text, "at": at}, "updated_at": at}, merge=True)
     return {"success": True, "summary": {"text": text, "at": at}}
+
+
+# ── 입결 자료 (엑셀 업로드) ─────────────────────────────
+#   원장님이 이미 엑셀로 관리하시는 입결 자료를 그대로 올려 쓴다.
+#   파일마다 열 구성이 달라서, 먼저 열 이름을 읽어 보여주고
+#   "이 열이 대학, 이 열이 등급" 하고 짝지어 받은 뒤에 저장한다.
+UNIV_CHUNK_SIZE = 400          # Firestore 문서 하나에 담을 행 수
+UNIV_MAX_ROWS = 8000
+
+
+def _read_sheet(raw: bytes, filename: str):
+    """엑셀(.xlsx) 또는 CSV를 읽어 [[셀,...], ...] 로 돌려준다."""
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        for enc in ("utf-8-sig", "cp949", "euc-kr", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise ValueError("CSV 파일의 글자 인코딩을 읽지 못했습니다.")
+        import csv as _csv
+        return [row for row in _csv.reader(io.StringIO(text))]
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise ValueError("서버에 엑셀 읽기 기능이 준비되지 않았습니다. 잠시 후 다시 시도해주세요.")
+    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = []
+    for r in ws.iter_rows(values_only=True):
+        rows.append(["" if c is None else str(c).strip() for c in r])
+        if len(rows) > UNIV_MAX_ROWS + 5:
+            break
+    wb.close()
+    return rows
+
+
+def _trim_rows(rows):
+    """앞뒤의 완전히 빈 줄을 걷어낸다."""
+    out = [r for r in rows if any(str(c).strip() for c in r)]
+    return out
+
+
+@app.post("/api/admin/univ_table/preview", dependencies=[Depends(verify_admin)])
+async def preview_univ_table(file: UploadFile = File(...)):
+    """올린 파일의 열 이름과 앞부분 몇 줄을 돌려준다 (짝짓기 화면용)."""
+    raw = await file.read()
+    if not raw:
+        return {"success": False, "detail": "빈 파일입니다."}
+    try:
+        rows = _trim_rows(_read_sheet(raw, file.filename))
+    except Exception as e:
+        return {"success": False, "detail": f"파일을 읽지 못했습니다: {e}"}
+    if len(rows) < 2:
+        return {"success": False, "detail": "내용이 있는 줄이 2줄 이상이어야 합니다. (첫 줄은 열 이름)"}
+
+    header = rows[0]
+    width = max(len(r) for r in rows[:30])
+    header = [(header[i] if i < len(header) and header[i] else f"(이름 없는 {i + 1}번째 열)")
+              for i in range(width)]
+    sample = [[(r[i] if i < len(r) else "") for i in range(width)] for r in rows[1:6]]
+    return {"success": True, "columns": header, "sample": sample,
+            "row_count": len(rows) - 1, "filename": file.filename}
+
+
+@app.post("/api/admin/univ_table/import", dependencies=[Depends(verify_admin)])
+async def import_univ_table(
+    file: UploadFile = File(...),
+    mapping: str = Form(...),
+    label: str = Form(""),
+):
+    """짝지어 준 열 구성대로 입결 자료를 저장한다.
+    mapping 예: {"univ":0,"major":2,"track":3,"type":4,"cut":5,"metric":"grade"}"""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    try:
+        m = json.loads(mapping)
+    except ValueError:
+        return {"success": False, "detail": "열 짝짓기 정보를 읽지 못했습니다."}
+
+    raw = await file.read()
+    try:
+        rows = _trim_rows(_read_sheet(raw, file.filename))
+    except Exception as e:
+        return {"success": False, "detail": f"파일을 읽지 못했습니다: {e}"}
+    if len(rows) < 2:
+        return {"success": False, "detail": "저장할 내용이 없습니다."}
+
+    def cell(r, key):
+        idx = m.get(key)
+        if idx is None or idx == "" or int(idx) < 0:
+            return ""
+        idx = int(idx)
+        return str(r[idx]).strip() if idx < len(r) else ""
+
+    metric = "percentile" if str(m.get("metric", "grade")) == "percentile" else "grade"
+    entries, skipped = [], 0
+    for r in rows[1:]:
+        univ = cell(r, "univ")
+        cut = _num(cell(r, "cut"))
+        if not univ or cut is None:
+            skipped += 1
+            continue
+        entries.append({
+            "univ": univ[:60],
+            "major": cell(r, "major")[:80],
+            "track": cell(r, "track")[:20],
+            "type": cell(r, "type")[:20],
+            "cut": round(cut, 3),
+            "metric": metric,
+            "note": cell(r, "note")[:120],
+        })
+        if len(entries) >= UNIV_MAX_ROWS:
+            break
+
+    if not entries:
+        return {"success": False, "detail": "대학 이름과 기준 점수를 모두 읽어낸 줄이 하나도 없습니다. 열 짝짓기를 확인해주세요."}
+
+    # 예전 자료를 지우고 새로 넣는다
+    old = list(db.collection("univ_table").stream())
+    for d in old:
+        d.reference.delete()
+    for i in range(0, len(entries), UNIV_CHUNK_SIZE):
+        db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:03d}").set(
+            {"rows": entries[i:i + UNIV_CHUNK_SIZE]}
+        )
+    db.collection("settings").document("univ_table_meta").set({
+        "label": (label or file.filename or "입결 자료").strip()[:80],
+        "count": len(entries),
+        "metric": metric,
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    # 💡 열을 잘못 짝지으면 우연히 값이 맞는 줄만 몇 개 들어가고 나머지는 조용히 버려진다.
+    #    그대로 두면 엉뚱한 자료로 상담하게 되므로, 버린 줄이 더 많으면 경고를 함께 보낸다.
+    total_rows = len(rows) - 1
+    warning = ""
+    if skipped > len(entries):
+        warning = (f"전체 {total_rows}줄 중 {len(entries)}줄만 읽었고 {skipped}줄은 건너뛰었습니다. "
+                   f"'대학' 열과 '기준 점수' 열을 제대로 골랐는지 확인해주세요.")
+    elif skipped:
+        warning = f"{skipped}줄은 대학 이름이나 기준 점수가 비어 있어 건너뛰었습니다."
+    return {"success": True, "count": len(entries), "skipped": skipped,
+            "total_rows": total_rows, "metric": metric, "warning": warning}
+
+
+def load_univ_table() -> list:
+    if db is None:
+        return []
+    out = []
+    for d in db.collection("univ_table").stream():
+        out.extend((d.to_dict() or {}).get("rows", []))
+    return out
+
+
+def load_univ_meta() -> dict:
+    if db is None:
+        return {}
+    doc = db.collection("settings").document("univ_table_meta").get()
+    return doc.to_dict() if doc.exists else {}
+
+
+@app.get("/api/admin/univ_table", dependencies=[Depends(verify_admin)])
+def get_univ_table(q: str = "", limit: int = 50):
+    meta = load_univ_meta()
+    rows = load_univ_table()
+    key = q.strip()
+    if key:
+        rows = [r for r in rows if key in r.get("univ", "") or key in r.get("major", "")]
+    return {"success": True, "meta": meta, "count": len(rows), "rows": rows[:max(1, min(500, limit))]}
+
+
+@app.post("/api/admin/univ_table/clear", dependencies=[Depends(verify_admin)])
+def clear_univ_table():
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    for d in db.collection("univ_table").stream():
+        d.reference.delete()
+    db.collection("settings").document("univ_table_meta").delete()
+    return {"success": True}
+
+
+def match_univ_rows(rows: list, univ: str, major: str = "") -> list:
+    """목표 대학·학과에 해당하는 줄을 고른다. 학과가 비면 그 대학 전체."""
+    u, mj = univ.strip(), major.strip()
+    if not u:
+        return []
+    hit = [r for r in rows if u in r.get("univ", "") or r.get("univ", "") in u]
+    if mj:
+        narrowed = [r for r in hit if mj in r.get("major", "") or (r.get("major", "") and r.get("major", "") in mj)]
+        if narrowed:
+            return narrowed
+    return hit
+
+
+def build_target_gap(view: dict) -> dict:
+    """지금 성적으로 목표 대학까지 얼마나 모자란지 계산한다."""
+    profile = view.get("profile") or {}
+    univ = str(profile.get("target_univ", "")).strip()
+    major = str(profile.get("target_major", "")).strip()
+    if not univ:
+        return {"status": "no_target", "message": "학생 정보에 희망 대학을 적으면 목표까지 얼마나 남았는지 계산합니다."}
+
+    rows = load_univ_table()
+    if not rows:
+        return {"status": "no_table", "univ": univ, "major": major,
+                "message": "입결 자료가 아직 올라오지 않았습니다. 엑셀을 올리면 목표까지의 거리를 계산합니다."}
+
+    hits = match_univ_rows(rows, univ, major)
+    if not hits:
+        return {"status": "not_found", "univ": univ, "major": major,
+                "message": f"입결 자료에서 '{univ}{(' ' + major) if major else ''}'을(를) 찾지 못했습니다. 대학 이름이 자료와 같은지 확인해주세요."}
+
+    naesin_avg = view["naesin"]["avg"]
+    pct_avg = view["mock"]["pct_avg"]
+
+    items = []
+    for r in hits[:40]:
+        metric = r.get("metric", "grade")
+        cut = _num(r.get("cut"))
+        if cut is None:
+            continue
+        if metric == "grade":
+            mine = naesin_avg
+            # 등급은 낮을수록 좋다
+            gap = None if mine is None else round(mine - cut, 2)
+            reach = None if gap is None else gap <= 0
+            unit = "등급"
+        else:
+            mine = pct_avg
+            # 백분위는 높을수록 좋다
+            gap = None if mine is None else round(cut - mine, 2)
+            reach = None if gap is None else gap <= 0
+            unit = "백분위"
+        items.append({
+            "univ": r.get("univ", ""), "major": r.get("major", ""),
+            "track": r.get("track", ""), "type": r.get("type", ""),
+            "cut": cut, "metric": metric, "unit": unit,
+            "mine": mine, "gap": gap, "reach": reach, "note": r.get("note", ""),
+        })
+
+    if not items:
+        return {"status": "not_found", "univ": univ, "major": major,
+                "message": "찾은 줄에 기준 점수가 비어 있습니다."}
+
+    scored = [i for i in items if i["gap"] is not None]
+    scored.sort(key=lambda x: x["gap"])
+    closest = scored[0] if scored else None
+    return {"status": "ok", "univ": univ, "major": major, "items": items[:20],
+            "closest": closest, "reachable": sum(1 for i in scored if i["reach"]),
+            "total": len(scored)}
+
+
+def fmt_target_block(view: dict) -> str:
+    g = view.get("target_gap") or {}
+    if g.get("status") != "ok":
+        return f"- {g.get('message', '목표 대학 정보 없음')}"
+    lines = [f"- 목표: {g['univ']} {g.get('major', '')}".rstrip()]
+    c = g.get("closest")
+    if c:
+        if c["gap"] is None:
+            lines.append("- 현재 성적이 없어 목표까지의 거리를 계산하지 못했습니다.")
+        elif c["reach"]:
+            lines.append(f"- 가장 가까운 기준({c['univ']} {c['major']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — 이미 기준을 넘었습니다.")
+        else:
+            lines.append(f"- 가장 가까운 기준({c['univ']} {c['major']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — {abs(c['gap'])}{c['unit']} 모자랍니다.")
+    lines.append(f"- 이 대학 자료 {g['total']}건 중 현재 성적으로 기준을 넘은 것: {g['reachable']}건")
+    for i in g["items"][:8]:
+        if i["gap"] is None:
+            continue
+        state = "도달" if i["reach"] else f"{abs(i['gap'])}{i['unit']} 부족"
+        lines.append(f"  · {i['univ']} {i['major']} ({i['type']}) 기준 {i['cut']}{i['unit']} → {state}")
+    return "\n".join(lines)
 
 
 # ── 대학 라인 기준표 관리 ───────────────────────────────
