@@ -1370,6 +1370,7 @@ async def generate_stream(
     q_text: str = Form(""),
     q_principle: str = Form(""),
     start_num: int = Form(1),
+    source_counts: str = Form(""),
     files: Optional[List[UploadFile]] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -1380,14 +1381,13 @@ async def generate_stream(
     # 20문항씩 나눠 여러 번 요청한 뒤 결과를 합친다.
     QUESTIONS_PER_BATCH = 20
 
-    # 난이도를 미리 섞어서 배치에 나눠 담는다 — 배치마다 난이도가 골고루 섞이고,
+    # 난이도를 미리 섞어둔다 — 자료마다 난이도가 골고루 섞이고,
     # 문항이 난이도 순서대로 줄 서는 것도 자연히 방지된다.
     tier_pool = (
         ["killer"] * cnt_killer + ["semi"] * cnt_semi + ["high"] * cnt_high
         + ["mid"] * cnt_mid + ["low"] * cnt_low
     )
     random.shuffle(tier_pool)
-    batches = [tier_pool[i:i + QUESTIONS_PER_BATCH] for i in range(0, len(tier_pool), QUESTIONS_PER_BATCH)] or [[]]
 
     def build_difficulty_block(tiers):
         """이번 배치에 실제로 포함된 난이도만 원칙과 함께 프롬프트에 싣는다."""
@@ -1480,13 +1480,25 @@ async def generate_stream(
 1번 ⑤
 2번 ①"""
 
-    def build_prompt(tiers, batch_start, include_passage):
+    def build_prompt(tiers, batch_start, include_passage, source=None, multi=False):
         n = len(tiers) if tiers else total
         batch_end = batch_start + n - 1
+        source = source or {"label": "", "text": q_text}
         if include_passage:
             order_rule = "- 반드시 다음 순서로, 각 섹션을 정확히 한 번씩만 출력하세요: [지문] (문제 출제에 사용한 지문 전체를 한 글자도 바꾸거나 생략하지 말고 그대로 먼저 제시) → 문항들(①②③④⑤ 선지 포함) → [정답 및 해설] → [정답표]. [지문]이 없으면 학생이 무엇을 보고 푸는지 알 수 없으니 절대 빠뜨리지 마세요."
         else:
             order_rule = "- 지문은 앞 회차에서 이미 제시했으므로 [지문] 섹션을 절대 다시 출력하지 마세요. 곧바로 문항부터 시작해서 문항들 → [정답 및 해설] → [정답표] 순서로만 출력하세요. 단, 지문에 표시했던 ㉠ ⓐ [A] 등의 기호는 앞 회차와 동일한 위치를 가리키도록 일관되게 사용하세요."
+        # 자료를 여러 개 올린 경우, 이번 회차에는 그중 하나만 첨부해서 보낸다.
+        # 그래도 "다른 자료를 기웃거리지 말라"고 못 박아 둬야 결과가 안정적이다.
+        source_block = ""
+        if multi:
+            source_block = f"""
+[이번 회차에 사용할 자료 - 반드시 지킬 것]
+- 이번에 출제할 자료는 '{source["label"]}' 하나뿐입니다. 지금 첨부된 이 자료의 내용만으로 {n}문항을 모두 출제하세요.
+- 이 자료에 담긴 지문이 여러 편이면, {n}문항이 그 지문들에 고르게 걸치도록 배분하세요.
+- 이 자료에 없는 다른 작품이나 글을 끌어와서 출제하지 마세요.
+"""
+
         return f"""다음 지문을 바탕으로 {n}문항의 객관식 문제를 출제해줘.
 
 [출력 형식 규칙 - 반드시 지켜야 함]
@@ -1499,16 +1511,50 @@ async def generate_stream(
 {option_quality_block}
 {example_block}
 {build_difficulty_block(tiers)}{types_block}
-{principle_block}
-{q_text}"""
+{principle_block}{source_block}
+{source["text"]}"""
 
-    # 💡 첨부된 자료 파일(교과서 PDF/이미지 등)은 모든 회차에 동일하게 전달한다.
-    file_parts = []
+    # 💡 자료를 '출제 원천' 단위로 나눈다.
+    #    예전에는 여러 파일을 한 번에 통째로 붙여서 보냈는데, 그러면 AI가 그중
+    #    한 파일만 붙잡고 전 문항을 뽑아버렸다. 이제는 자료 하나당 따로 요청을 보내고,
+    #    그 자료에서 몇 문항을 낼지도 원장님이 정한 수를 그대로 따른다.
+    sources = []
+    if q_text.strip():
+        sources.append({"label": "직접 입력한 지문", "text": q_text.strip(), "parts": []})
     if files:
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                file_parts.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
+                sources.append({
+                    "label": f.filename,
+                    "text": "",
+                    "parts": [{"mime_type": f.content_type or "application/octet-stream", "data": file_bytes}],
+                })
+    if not sources:
+        sources = [{"label": "", "text": q_text, "parts": []}]
+
+    def split_evenly(amount: int, n: int) -> list:
+        """20문항을 6개 자료에 나누면 4,4,3,3,3,3 처럼 최대한 고르게 쪼갠다."""
+        if n <= 0:
+            return []
+        base, rem = divmod(max(0, amount), n)
+        return [base + (1 if i < rem else 0) for i in range(n)]
+
+    # 원장님이 자료별 문항 수를 정해 보냈으면 그대로 쓰고, 아니면 고르게 나눈다.
+    counts = None
+    if source_counts.strip():
+        try:
+            parsed = json.loads(source_counts)
+            if (isinstance(parsed, list) and len(parsed) == len(sources)
+                    and all(isinstance(x, int) and x >= 0 for x in parsed)
+                    and sum(parsed) == total):
+                counts = parsed
+        except (ValueError, TypeError):
+            counts = None
+    if counts is None:
+        counts = split_evenly(total, len(sources))
+    for s, c in zip(sources, counts):
+        s["count"] = c
 
     def split_sections(text: str):
         """AI 출력에서 (지문+문항) / [정답 및 해설] / [정답표] 세 부분을 분리한다."""
@@ -1528,23 +1574,40 @@ async def generate_stream(
 
         explanations, answer_tables = [], []
         cursor = start_num
-        for idx, tiers in enumerate(batches):
-            prompt = build_prompt(tiers, cursor, include_passage=(idx == 0))
-            try:
-                resp = await asyncio.to_thread(model.generate_content, [prompt] + file_parts)
-                text = resp.text
-            except Exception as e:
-                yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다: {e}"
-                return
+        tier_cursor = 0
+        active = [s for s in sources if s["count"] > 0] or sources[:1]
+        multi = len(active) > 1
 
-            body, expl, table = split_sections(text)
-            if body:
-                yield body + "\n\n"
-            if expl:
-                explanations.append(expl)
-            if table:
-                answer_tables.append(table)
-            cursor += len(tiers) if tiers else total
+        for src_idx, source in enumerate(active):
+            n_src = source["count"] if source["count"] > 0 else total
+            src_tiers = tier_pool[tier_cursor:tier_cursor + n_src]
+            tier_cursor += n_src
+
+            # 한 자료에서 20문항이 넘으면 그 자료 안에서 다시 나눠 요청한다
+            sub_batches = [src_tiers[i:i + QUESTIONS_PER_BATCH]
+                           for i in range(0, len(src_tiers), QUESTIONS_PER_BATCH)] or [[]]
+
+            if multi:
+                yield f"\n※ [{source['label']}] 자료에서 {n_src}문항\n\n"
+
+            for b_idx, tiers in enumerate(sub_batches):
+                prompt = build_prompt(tiers, cursor, include_passage=(b_idx == 0),
+                                      source=source, multi=multi)
+                try:
+                    resp = await asyncio.to_thread(model.generate_content, [prompt] + source["parts"])
+                    text = resp.text
+                except Exception as e:
+                    yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다: {e}"
+                    return
+
+                body, expl, table = split_sections(text)
+                if body:
+                    yield body + "\n\n"
+                if expl:
+                    explanations.append(expl)
+                if table:
+                    answer_tables.append(table)
+                cursor += len(tiers) if tiers else total
 
         if explanations:
             yield "[정답 및 해설]\n" + "\n\n".join(explanations) + "\n\n"
