@@ -1368,6 +1368,7 @@ async def generate_stream(
     cnt_mid: int = Form(0),
     cnt_low: int = Form(0),
     q_text: str = Form(""),
+    q_texts: str = Form(""),
     q_principle: str = Form(""),
     start_num: int = Form(1),
     source_counts: str = Form(""),
@@ -1492,11 +1493,16 @@ async def generate_stream(
         # 그래도 "다른 자료를 기웃거리지 말라"고 못 박아 둬야 결과가 안정적이다.
         source_block = ""
         if multi:
+            if source["parts"]:
+                where = "지금 첨부된 이 자료"
+                spread = f"\n- 이 자료에 지문이 여러 편 담겨 있다면, {n}문항이 그 지문들에 고르게 걸치도록 배분하세요."
+            else:
+                where = "아래에 주어진 이 지문"
+                spread = ""
             source_block = f"""
 [이번 회차에 사용할 자료 - 반드시 지킬 것]
-- 이번에 출제할 자료는 '{source["label"]}' 하나뿐입니다. 지금 첨부된 이 자료의 내용만으로 {n}문항을 모두 출제하세요.
-- 이 자료에 담긴 지문이 여러 편이면, {n}문항이 그 지문들에 고르게 걸치도록 배분하세요.
-- 이 자료에 없는 다른 작품이나 글을 끌어와서 출제하지 마세요.
+- 이번에 출제할 대상은 '{source["label"]}' 하나뿐입니다. {where}의 내용만으로 {n}문항을 모두 출제하세요.{spread}
+- 여기에 없는 다른 작품이나 글을 끌어와서 출제하지 마세요. 앞 회차에서 다룬 지문도 다시 쓰지 마세요.
 """
 
         return f"""다음 지문을 바탕으로 {n}문항의 객관식 문제를 출제해줘.
@@ -1518,9 +1524,23 @@ async def generate_stream(
     #    예전에는 여러 파일을 한 번에 통째로 붙여서 보냈는데, 그러면 AI가 그중
     #    한 파일만 붙잡고 전 문항을 뽑아버렸다. 이제는 자료 하나당 따로 요청을 보내고,
     #    그 자료에서 몇 문항을 낼지도 원장님이 정한 수를 그대로 따른다.
+    # 붙여넣은 지문들 — 한 덩어리로 합치지 않고 지문마다 따로 출제한다.
+    passages = []
+    if q_texts.strip():
+        try:
+            parsed = json.loads(q_texts)
+            if isinstance(parsed, list):
+                passages = [str(t).strip() for t in parsed if str(t).strip()]
+        except (ValueError, TypeError):
+            passages = []
+    if not passages and q_text.strip():
+        passages = [q_text.strip()]
+
     sources = []
-    if q_text.strip():
-        sources.append({"label": "직접 입력한 지문", "text": q_text.strip(), "parts": []})
+    for i, text in enumerate(passages):
+        head = " ".join(text.split())[:24]
+        label = f"지문 {i + 1}" + (f" — {head}…" if head else "")
+        sources.append({"label": label, "text": text, "parts": []})
     if files:
         for f in files:
             if f.filename:
@@ -1532,6 +1552,9 @@ async def generate_stream(
                 })
     if not sources:
         sources = [{"label": "", "text": q_text, "parts": []}]
+    # 지문 하나 + 파일 없음 = 예전과 똑같은 상황이므로 자료 구분 문구를 붙이지 않는다
+    if len(sources) == 1 and not sources[0]["parts"]:
+        sources[0]["label"] = ""
 
     def split_evenly(amount: int, n: int) -> list:
         """20문항을 6개 자료에 나누면 4,4,3,3,3,3 처럼 최대한 고르게 쪼갠다."""
