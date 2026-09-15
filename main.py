@@ -3162,12 +3162,24 @@ async def make_summary(req: CounselNameReq):
 #   원장님이 이미 엑셀로 관리하시는 입결 자료를 그대로 올려 쓴다.
 #   파일마다 열 구성이 달라서, 먼저 열 이름을 읽어 보여주고
 #   "이 열이 대학, 이 열이 등급" 하고 짝지어 받은 뒤에 저장한다.
-UNIV_CHUNK_SIZE = 400          # Firestore 문서 하나에 담을 행 수
-UNIV_MAX_ROWS = 8000
+UNIV_CHUNK_SIZE = 700          # Firestore 문서 하나에 담을 행 수
+UNIV_MAX_ROWS = 30000
 
 
-def _read_sheet(raw: bytes, filename: str):
-    """엑셀(.xlsx) 또는 CSV를 읽어 [[셀,...], ...] 로 돌려준다."""
+def _sheet_names(raw: bytes, filename: str):
+    if (filename or "").lower().endswith(".csv"):
+        return ["(csv)"]
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    names = list(wb.sheetnames)
+    wb.close()
+    return names
+
+
+def _read_sheet(raw: bytes, filename: str, sheet: str = "", max_rows: int = 0):
+    """엑셀(.xlsx) 또는 CSV를 읽어 [[셀,...], ...] 로 돌려준다.
+    💡 실제 입결 파일은 시트가 여러 개이고 첫 시트가 표지인 경우가 많아
+       시트를 고를 수 있어야 한다."""
     name = (filename or "").lower()
     if name.endswith(".csv"):
         for enc in ("utf-8-sig", "cp949", "euc-kr", "utf-8"):
@@ -3186,42 +3198,113 @@ def _read_sheet(raw: bytes, filename: str):
     except ImportError:
         raise ValueError("서버에 엑셀 읽기 기능이 준비되지 않았습니다. 잠시 후 다시 시도해주세요.")
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
-    ws = wb[wb.sheetnames[0]]
+    target = sheet if sheet and sheet in wb.sheetnames else wb.sheetnames[0]
+    ws = wb[target]
+    cap = max_rows or (UNIV_MAX_ROWS + 40)
     rows = []
     for r in ws.iter_rows(values_only=True):
-        rows.append(["" if c is None else str(c).strip() for c in r])
-        if len(rows) > UNIV_MAX_ROWS + 5:
+        rows.append(["" if c is None else str(c).strip().replace("\n", " ") for c in r])
+        if len(rows) >= cap:
             break
     wb.close()
     return rows
 
 
-def _trim_rows(rows):
-    """앞뒤의 완전히 빈 줄을 걷어낸다."""
-    out = [r for r in rows if any(str(c).strip() for c in r)]
+def _is_dummy_row(row) -> bool:
+    """'*' 나 '-' 만 늘어놓은 안내용 더미 줄인지."""
+    vals = [c for c in row if str(c).strip()]
+    return bool(vals) and all(str(c).strip() in ("*", "-", "·", "–") for c in vals)
+
+
+def _merge_header(rows, header_idx: int, span: int = 1):
+    """헤더가 두 줄로 나뉜 파일이 많다. 윗줄과 아랫줄을 합쳐 하나로 만든다.
+    예) 윗줄 '최종등록자 대학별환산' + 아랫줄 '70% cut' → '최종등록자 대학별환산 70% cut'"""
+    if header_idx >= len(rows):
+        return []
+    width = max((len(r) for r in rows[header_idx:header_idx + span + 6]), default=0)
+
+    def at(ri, ci):
+        if ri >= len(rows):
+            return ""
+        r = rows[ri]
+        return r[ci] if ci < len(r) else ""
+
+    out = []
+    for c in range(width):
+        parts = []
+        # 병합 셀 때문에 윗줄이 비어 있으면 왼쪽에서 이어받는다
+        top = at(header_idx, c)
+        if not top:
+            for back in range(c - 1, -1, -1):
+                prev = at(header_idx, back)
+                if prev:
+                    # 바로 왼쪽 칸이 비어 있던 구간만 이어받는다
+                    if all(not at(header_idx, k) for k in range(back + 1, c + 1)):
+                        top = prev
+                    break
+        if top:
+            parts.append(top)
+        for s in range(1, span + 1):
+            sub = at(header_idx + s, c)
+            if sub and sub not in parts:
+                parts.append(sub)
+        label = " ".join(parts).strip()
+        out.append(label or f"(이름 없는 {c + 1}번째 열)")
     return out
 
 
+def _guess_header_row(rows) -> int:
+    """값이 가장 많이 채워진 앞쪽 줄을 헤더로 본다."""
+    best, best_score = 0, -1
+    for i, r in enumerate(rows[:25]):
+        filled = sum(1 for c in r if str(c).strip())
+        # 숫자만 잔뜩 있는 줄은 데이터일 가능성이 높으니 점수를 깎는다
+        numeric = sum(1 for c in r if _num(c) is not None)
+        score = filled - numeric * 2
+        if score > best_score:
+            best, best_score = i, score
+    return best
+
+
 @app.post("/api/admin/univ_table/preview", dependencies=[Depends(verify_admin)])
-async def preview_univ_table(file: UploadFile = File(...)):
-    """올린 파일의 열 이름과 앞부분 몇 줄을 돌려준다 (짝짓기 화면용)."""
+async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form(""),
+                             header_row: int = Form(-1), header_span: int = Form(1)):
+    """올린 파일의 시트 목록·열 이름·앞부분 몇 줄을 돌려준다 (짝짓기 화면용)."""
     raw = await file.read()
     if not raw:
         return {"success": False, "detail": "빈 파일입니다."}
     try:
-        rows = _trim_rows(_read_sheet(raw, file.filename))
+        sheets = _sheet_names(raw, file.filename)
+        rows = _read_sheet(raw, file.filename, sheet, max_rows=80)
     except Exception as e:
         return {"success": False, "detail": f"파일을 읽지 못했습니다: {e}"}
-    if len(rows) < 2:
-        return {"success": False, "detail": "내용이 있는 줄이 2줄 이상이어야 합니다. (첫 줄은 열 이름)"}
+    if not rows:
+        return {"success": False, "detail": "내용이 없는 시트입니다."}
 
-    header = rows[0]
-    width = max(len(r) for r in rows[:30])
-    header = [(header[i] if i < len(header) and header[i] else f"(이름 없는 {i + 1}번째 열)")
-              for i in range(width)]
-    sample = [[(r[i] if i < len(r) else "") for i in range(width)] for r in rows[1:6]]
-    return {"success": True, "columns": header, "sample": sample,
-            "row_count": len(rows) - 1, "filename": file.filename}
+    hidx = header_row if header_row >= 0 else _guess_header_row(rows)
+    hidx = max(0, min(hidx, len(rows) - 1))
+    span = max(0, min(int(header_span or 0), 3))
+    columns = _merge_header(rows, hidx, span)
+
+    # 헤더 아래 실제 데이터 줄
+    body = [r for r in rows[hidx + span + 1:] if any(str(c).strip() for c in r) and not _is_dummy_row(r)]
+    width = len(columns)
+    sample = [[(r[i] if i < len(r) else "") for i in range(width)] for r in body[:5]]
+
+    # 전체 줄 수는 따로 세어 본다 (미리보기는 80줄만 읽었으므로)
+    try:
+        all_rows = _read_sheet(raw, file.filename, sheet, max_rows=UNIV_MAX_ROWS + 40)
+        total = len([r for r in all_rows[hidx + span + 1:]
+                     if any(str(c).strip() for c in r) and not _is_dummy_row(r)])
+    except Exception:
+        total = len(body)
+
+    # 헤더를 고르기 쉽도록 앞 15줄을 그대로 보여준다
+    head_preview = [[(r[i] if i < len(r) else "") for i in range(min(width or 12, 14))] for r in rows[:15]]
+
+    return {"success": True, "sheets": sheets, "sheet": sheet or (sheets[0] if sheets else ""),
+            "header_row": hidx, "header_span": span, "columns": columns, "sample": sample,
+            "row_count": total, "filename": file.filename, "head_preview": head_preview}
 
 
 @app.post("/api/admin/univ_table/import", dependencies=[Depends(verify_admin)])
@@ -3229,9 +3312,12 @@ async def import_univ_table(
     file: UploadFile = File(...),
     mapping: str = Form(...),
     label: str = Form(""),
+    sheet: str = Form(""),
+    header_row: int = Form(-1),
+    header_span: int = Form(1),
+    append: bool = Form(False),
 ):
-    """짝지어 준 열 구성대로 입결 자료를 저장한다.
-    mapping 예: {"univ":0,"major":2,"track":3,"type":4,"cut":5,"metric":"grade"}"""
+    """짝지어 준 열 구성대로 입결 자료를 저장한다."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     try:
@@ -3241,11 +3327,16 @@ async def import_univ_table(
 
     raw = await file.read()
     try:
-        rows = _trim_rows(_read_sheet(raw, file.filename))
+        rows = _read_sheet(raw, file.filename, sheet, max_rows=UNIV_MAX_ROWS + 40)
     except Exception as e:
         return {"success": False, "detail": f"파일을 읽지 못했습니다: {e}"}
-    if len(rows) < 2:
-        return {"success": False, "detail": "저장할 내용이 없습니다."}
+
+    hidx = header_row if header_row >= 0 else _guess_header_row(rows)
+    span = max(0, min(int(header_span or 0), 3))
+    body = [r for r in rows[hidx + span + 1:]
+            if any(str(c).strip() for c in r) and not _is_dummy_row(r)]
+    if not body:
+        return {"success": False, "detail": "저장할 내용이 없습니다. 헤더 줄을 제대로 골랐는지 확인해주세요."}
 
     def cell(r, key):
         idx = m.get(key)
@@ -3254,54 +3345,87 @@ async def import_univ_table(
         idx = int(idx)
         return str(r[idx]).strip() if idx < len(r) else ""
 
-    metric = "percentile" if str(m.get("metric", "grade")) == "percentile" else "grade"
+    fixed_metric = str(m.get("metric", "grade"))
+    if fixed_metric not in ("grade", "percentile", "score", "eng_grade"):
+        fixed_metric = "grade"
+
+    def metric_of(r):
+        # 점수 종류가 행마다 다른 파일(예: '점수구분' 열에 백분위/환산점수)을 위해
+        raw_txt = cell(r, "metric_col")
+        if not raw_txt:
+            return fixed_metric
+        t = raw_txt.replace(" ", "")
+        if "백분위" in t:
+            return "percentile"
+        if "등급" in t:
+            return "grade"
+        if "점수" in t or "환산" in t or "표준" in t or "원점" in t:
+            return "score"
+        return fixed_metric
+
     entries, skipped = [], 0
-    for r in rows[1:]:
+    for r in body:
         univ = cell(r, "univ")
         cut = _num(cell(r, "cut"))
         if not univ or cut is None:
             skipped += 1
             continue
-        entries.append({
+        e = {
             "univ": univ[:60],
             "major": cell(r, "major")[:80],
             "track": cell(r, "track")[:20],
-            "type": cell(r, "type")[:20],
+            "type": cell(r, "type")[:40],
             "cut": round(cut, 3),
-            "metric": metric,
+            "metric": metric_of(r),
             "note": cell(r, "note")[:120],
-        })
+        }
+        year = cell(r, "year")
+        if year:
+            e["year"] = year[:10]
+        region = cell(r, "region")
+        if region:
+            e["region"] = region[:20]
+        eng = _num(cell(r, "eng"))
+        if eng is not None:
+            e["eng"] = round(eng, 2)
+        entries.append(e)
         if len(entries) >= UNIV_MAX_ROWS:
             break
 
     if not entries:
-        return {"success": False, "detail": "대학 이름과 기준 점수를 모두 읽어낸 줄이 하나도 없습니다. 열 짝짓기를 확인해주세요."}
+        return {"success": False, "detail": "대학 이름과 기준 점수를 모두 읽어낸 줄이 하나도 없습니다. 헤더 줄과 열 짝짓기를 확인해주세요."}
 
-    # 예전 자료를 지우고 새로 넣는다
-    old = list(db.collection("univ_table").stream())
-    for d in old:
+    existing = []
+    if append:
+        existing = load_univ_table()
+    for d in list(db.collection("univ_table").stream()):
         d.reference.delete()
-    for i in range(0, len(entries), UNIV_CHUNK_SIZE):
-        db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:03d}").set(
-            {"rows": entries[i:i + UNIV_CHUNK_SIZE]}
+
+    merged = (existing + entries)[:UNIV_MAX_ROWS]
+    for i in range(0, len(merged), UNIV_CHUNK_SIZE):
+        db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
+            {"rows": merged[i:i + UNIV_CHUNK_SIZE]}
         )
+    meta_prev = load_univ_meta() if append else {}
+    labels = [x for x in [meta_prev.get("label", ""), (label or file.filename or "").strip()] if x]
     db.collection("settings").document("univ_table_meta").set({
-        "label": (label or file.filename or "입결 자료").strip()[:80],
-        "count": len(entries),
-        "metric": metric,
+        "label": " + ".join(dict.fromkeys(labels))[:160] or "입결 자료",
+        "count": len(merged),
+        "metric": fixed_metric,
         "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
-    # 💡 열을 잘못 짝지으면 우연히 값이 맞는 줄만 몇 개 들어가고 나머지는 조용히 버려진다.
-    #    그대로 두면 엉뚱한 자료로 상담하게 되므로, 버린 줄이 더 많으면 경고를 함께 보낸다.
-    total_rows = len(rows) - 1
+
+    total_rows = len(body)
     warning = ""
     if skipped > len(entries):
         warning = (f"전체 {total_rows}줄 중 {len(entries)}줄만 읽었고 {skipped}줄은 건너뛰었습니다. "
-                   f"'대학' 열과 '기준 점수' 열을 제대로 골랐는지 확인해주세요.")
+                   f"헤더 줄과 '대학'·'기준 점수' 열을 다시 확인해주세요.")
+    elif len(entries) >= UNIV_MAX_ROWS:
+        warning = f"자료가 너무 많아 앞에서부터 {UNIV_MAX_ROWS:,}줄까지만 저장했습니다."
     elif skipped:
         warning = f"{skipped}줄은 대학 이름이나 기준 점수가 비어 있어 건너뛰었습니다."
-    return {"success": True, "count": len(entries), "skipped": skipped,
-            "total_rows": total_rows, "metric": metric, "warning": warning}
+    return {"success": True, "count": len(entries), "stored": len(merged), "skipped": skipped,
+            "total_rows": total_rows, "metric": fixed_metric, "warning": warning}
 
 
 def load_univ_table() -> list:
@@ -3373,6 +3497,13 @@ def build_target_gap(view: dict) -> dict:
 
     naesin_avg = view["naesin"]["avg"]
     pct_avg = view["mock"]["pct_avg"]
+    # 영어 절대평가 등급과 원점수 계열 성적도 비교 대상이 될 수 있다
+    eng_grade = None
+    for a in (view["mock"].get("absolute") or []):
+        if "영어" in str(a.get("subject", "")):
+            eng_grade = _num(a.get("grade"))
+            break
+    mock_score = _num((view.get("profile") or {}).get("mock_score"))
 
     items = []
     for r in hits[:40]:
@@ -3381,17 +3512,18 @@ def build_target_gap(view: dict) -> dict:
         if cut is None:
             continue
         if metric == "grade":
-            mine = naesin_avg
-            # 등급은 낮을수록 좋다
+            mine, unit = naesin_avg, "등급"
+            gap = None if mine is None else round(mine - cut, 2)          # 등급은 낮을수록 좋다
+        elif metric == "percentile":
+            mine, unit = pct_avg, "백분위"
+            gap = None if mine is None else round(cut - mine, 2)          # 백분위는 높을수록 좋다
+        elif metric == "eng_grade":
+            mine, unit = eng_grade, "영어 등급"
             gap = None if mine is None else round(mine - cut, 2)
-            reach = None if gap is None else gap <= 0
-            unit = "등급"
-        else:
-            mine = pct_avg
-            # 백분위는 높을수록 좋다
+        else:   # score — 원점수·표준점수·대학별 환산점수
+            mine, unit = mock_score, "점"
             gap = None if mine is None else round(cut - mine, 2)
-            reach = None if gap is None else gap <= 0
-            unit = "백분위"
+        reach = None if gap is None else gap <= 0
         items.append({
             "univ": r.get("univ", ""), "major": r.get("major", ""),
             "track": r.get("track", ""), "type": r.get("type", ""),
