@@ -3779,6 +3779,47 @@ def match_univ_rows(rows: list, univ: str, major: str = "") -> list:
     return hit
 
 
+def student_scores(view: dict) -> dict:
+    """입결 자료와 견줄 학생 성적을 한자리에 모은다."""
+    eng = None
+    for a in (view["mock"].get("absolute") or []):
+        if "영어" in str(a.get("subject", "")):
+            eng = _num(a.get("grade"))
+            break
+    return {
+        "grade": view["naesin"]["avg"],
+        "percentile": view["mock"]["pct_avg"],
+        "score": view["mock"].get("raw_sum"),
+        "eng_grade": eng,
+    }
+
+
+def compare_univ_row(r: dict, mine_all: dict):
+    """입결 한 줄을 학생 성적과 견준다. 점수 종류마다 좋고 나쁨의 방향이 다르다."""
+    metric = r.get("metric", "grade")
+    cut = _num(r.get("cut"))
+    if cut is None:
+        return None
+    if metric == "grade":
+        mine, unit, lower_is_better = mine_all["grade"], "등급", True
+    elif metric == "percentile":
+        mine, unit, lower_is_better = mine_all["percentile"], "백분위", False
+    elif metric == "eng_grade":
+        mine, unit, lower_is_better = mine_all["eng_grade"], "영어 등급", True
+    else:   # score — 원점수·표준점수·대학별 환산점수
+        mine, unit, lower_is_better = mine_all["score"], "점", False
+    gap = None if mine is None else round((mine - cut) if lower_is_better else (cut - mine), 2)
+    return {
+        "univ": r.get("univ", ""), "major": r.get("major", ""),
+        "track": r.get("track", ""), "type": r.get("type", ""),
+        "year": r.get("year", ""), "kind": r.get("kind", "susi"),
+        "cut": cut, "metric": metric, "unit": unit,
+        "mine": mine, "gap": gap,
+        "reach": None if gap is None else gap <= 0,
+        "eng_cut": r.get("eng"), "note": r.get("note", ""),
+    }
+
+
 def build_target_gap(view: dict) -> dict:
     """지금 성적으로 목표 대학까지 얼마나 모자란지 수시·정시로 갈라 계산한다."""
     profile = view.get("profile") or {}
@@ -3797,45 +3838,10 @@ def build_target_gap(view: dict) -> dict:
         return {"status": "not_found", "univ": univ, "major": major,
                 "message": f"입결 자료에서 '{univ}{(' ' + major) if major else ''}'을(를) 찾지 못했습니다. 대학 이름이 자료와 같은지 확인해주세요."}
 
-    naesin_avg = view["naesin"]["avg"]
-    pct_avg = view["mock"]["pct_avg"]
-    raw_sum = view["mock"].get("raw_sum")
-    eng_grade = None
-    for a in (view["mock"].get("absolute") or []):
-        if "영어" in str(a.get("subject", "")):
-            eng_grade = _num(a.get("grade"))
-            break
-
-    def one(r):
-        metric = r.get("metric", "grade")
-        cut = _num(r.get("cut"))
-        if cut is None:
-            return None
-        if metric == "grade":
-            mine, unit = naesin_avg, "등급"
-            gap = None if mine is None else round(mine - cut, 2)          # 등급은 낮을수록 좋다
-        elif metric == "percentile":
-            mine, unit = pct_avg, "백분위"
-            gap = None if mine is None else round(cut - mine, 2)          # 백분위는 높을수록 좋다
-        elif metric == "eng_grade":
-            mine, unit = eng_grade, "영어 등급"
-            gap = None if mine is None else round(mine - cut, 2)
-        else:   # score — 원점수·표준점수·대학별 환산점수
-            mine, unit = raw_sum, "점"
-            gap = None if mine is None else round(cut - mine, 2)
-        return {
-            "univ": r.get("univ", ""), "major": r.get("major", ""),
-            "track": r.get("track", ""), "type": r.get("type", ""),
-            "year": r.get("year", ""), "kind": r.get("kind", "susi"),
-            "cut": cut, "metric": metric, "unit": unit,
-            "mine": mine, "gap": gap,
-            "reach": None if gap is None else gap <= 0,
-            "eng_cut": r.get("eng"), "note": r.get("note", ""),
-        }
-
+    mine_all = student_scores(view)
     groups = {"susi": [], "jeongsi": []}
     for r in hits[:200]:
-        item = one(r)
+        item = compare_univ_row(r, mine_all)
         if item:
             groups[item["kind"] if item["kind"] in groups else "susi"].append(item)
 
@@ -3853,6 +3859,63 @@ def build_target_gap(view: dict) -> dict:
     if not out["susi"]["count"] and not out["jeongsi"]["count"]:
         return {"status": "not_found", "univ": univ, "major": major,
                 "message": "찾은 줄에 기준 점수가 비어 있습니다."}
+    return out
+
+
+class UnivMajorsReq(BaseModel):
+    student_name: str
+    univ: str
+    kind: str = ""
+    only_reachable: bool = False
+
+
+@app.post("/api/admin/univ_table/majors", dependencies=[Depends(verify_admin)])
+def get_univ_majors(req: UnivMajorsReq):
+    """대학 하나를 골라, 그 대학에서 지금 성적으로 가능한 학과를 찾아준다.
+    지원 가능 라인에 뜬 대학을 눌렀을 때 쓴다."""
+    univ = req.univ.strip()
+    if not univ:
+        return {"success": False, "detail": "대학 이름이 비어 있습니다."}
+
+    rows = load_univ_table()
+    if not rows:
+        return {"success": False, "detail": "입결 자료가 아직 올라오지 않았습니다. 왼쪽 '입결 자료(엑셀) 관리'에서 먼저 올려주세요."}
+
+    hits = match_univ_rows(rows, univ, "")
+    if not hits:
+        return {"success": False,
+                "detail": f"입결 자료에서 '{univ}'을(를) 찾지 못했습니다.\n'경기권 대학'처럼 묶어 부르는 이름은 찾을 수 없습니다. 기준표에 실제 대학 이름을 적어주세요."}
+
+    view = build_counsel_view(req.student_name.strip()) if req.student_name.strip() else None
+    mine_all = student_scores(view) if view else {"grade": None, "percentile": None, "score": None, "eng_grade": None}
+
+    groups = {"susi": [], "jeongsi": []}
+    for r in hits[:600]:
+        item = compare_univ_row(r, mine_all)
+        if not item:
+            continue
+        k = item["kind"] if item["kind"] in groups else "susi"
+        if req.kind and req.kind in groups and k != req.kind:
+            continue
+        if req.only_reachable and item["reach"] is not True:
+            continue
+        groups[k].append(item)
+
+    out = {"success": True, "univ": univ, "mine": mine_all}
+    for k in ("susi", "jeongsi"):
+        items = groups[k]
+        # 도달한 것을 먼저, 그 안에서는 기준이 높은(=좋은) 학과부터
+        reached = sorted([i for i in items if i["reach"] is True],
+                         key=lambda x: x["gap"])
+        near = sorted([i for i in items if i["reach"] is False], key=lambda x: x["gap"])
+        unknown = [i for i in items if i["reach"] is None]
+        out[k] = {
+            "reached": reached[:80],
+            "near": near[:80],
+            "unknown": unknown[:80],
+            "count": len(items),
+            "reach_count": len(reached),
+        }
     return out
 
 
