@@ -977,6 +977,99 @@ class ExamSubmitRequest(BaseModel):
     answers: list
 
 
+@app.post("/api/admin/extract_quiz", dependencies=[Depends(verify_admin)])
+async def extract_quiz(files: List[UploadFile] = File(...)):
+    """문제지를 찍거나 캡처한 이미지, 또는 PDF에서 객관식 문항을 읽어낸다.
+    퀴즈를 낼 때 문제와 보기를 하나하나 타이핑하지 않아도 되도록 추가."""
+    parts = []
+    for f in files:
+        if not f.filename:
+            continue
+        raw = await f.read()
+        if not raw:
+            continue
+        name = f.filename.lower()
+        if name.endswith(".pdf"):
+            # PDF는 페이지를 그림으로 바꿔 넘긴다 (표·기호가 많아 글자만 뽑으면 어긋난다)
+            try:
+                doc = fitz.open(stream=raw, filetype="pdf")
+                for page in doc[:8]:
+                    pix = page.get_pixmap(dpi=150)
+                    parts.append({"mime_type": "image/png", "data": pix.tobytes("png")})
+                doc.close()
+            except Exception as e:
+                return {"success": False, "detail": f"PDF를 읽지 못했습니다: {e}"}
+        else:
+            parts.append({"mime_type": f.content_type or "image/png", "data": raw})
+
+    if not parts:
+        return {"success": False, "detail": "읽을 수 있는 파일이 없습니다. 이미지나 PDF를 올려주세요."}
+
+    prompt = """첨부된 자료는 객관식 문제지입니다. 여기 실린 문항을 모두 읽어내세요.
+
+[반드시 지킬 것]
+- 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
+- 형식:
+{"questions":[{"q_text":"문제 내용","options":["보기1","보기2","보기3","보기4","보기5"],"answer":3,"score":2}]}
+- q_text에는 문항 번호를 빼고 문제 내용만 적으세요. 지문이 딸려 있으면 문제를 푸는 데 꼭 필요한 부분만 앞에 붙이세요.
+- options는 보기를 순서대로 담되, ①②③④⑤ 같은 번호 기호는 빼고 내용만 적으세요.
+- 보기가 5개보다 적으면 있는 만큼만 담고, 빈 칸을 지어내지 마세요.
+- answer는 정답 보기의 번호(1~5)입니다. 자료에 정답이 표시되어 있지 않으면 null로 두세요. 절대 추측하지 마세요.
+- score는 배점입니다. 자료에 배점이 적혀 있으면 그 숫자를, 없으면 2를 쓰세요.
+- 서술형·주관식 문항은 건너뛰세요. 객관식만 담습니다.
+- 자료가 여러 장이면 모두 합쳐 하나의 JSON으로 만드세요. 같은 문항이 두 번 들어가지 않게 하세요."""
+
+    try:
+        resp = await asyncio.to_thread(lambda: safe_generate([prompt] + parts))
+        text = (resp.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"문제를 읽지 못했습니다: {str(e)}"}
+
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return {"success": False, "detail": "문항을 찾지 못했습니다. 문제와 보기가 또렷하게 보이는 자료인지 확인해주세요."}
+    try:
+        parsed = json.loads(match.group(0))
+    except ValueError:
+        return {"success": False, "detail": "읽어낸 내용을 정리하지 못했습니다. 조금 더 선명한 자료로 다시 시도해주세요."}
+
+    questions, no_answer = [], 0
+    for q in (parsed.get("questions") or []):
+        q_text = str(q.get("q_text", "") or "").strip()
+        if not q_text:
+            continue
+        opts = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()]
+        if len(opts) < 2:
+            continue
+        opts = (opts + ["", "", "", "", ""])[:5]
+
+        ans = q.get("answer")
+        try:
+            ans = int(ans)
+            if not (1 <= ans <= 5) or not opts[ans - 1]:
+                ans = None
+        except (TypeError, ValueError):
+            ans = None
+        if ans is None:
+            no_answer += 1
+
+        try:
+            score = int(q.get("score", 2))
+        except (TypeError, ValueError):
+            score = 2
+
+        questions.append({"q_text": q_text[:500], "options": opts,
+                          "answer": ans, "score": max(1, min(100, score))})
+        if len(questions) >= 60:
+            break
+
+    if not questions:
+        return {"success": False, "detail": "객관식 문항을 찾지 못했습니다. 문제와 보기가 함께 보이는 자료여야 합니다."}
+
+    return {"success": True, "questions": questions, "count": len(questions),
+            "no_answer": no_answer, "pages": len(parts)}
+
+
 @app.post("/api/admin/extract_answers_image", dependencies=[Depends(verify_admin)])
 async def extract_answers_image(files: List[UploadFile] = File(...)):
     """정답표를 찍거나 캡처한 이미지에서 문항별 정답을 읽어낸다.
