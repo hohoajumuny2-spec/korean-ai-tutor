@@ -2302,6 +2302,44 @@ def _pct_to_grade(pct: float, scale: str) -> float:
     return float(len(mids))
 
 
+def pct_to_band(pct, scale: str):
+    """석차백분율(상위 몇 %)을 등급으로. 등급 구간이 누적 비율로 정해져 있어
+    이 변환은 근사가 아니라 정확하다.
+    예) 상위 7.2% → 9등급제 2등급(4~11%), 5등급제 1등급(0~10%)"""
+    v = _num(pct)
+    if v is None:
+        return None
+    scale = normalize_scale(scale)
+    v = max(0.0, min(100.0, v))
+    for i, c in enumerate(GRADE_CUTS[scale]):
+        if v <= c:
+            return i + 1
+    return len(GRADE_CUTS[scale])
+
+
+def pct_to_grade_exact(pct, scale: str):
+    """평균 석차백분율을 등급으로 바꾼다. 소수 등급이 나오도록 구간 안에서 비례 배분."""
+    v = _num(pct)
+    if v is None:
+        return None
+    scale = normalize_scale(scale)
+    cuts = GRADE_CUTS[scale]
+    v = max(0.0, min(100.0, v))
+    # 등급 한가운데를 그 등급의 대표값으로 보고, 구간 안에서는 직선으로 잇는다.
+    # 그래야 평균 백분율 4%가 1등급, 11%가 2등급처럼 자연스럽게 이어진다.
+    mids = GRADE_MIDS[scale]
+    if v <= mids[0]:
+        return 1.0
+    if v >= mids[-1]:
+        return float(len(mids))
+    for i in range(len(mids) - 1):
+        if mids[i] <= v <= mids[i + 1]:
+            span = mids[i + 1] - mids[i]
+            frac = 0.0 if span <= 0 else (v - mids[i]) / span
+            return round((i + 1) + frac, 2)
+    return float(len(mids))
+
+
 def convert_grade_scale(grade, frm, to):
     """등급 하나를 다른 체계로 환산한다. 같은 체계면 그대로 돌려준다."""
     g = _num(grade)
@@ -2357,12 +2395,22 @@ def summarize_naesin(rows: list, scale: str = "9") -> dict:
     other = "5" if scale == "9" else "9"
     tot_w = tot_wg = 0.0
     main_w = main_wg = 0.0
+    pct_w = pct_wp = 0.0
+    pct_count = 0
     by_term = {}
     for r in rows or []:
-        g = _num(r.get("grade"))
+        # 💡 석차백분율이 적혀 있으면 그것으로 등급을 구한다.
+        #    백분율은 두 등급 체계의 누적 비율에 그대로 대응하므로
+        #    9등급제↔5등급제 환산이 근사가 아니라 정확해진다.
+        p = _num(r.get("pct"))
+        g = pct_to_band(p, scale) if p is not None else _num(r.get("grade"))
         if g is None:
             continue
         w = _num(r.get("unit"), 1) or 1
+        if p is not None:
+            pct_w += w
+            pct_wp += p * w
+            pct_count += 1
         tot_w += w; tot_wg += g * w
         name = str(r.get("subject", ""))
         if any(k in name for k in MAIN_SUBJECT_KEYWORDS):
@@ -2380,14 +2428,28 @@ def summarize_naesin(rows: list, scale: str = "9") -> dict:
 
     avg = round(tot_wg / tot_w, 2) if tot_w else None
     main_avg = round(main_wg / main_w, 2) if main_w else None
+
+    # 백분율이 적힌 과목이 있으면 가중 평균 백분율을 내고,
+    # 그 백분율로 두 체계의 등급을 각각 정확히 산출한다.
+    pct_avg = round(pct_wp / pct_w, 2) if pct_w else None
+    avg9 = pct_to_grade_exact(pct_avg, "9") if pct_avg is not None else None
+    avg5 = pct_to_grade_exact(pct_avg, "5") if pct_avg is not None else None
+    all_by_pct = pct_count > 0 and pct_count == len([r for r in (rows or [])
+                                                     if _num(r.get("pct")) is not None or _num(r.get("grade")) is not None])
+
     return {
         "avg": avg,
         "main_avg": main_avg,
+        "pct_avg": pct_avg,
+        "pct_count": pct_count,
+        "avg_by_pct_9": avg9,
+        "avg_by_pct_5": avg5,
+        "exact": bool(all_by_pct),
         # 💡 2025학년도부터 내신이 5등급제로 바뀌어 학년마다 체계가 다르다.
         #    입력한 체계와 반대쪽 체계의 환산값을 항상 함께 내놓는다.
         "scale": scale,
         "other_scale": other,
-        "avg_other": convert_grade_scale(avg, scale, other),
+        "avg_other": (avg5 if other == "5" else avg9) if all_by_pct else convert_grade_scale(avg, scale, other),
         "main_avg_other": convert_grade_scale(main_avg, scale, other),
         "total_units": round(tot_w, 1),
         "count": len([r for r in (rows or []) if _num(r.get("grade")) is not None]),
@@ -2657,8 +2719,16 @@ def build_counsel_view(student_name: str) -> dict:
     naesin_rows = []
     for r in data.get("naesin", []):
         row = dict(r)
-        band = convert_grade_band(r.get("grade"), scale, other)
-        row["grade_other"] = band["text"] if band else ""
+        p = _num(r.get("pct"))
+        if p is not None:
+            # 백분율이 있으면 두 체계 모두 정확한 정수 등급이 나온다
+            row["grade_from_pct"] = pct_to_band(p, scale)
+            row["grade_other"] = f"{pct_to_band(p, other)}등급"
+            row["exact"] = True
+        else:
+            band = convert_grade_band(r.get("grade"), scale, other)
+            row["grade_other"] = band["text"] if band else ""
+            row["exact"] = False
         naesin_rows.append(row)
 
     result = {
@@ -2693,7 +2763,10 @@ def fmt_grade_block(view: dict) -> str:
     other_txt = f"{n.get('other_scale', '5')}등급제"
     conv = ""
     if n.get("avg") is not None and n.get("avg_other") is not None:
-        conv = f" / {other_txt} 환산 {n['avg_other']}등급"
+        how = "석차백분율로 정확히 환산" if n.get("exact") else "등급 구간의 중앙값으로 환산(근사)"
+        conv = f" / {other_txt} 환산 {n['avg_other']}등급 ({how})"
+    if n.get("pct_avg") is not None:
+        conv += f" / 평균 석차백분율 상위 {n['pct_avg']}%"
     lines = [
         f"- 내신 등급 체계: {scale_txt} (2025학년도 고1부터 5등급제로 바뀌어 학년마다 체계가 다름)",
         f"- 내신 평균 등급: {n['avg'] if n['avg'] is not None else '미입력'}{conv} (주요과목 {n['main_avg'] if n['main_avg'] is not None else '-'}, 반영 {n['count']}과목)",
