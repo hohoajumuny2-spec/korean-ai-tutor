@@ -1010,8 +1010,9 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
 - 형식:
-{"questions":[{"q_text":"문제 내용","options":["보기1","보기2","보기3","보기4","보기5"],"answer":3,"score":2}]}
-- q_text에는 문항 번호를 빼고 문제 내용만 적으세요. 지문이 딸려 있으면 문제를 푸는 데 꼭 필요한 부분만 앞에 붙이세요.
+{"questions":[{"q_text":"문제 내용","bogi":"<보기> 상자 안의 글","options":["선택지1","선택지2","선택지3","선택지4","선택지5"],"answer":3,"score":2}]}
+- q_text에는 문항 번호를 빼고 발문만 적으세요.
+- bogi에는 그 문항에 딸린 <보기> 상자 안의 내용을 그대로 옮기세요. 상자가 없으면 빈 문자열("")로 두세요. <보기>라는 글자 자체는 빼고 안의 내용만 담습니다.
 - options는 보기를 순서대로 담되, ①②③④⑤ 같은 번호 기호는 빼고 내용만 적으세요.
 - 보기가 5개보다 적으면 있는 만큼만 담고, 빈 칸을 지어내지 마세요.
 - answer는 정답 보기의 번호(1~5)입니다. 자료에 정답이 표시되어 있지 않으면 null로 두세요. 절대 추측하지 마세요.
@@ -1058,7 +1059,9 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
         except (TypeError, ValueError):
             score = 2
 
-        questions.append({"q_text": q_text[:500], "options": opts,
+        questions.append({"q_text": q_text[:500],
+                          "bogi": str(q.get("bogi", "") or "").strip()[:2000],
+                          "options": opts,
                           "answer": ans, "score": max(1, min(100, score))})
         if len(questions) >= 60:
             break
@@ -1519,6 +1522,7 @@ async def submit_quiz(req: QuizSubmitReq):
             details.append({
                 "no": i + 1,
                 "q_text": str(q.get("q_text", "")),
+                "bogi": str(q.get("bogi", "") or ""),
                 "image": str(q.get("image", "") or ""),
                 "my": my_ans,
                 "my_text": pick(my_ans),
