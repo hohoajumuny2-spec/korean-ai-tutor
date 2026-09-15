@@ -2405,15 +2405,112 @@ def is_absolute_subject(name: str) -> bool:
     return any(k in n for k in ABSOLUTE_SUBJECTS)
 
 
+# ── 시험별 등급컷 ──────────────────────────────────────
+#   모의고사는 회차마다 난이도가 달라 같은 원점수라도 등급이 다르다.
+#   그래서 원장님이 회차별로 등급컷을 직접 넣고, 원점수를 그 컷에 비춰
+#   등급을 뽑는다. 영어·한국사는 절대평가라 컷이 고정이다.
+ABSOLUTE_DEFAULT_CUTS = [90, 80, 70, 60, 50, 40, 30, 20]   # 1~8등급컷, 나머지 9등급
+
+
+def raw_to_grade(raw, cuts):
+    """원점수를 등급컷에 비춰 등급으로 바꾼다. cuts는 1등급컷부터 내림차순."""
+    v = _num(raw)
+    if v is None or not cuts:
+        return None
+    clean = [c for c in (_num(x) for x in cuts) if c is not None]
+    if not clean:
+        return None
+    for i, c in enumerate(clean):
+        if v >= c:
+            return i + 1
+    return len(clean) + 1
+
+
+def load_grade_cuts() -> list:
+    if db is None:
+        return []
+    out = []
+    for d in db.collection("grade_cuts").stream():
+        out.append({"id": d.id, **(d.to_dict() or {})})
+    out.sort(key=lambda x: str(x.get("date", "")), reverse=True)
+    return out
+
+
+def find_cut_set(exam_date: str):
+    """모의고사 시행월(예 '2026-09')에 해당하는 등급컷 묶음을 찾는다."""
+    key = str(exam_date or "").strip()
+    if not key:
+        return None
+    for s in load_grade_cuts():
+        if str(s.get("date", "")).strip() == key:
+            return s
+    return None
+
+
+@app.get("/api/admin/grade_cuts", dependencies=[Depends(verify_admin)])
+def get_grade_cuts():
+    return {"success": True, "sets": load_grade_cuts(),
+            "absolute_default": ABSOLUTE_DEFAULT_CUTS}
+
+
+class GradeCutReq(BaseModel):
+    id: str = ""
+    name: str
+    date: str
+    subjects: list = None
+
+
+@app.post("/api/admin/grade_cuts", dependencies=[Depends(verify_admin)])
+def save_grade_cuts(req: GradeCutReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.name.strip()
+    date = req.date.strip()
+    if not name or not date:
+        return {"success": False, "detail": "시험 이름과 시행월을 모두 입력해주세요."}
+
+    subjects = []
+    for s in (req.subjects or []):
+        subj = str(s.get("subject", "")).strip()
+        if not subj:
+            continue
+        cuts = [c for c in (_num(x) for x in (s.get("cuts") or [])) if c is not None]
+        subjects.append({"subject": subj[:20], "cuts": cuts[:8],
+                         "absolute": bool(is_absolute_subject(subj))})
+    if not subjects:
+        return {"success": False, "detail": "과목을 하나 이상 넣어주세요."}
+
+    doc_id = sanitize_doc_id(req.id.strip() or date + "_" + name)
+    db.collection("grade_cuts").document(doc_id).set({
+        "name": name[:60], "date": date[:20], "subjects": subjects,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    return {"success": True, "id": doc_id, "sets": load_grade_cuts()}
+
+
+class GradeCutDeleteReq(BaseModel):
+    id: str
+
+
+@app.post("/api/admin/grade_cuts/delete", dependencies=[Depends(verify_admin)])
+def delete_grade_cuts(req: GradeCutDeleteReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    db.collection("grade_cuts").document(req.id).delete()
+    return {"success": True, "sets": load_grade_cuts()}
+
+
 def summarize_mock(rows: list) -> dict:
     """가장 최근 시행월의 성적을 정리한다.
     💡 영어·한국사는 절대평가라 백분위가 없고 등급만 나온다. 이 과목들을
        상대평가 과목(국어·수학·탐구)과 섞어 평균을 내면 정시 판단이 어긋나므로,
        평균은 상대평가 과목만으로 내고 절대평가 과목은 등급을 따로 보여준다."""
-    valid = [r for r in (rows or []) if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None]
+    valid = [r for r in (rows or [])
+             if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None
+             or _num(r.get("raw")) is not None]
     if not valid:
         return {"avg": None, "pct_avg": None, "latest": None, "count": 0,
-                "by_date": [], "absolute": [], "abs_text": ""}
+                "by_date": [], "absolute": [], "abs_text": "", "raw_sum": None, "raw_text": ""}
 
     by_date = {}
     for r in valid:
@@ -2425,12 +2522,17 @@ def summarize_mock(rows: list) -> dict:
         absolute = [x for x in rows_ if is_absolute_subject(x.get("subject"))]
         gs = [_num(x.get("grade")) for x in rel if _num(x.get("grade")) is not None]
         ps = [_num(x.get("percentile")) for x in rel if _num(x.get("percentile")) is not None]
+        # 💡 비상교육 자료처럼 '국수탐 원점수 합'으로 지원 가능선을 주는 자료가 있어
+        #    상대평가 과목의 원점수 합계도 함께 낸다.
+        raws = [_num(x.get("raw")) for x in rel if _num(x.get("raw")) is not None]
         abs_list = [{"subject": str(x.get("subject", "")).strip(),
-                     "grade": _num(x.get("grade"))}
-                    for x in absolute if _num(x.get("grade")) is not None]
+                     "grade": _num(x.get("grade")), "raw": _num(x.get("raw"))}
+                    for x in absolute if _num(x.get("grade")) is not None or _num(x.get("raw")) is not None]
         return {
             "avg": round(sum(gs) / len(gs), 2) if gs else None,
             "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
+            "raw_sum": round(sum(raws), 1) if raws else None,
+            "raw_count": len(raws),
             "rel_count": len(rel),
             "absolute": abs_list,
         }
@@ -2441,9 +2543,14 @@ def summarize_mock(rows: list) -> dict:
     absolute = latest["absolute"] if latest else []
     abs_text = " · ".join(f"{a['subject']} {int(a['grade']) if float(a['grade']).is_integer() else a['grade']}등급"
                           for a in absolute)
+    raw_sum = latest["raw_sum"] if latest else None
+    raw_text = (f"국·수·탐 원점수 합 {raw_sum}점 ({latest['raw_count']}과목)"
+                if latest and raw_sum is not None else "")
     return {
         "avg": latest["avg"] if latest else None,
         "pct_avg": latest["pct_avg"] if latest else None,
+        "raw_sum": raw_sum,
+        "raw_text": raw_text,
         "latest": latest["date"] if latest else None,
         "count": len(valid),
         "by_date": trend,
@@ -2570,6 +2677,7 @@ def fmt_grade_block(view: dict) -> str:
         f"- 학기별 내신: " + (", ".join(f"{x['term']} {x['avg']}등급" for x in n["by_term"]) or "미입력"),
         f"- 모의고사 최근({m['latest'] or '-'}) 상대평가 과목(국어·수학·탐구) 평균 등급: {m['avg'] if m['avg'] is not None else '미입력'}, 평균 백분위: {m['pct_avg'] if m['pct_avg'] is not None else '-'}",
         f"- 절대평가 과목(영어·한국사 등): {m.get('abs_text') or '미입력'} (백분위가 없고 등급만 나오는 과목이므로 위 평균에는 넣지 않았음)",
+        f"- 원점수: {m.get('raw_text') or '미입력'}",
         f"- 모의고사 추이: " + (", ".join(f"{x['date']} {x['avg']}등급" for x in m["by_date"] if x["avg"] is not None) or "미입력"),
         f"- 내신·모의 격차 판정: {t['verdict']} ({t['reason']})",
     ]
@@ -2690,7 +2798,31 @@ def save_grades(req: GradeSaveReq):
     if req.naesin is not None:
         payload["naesin"] = req.naesin[:200]
     if req.mock is not None:
-        payload["mock"] = req.mock[:200]
+        # 💡 원점수를 넣었는데 등급이 비어 있으면, 그 회차 등급컷으로 등급을 채워준다.
+        #    원장님이 직접 적어 넣은 등급이 있으면 건드리지 않는다.
+        mock_rows = req.mock[:200]
+        cut_cache = {}
+        for r in mock_rows:
+            if _num(r.get("grade")) is not None or _num(r.get("raw")) is None:
+                continue
+            date = str(r.get("date", "")).strip()
+            if date not in cut_cache:
+                cut_cache[date] = find_cut_set(date)
+            cset = cut_cache[date]
+            subj = str(r.get("subject", "")).strip()
+            cuts = None
+            if cset:
+                for s in (cset.get("subjects") or []):
+                    if str(s.get("subject", "")).strip() == subj:
+                        cuts = s.get("cuts")
+                        break
+            if cuts is None and is_absolute_subject(subj):
+                cuts = ABSOLUTE_DEFAULT_CUTS
+            g = raw_to_grade(r.get("raw"), cuts)
+            if g is not None:
+                r["grade"] = g
+                r["grade_auto"] = True
+        payload["mock"] = mock_rows
     counsel_ref(name).set(payload, merge=True)
     return {"success": True, "counsel": build_counsel_view(name)}
 
@@ -3316,8 +3448,10 @@ async def import_univ_table(
     header_row: int = Form(-1),
     header_span: int = Form(1),
     append: bool = Form(False),
+    kind: str = Form("susi"),
 ):
-    """짝지어 준 열 구성대로 입결 자료를 저장한다."""
+    """짝지어 준 열 구성대로 입결 자료를 저장한다.
+    kind는 이 자료가 수시용인지 정시용인지 — 견줄 성적이 달라진다."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     try:
@@ -3348,6 +3482,7 @@ async def import_univ_table(
     fixed_metric = str(m.get("metric", "grade"))
     if fixed_metric not in ("grade", "percentile", "score", "eng_grade"):
         fixed_metric = "grade"
+    kind = "jeongsi" if str(kind).strip().startswith("정") or str(kind).strip() == "jeongsi" else "susi"
 
     def metric_of(r):
         # 점수 종류가 행마다 다른 파일(예: '점수구분' 열에 백분위/환산점수)을 위해
@@ -3377,6 +3512,7 @@ async def import_univ_table(
             "type": cell(r, "type")[:40],
             "cut": round(cut, 3),
             "metric": metric_of(r),
+            "kind": kind,
             "note": cell(r, "note")[:120],
         }
         year = cell(r, "year")
@@ -3408,10 +3544,16 @@ async def import_univ_table(
         )
     meta_prev = load_univ_meta() if append else {}
     labels = [x for x in [meta_prev.get("label", ""), (label or file.filename or "").strip()] if x]
+    kinds = {}
+    for e in merged:
+        k = e.get("kind", "susi")
+        kinds[k] = kinds.get(k, 0) + 1
     db.collection("settings").document("univ_table_meta").set({
         "label": " + ".join(dict.fromkeys(labels))[:160] or "입결 자료",
         "count": len(merged),
         "metric": fixed_metric,
+        "susi_count": kinds.get("susi", 0),
+        "jeongsi_count": kinds.get("jeongsi", 0),
         "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
 
@@ -3478,7 +3620,7 @@ def match_univ_rows(rows: list, univ: str, major: str = "") -> list:
 
 
 def build_target_gap(view: dict) -> dict:
-    """지금 성적으로 목표 대학까지 얼마나 모자란지 계산한다."""
+    """지금 성적으로 목표 대학까지 얼마나 모자란지 수시·정시로 갈라 계산한다."""
     profile = view.get("profile") or {}
     univ = str(profile.get("target_univ", "")).strip()
     major = str(profile.get("target_major", "")).strip()
@@ -3497,20 +3639,18 @@ def build_target_gap(view: dict) -> dict:
 
     naesin_avg = view["naesin"]["avg"]
     pct_avg = view["mock"]["pct_avg"]
-    # 영어 절대평가 등급과 원점수 계열 성적도 비교 대상이 될 수 있다
+    raw_sum = view["mock"].get("raw_sum")
     eng_grade = None
     for a in (view["mock"].get("absolute") or []):
         if "영어" in str(a.get("subject", "")):
             eng_grade = _num(a.get("grade"))
             break
-    mock_score = _num((view.get("profile") or {}).get("mock_score"))
 
-    items = []
-    for r in hits[:40]:
+    def one(r):
         metric = r.get("metric", "grade")
         cut = _num(r.get("cut"))
         if cut is None:
-            continue
+            return None
         if metric == "grade":
             mine, unit = naesin_avg, "등급"
             gap = None if mine is None else round(mine - cut, 2)          # 등급은 낮을수록 좋다
@@ -3521,26 +3661,39 @@ def build_target_gap(view: dict) -> dict:
             mine, unit = eng_grade, "영어 등급"
             gap = None if mine is None else round(mine - cut, 2)
         else:   # score — 원점수·표준점수·대학별 환산점수
-            mine, unit = mock_score, "점"
+            mine, unit = raw_sum, "점"
             gap = None if mine is None else round(cut - mine, 2)
-        reach = None if gap is None else gap <= 0
-        items.append({
+        return {
             "univ": r.get("univ", ""), "major": r.get("major", ""),
             "track": r.get("track", ""), "type": r.get("type", ""),
+            "year": r.get("year", ""), "kind": r.get("kind", "susi"),
             "cut": cut, "metric": metric, "unit": unit,
-            "mine": mine, "gap": gap, "reach": reach, "note": r.get("note", ""),
-        })
+            "mine": mine, "gap": gap,
+            "reach": None if gap is None else gap <= 0,
+            "eng_cut": r.get("eng"), "note": r.get("note", ""),
+        }
 
-    if not items:
+    groups = {"susi": [], "jeongsi": []}
+    for r in hits[:200]:
+        item = one(r)
+        if item:
+            groups[item["kind"] if item["kind"] in groups else "susi"].append(item)
+
+    out = {"status": "ok", "univ": univ, "major": major}
+    for k in ("susi", "jeongsi"):
+        items = groups[k]
+        scored = sorted([i for i in items if i["gap"] is not None], key=lambda x: x["gap"])
+        out[k] = {
+            "items": items[:20],
+            "closest": scored[0] if scored else None,
+            "reachable": sum(1 for i in scored if i["reach"]),
+            "total": len(scored),
+            "count": len(items),
+        }
+    if not out["susi"]["count"] and not out["jeongsi"]["count"]:
         return {"status": "not_found", "univ": univ, "major": major,
                 "message": "찾은 줄에 기준 점수가 비어 있습니다."}
-
-    scored = [i for i in items if i["gap"] is not None]
-    scored.sort(key=lambda x: x["gap"])
-    closest = scored[0] if scored else None
-    return {"status": "ok", "univ": univ, "major": major, "items": items[:20],
-            "closest": closest, "reachable": sum(1 for i in scored if i["reach"]),
-            "total": len(scored)}
+    return out
 
 
 def fmt_target_block(view: dict) -> str:
@@ -3548,20 +3701,25 @@ def fmt_target_block(view: dict) -> str:
     if g.get("status") != "ok":
         return f"- {g.get('message', '목표 대학 정보 없음')}"
     lines = [f"- 목표: {g['univ']} {g.get('major', '')}".rstrip()]
-    c = g.get("closest")
-    if c:
-        if c["gap"] is None:
-            lines.append("- 현재 성적이 없어 목표까지의 거리를 계산하지 못했습니다.")
-        elif c["reach"]:
-            lines.append(f"- 가장 가까운 기준({c['univ']} {c['major']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — 이미 기준을 넘었습니다.")
-        else:
-            lines.append(f"- 가장 가까운 기준({c['univ']} {c['major']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — {abs(c['gap'])}{c['unit']} 모자랍니다.")
-    lines.append(f"- 이 대학 자료 {g['total']}건 중 현재 성적으로 기준을 넘은 것: {g['reachable']}건")
-    for i in g["items"][:8]:
-        if i["gap"] is None:
+    for key, title in (("susi", "수시"), ("jeongsi", "정시")):
+        blk = g.get(key) or {}
+        if not blk.get("count"):
+            lines.append(f"- [{title}] 이 대학의 {title} 자료가 없습니다.")
             continue
-        state = "도달" if i["reach"] else f"{abs(i['gap'])}{i['unit']} 부족"
-        lines.append(f"  · {i['univ']} {i['major']} ({i['type']}) 기준 {i['cut']}{i['unit']} → {state}")
+        c = blk.get("closest")
+        if not c:
+            lines.append(f"- [{title}] 자료는 {blk['count']}건 있으나 학생 성적이 없어 비교하지 못했습니다.")
+        elif c["reach"]:
+            lines.append(f"- [{title}] 가장 가까운 기준({c['univ']} {c['major']} {c['type']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — 이미 넘었습니다.")
+        else:
+            lines.append(f"- [{title}] 가장 가까운 기준({c['univ']} {c['major']} {c['type']}): 기준 {c['cut']}{c['unit']}, 현재 {c['mine']}{c['unit']} — {abs(c['gap'])}{c['unit']} 모자랍니다.")
+        lines.append(f"  자료 {blk['total']}건 중 현재 성적으로 기준을 넘은 것: {blk['reachable']}건")
+        for i in blk["items"][:6]:
+            if i["gap"] is None:
+                continue
+            state = "도달" if i["reach"] else f"{abs(i['gap'])}{i['unit']} 부족"
+            eng = f", 영어 {i['eng_cut']}등급 필요" if i.get("eng_cut") is not None else ""
+            lines.append(f"  · {i['univ']} {i['major']} ({i['type']}) 기준 {i['cut']}{i['unit']}{eng} → {state}")
     return "\n".join(lines)
 
 
