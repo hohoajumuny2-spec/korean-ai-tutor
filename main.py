@@ -2254,58 +2254,213 @@ def delete_question_admin(q_id: str):
 # ── 학습 성향 검사 문항 ──────────────────────────────────
 # 국어 학원 맥락에 맞춰 7개 축 × 4문항 = 28문항. 5점 척도(1 전혀 아니다 ~ 5 매우 그렇다).
 # reverse=True인 문항은 뒤집어서 채점한다(점수가 높을수록 좋은 상태가 되도록).
-TENDENCY_AXES = [
-    {"key": "motive",  "name": "학습 동기",        "desc": "공부할 이유가 스스로 분명한가"},
-    {"key": "plan",    "name": "계획·시간관리",    "desc": "계획을 세우고 지켜내는가"},
-    {"key": "focus",   "name": "집중 지속력",      "desc": "한 번에 얼마나 오래 몰입하는가"},
-    {"key": "meta",    "name": "메타인지",         "desc": "아는 것과 모르는 것을 구분하는가"},
-    {"key": "review",  "name": "오답·피드백",      "desc": "틀린 것을 되짚고 지적을 받아들이는가"},
-    {"key": "emotion", "name": "시험 태도",        "desc": "긴장과 시간 압박을 다스리는가"},
-    {"key": "reading", "name": "국어 독해 습관",   "desc": "글을 구조와 근거로 읽는가"},
-]
+# ── 학습 성향 검사 ─────────────────────────────────────
+#   과목마다 공부하는 방식이 달라서 한 벌로는 잡히지 않는다.
+#   국어·수학·영어는 6개 공통 축(동기·계획·집중·메타인지·오답·시험태도)에
+#   과목 특화 축 하나를 더해 축끼리 견줄 수 있게 맞췄고,
+#   학습 태도 점검은 과목과 무관한 별도 축으로 짰다.
+#   모두 7축 × 4문항 = 28문항, 5점 척도. reverse는 뒤집어 채점한다.
 
-TENDENCY_QUESTIONS = [
-    {"id": 1,  "axis": "motive",  "text": "국어 공부를 할 때 '왜 이걸 배우는지' 스스로 납득이 되어야 집중이 된다."},
-    {"id": 2,  "axis": "motive",  "text": "성적과 상관없이 새로운 글을 읽고 이해하는 일 자체가 재미있다."},
-    {"id": 3,  "axis": "motive",  "text": "부모님이나 선생님이 시키지 않아도 스스로 공부를 시작한다."},
-    {"id": 4,  "axis": "motive",  "text": "목표하는 대학이나 진로가 뚜렷해서 공부할 이유가 분명하다."},
-
-    {"id": 5,  "axis": "plan",    "text": "하루 또는 일주일 단위로 공부 계획을 세우고 기록한다."},
-    {"id": 6,  "axis": "plan",    "text": "계획을 세우면 대체로 그대로 지키는 편이다."},
-    {"id": 7,  "axis": "plan",    "text": "시험 2~3주 전부터 과목별 일정을 나눠서 준비한다."},
-    {"id": 8,  "axis": "plan",    "text": "미루다가 마감 직전에 몰아서 하는 편이다.", "reverse": True},
-
-    {"id": 9,  "axis": "focus",   "text": "한번 앉으면 50분 이상 흐름이 끊기지 않고 공부한다."},
-    {"id": 10, "axis": "focus",   "text": "공부 중 휴대폰 알림이 오면 바로 확인하게 된다.", "reverse": True},
-    {"id": 11, "axis": "focus",   "text": "긴 지문을 읽을 때 중간에 딴생각이 자주 든다.", "reverse": True},
-    {"id": 12, "axis": "focus",   "text": "주변이 조금 시끄러워도 할 일에 몰입할 수 있다."},
-
-    {"id": 13, "axis": "meta",    "text": "문제를 풀고 나면 내가 무엇을 알고 무엇을 모르는지 구분할 수 있다."},
-    {"id": 14, "axis": "meta",    "text": "답을 맞혔어도 '왜' 맞았는지 설명할 수 있는지 스스로 확인한다."},
-    {"id": 15, "axis": "meta",    "text": "공부한 내용을 누군가에게 설명하듯 정리해 본다."},
-    {"id": 16, "axis": "meta",    "text": "시험 점수가 나오면 그 원인을 구체적으로 짚어낼 수 있다."},
-
-    {"id": 17, "axis": "review",  "text": "틀린 문제는 반드시 다시 풀어보고 넘어간다."},
-    {"id": 18, "axis": "review",  "text": "오답 노트나 그에 준하는 기록을 꾸준히 남긴다."},
-    {"id": 19, "axis": "review",  "text": "선생님의 지적을 들으면 기분이 상해 받아들이기 어렵다.", "reverse": True},
-    {"id": 20, "axis": "review",  "text": "같은 유형에서 반복해 틀리는 부분이 무엇인지 알고 있다."},
-
-    {"id": 21, "axis": "emotion", "text": "시험 때 아는 문제도 긴장해서 틀린 적이 많다.", "reverse": True},
-    {"id": 22, "axis": "emotion", "text": "시간이 부족할 것 같으면 마음이 급해져 실수가 늘어난다.", "reverse": True},
-    {"id": 23, "axis": "emotion", "text": "어려운 문제를 만나면 일단 넘기고 뒤를 먼저 푼다."},
-    {"id": 24, "axis": "emotion", "text": "시험이 끝나면 결과와 상관없이 감정을 빨리 추스른다."},
-
-    {"id": 25, "axis": "reading", "text": "글을 읽을 때 문단별 중심 내용을 표시하거나 정리한다."},
-    {"id": 26, "axis": "reading", "text": "모르는 어휘가 나오면 확인하지 않고 그냥 넘어간다.", "reverse": True},
-    {"id": 27, "axis": "reading", "text": "선택지를 지문의 근거와 일일이 대조하며 지운다."},
-    {"id": 28, "axis": "reading", "text": "비문학 지문의 글 구조(대조·인과·분류 등)를 의식하며 읽는다."},
+_COMMON_AXES = [
+    ("motive",  "학습 동기",      "공부할 이유가 스스로 분명한가"),
+    ("plan",    "계획·시간관리",  "계획을 세우고 지켜내는가"),
+    ("focus",   "집중 지속력",    "한 번에 얼마나 오래 몰입하는가"),
+    ("meta",    "메타인지",       "아는 것과 모르는 것을 구분하는가"),
+    ("review",  "오답·피드백",    "틀린 것을 되짚고 지적을 받아들이는가"),
+    ("emotion", "시험 태도",      "긴장과 시간 압박을 다스리는가"),
 ]
 
 
-def score_tendency(answers: dict) -> list:
+def _axes(extra_key, extra_name, extra_desc):
+    return [{"key": k, "name": n, "desc": d} for k, n, d in _COMMON_AXES] + \
+           [{"key": extra_key, "name": extra_name, "desc": extra_desc}]
+
+
+def _q(items):
+    """(축, 문항, 역채점여부) 목록에 번호를 매긴다."""
+    out = []
+    for i, it in enumerate(items):
+        axis, text = it[0], it[1]
+        rev = len(it) > 2 and it[2]
+        d = {"id": i + 1, "axis": axis, "text": text}
+        if rev:
+            d["reverse"] = True
+        out.append(d)
+    return out
+
+
+TENDENCY_SETS = {
+    "korean": {
+        "key": "korean", "name": "국어 학습 성향", "icon": "📖",
+        "desc": "국어를 공부하는 방식과 읽기 습관을 봅니다",
+        "axes": _axes("reading", "국어 독해 습관", "글을 구조와 근거로 읽는가"),
+        "questions": _q([
+            ("motive", "국어 공부를 할 때 '왜 이걸 배우는지' 스스로 납득이 되어야 집중이 된다."),
+            ("motive", "성적과 상관없이 새로운 글을 읽고 이해하는 일 자체가 재미있다."),
+            ("motive", "부모님이나 선생님이 시키지 않아도 스스로 공부를 시작한다."),
+            ("motive", "목표하는 대학이나 진로가 뚜렷해서 공부할 이유가 분명하다."),
+            ("plan", "하루 또는 일주일 단위로 공부 계획을 세우고 기록한다."),
+            ("plan", "계획을 세우면 대체로 그대로 지키는 편이다."),
+            ("plan", "시험 2~3주 전부터 과목별 일정을 나눠서 준비한다."),
+            ("plan", "미루다가 마감 직전에 몰아서 하는 편이다.", True),
+            ("focus", "한번 앉으면 50분 이상 흐름이 끊기지 않고 공부한다."),
+            ("focus", "공부 중 휴대폰 알림이 오면 바로 확인하게 된다.", True),
+            ("focus", "긴 지문을 읽을 때 중간에 딴생각이 자주 든다.", True),
+            ("focus", "주변이 조금 시끄러워도 할 일에 몰입할 수 있다."),
+            ("meta", "문제를 풀고 나면 내가 무엇을 알고 무엇을 모르는지 구분할 수 있다."),
+            ("meta", "답을 맞혔어도 '왜' 맞았는지 설명할 수 있는지 스스로 확인한다."),
+            ("meta", "공부한 내용을 누군가에게 설명하듯 정리해 본다."),
+            ("meta", "시험 점수가 나오면 그 원인을 구체적으로 짚어낼 수 있다."),
+            ("review", "틀린 문제는 반드시 다시 풀어보고 넘어간다."),
+            ("review", "오답 노트나 그에 준하는 기록을 꾸준히 남긴다."),
+            ("review", "선생님의 지적을 들으면 기분이 상해 받아들이기 어렵다.", True),
+            ("review", "같은 유형에서 반복해 틀리는 부분이 무엇인지 알고 있다."),
+            ("emotion", "시험 때 아는 문제도 긴장해서 틀린 적이 많다.", True),
+            ("emotion", "시간이 부족할 것 같으면 마음이 급해져 실수가 늘어난다.", True),
+            ("emotion", "어려운 문제를 만나면 일단 넘기고 뒤를 먼저 푼다."),
+            ("emotion", "시험이 끝나면 결과와 상관없이 감정을 빨리 추스른다."),
+            ("reading", "글을 읽을 때 문단별 중심 내용을 표시하거나 정리한다."),
+            ("reading", "모르는 어휘가 나오면 확인하지 않고 그냥 넘어간다.", True),
+            ("reading", "선택지를 지문의 근거와 일일이 대조하며 지운다."),
+            ("reading", "비문학 지문의 글 구조(대조·인과·분류 등)를 의식하며 읽는다."),
+        ]),
+    },
+
+    "math": {
+        "key": "math", "name": "수학 학습 성향", "icon": "🔢",
+        "desc": "수학을 푸는 방식과 풀이 습관을 봅니다",
+        "axes": _axes("solving", "수학 풀이 습관", "과정을 적고 조건을 정리하며 푸는가"),
+        "questions": _q([
+            ("motive", "수학을 '왜 배우는지' 스스로 납득이 되어야 집중이 된다."),
+            ("motive", "어려운 문제를 끝내 풀어냈을 때의 성취감이 크다."),
+            ("motive", "시키지 않아도 스스로 수학 공부를 시작한다."),
+            ("motive", "목표하는 대학이나 전공 때문에 수학이 꼭 필요하다고 느낀다."),
+            ("plan", "하루에 풀 문제 수나 진도를 정해두고 공부한다."),
+            ("plan", "정해둔 분량을 대체로 끝내는 편이다."),
+            ("plan", "시험 전에 단원별로 복습 일정을 나눠 둔다."),
+            ("plan", "미루다가 시험 직전에 몰아서 하는 편이다.", True),
+            ("focus", "한 문제를 붙잡고 20분 이상 고민할 수 있다."),
+            ("focus", "잘 안 풀리면 금방 해설을 펴 본다.", True),
+            ("focus", "문제를 풀다가 딴생각이 자주 든다.", True),
+            ("focus", "주변이 조금 시끄러워도 계산에 집중할 수 있다."),
+            ("meta", "공식을 외우기 전에 왜 그렇게 되는지 따져본다."),
+            ("meta", "맞힌 문제도 다른 풀이가 있는지 생각해 본다."),
+            ("meta", "배운 개념을 친구에게 설명할 수 있다."),
+            ("meta", "틀렸을 때 '계산 실수'인지 '몰라서'인지 구분할 수 있다."),
+            ("review", "틀린 문제는 해설을 덮고 스스로 다시 풀어본다."),
+            ("review", "오답 노트나 그에 준하는 기록을 꾸준히 남긴다."),
+            ("review", "해설을 보고 이해하면 그걸로 다 됐다고 여긴다.", True),
+            ("review", "반복해서 틀리는 단원이 무엇인지 알고 있다."),
+            ("emotion", "시험 때 아는 문제도 긴장해서 틀린 적이 많다.", True),
+            ("emotion", "시간이 부족할 것 같으면 급해져 계산 실수가 늘어난다.", True),
+            ("emotion", "어려운 문제는 일단 넘기고 뒤를 먼저 푼다."),
+            ("emotion", "검산할 시간을 남겨 두고 푸는 편이다."),
+            ("solving", "풀이 과정을 식으로 또박또박 적으면서 푼다."),
+            ("solving", "암산으로 넘기다가 계산을 틀리는 일이 잦다.", True),
+            ("solving", "문제를 읽고 무엇을 구하는 것인지 먼저 정리한다."),
+            ("solving", "그림이나 표를 그려 조건을 정리해 본다."),
+        ]),
+    },
+
+    "english": {
+        "key": "english", "name": "영어 학습 성향", "icon": "🔤",
+        "desc": "영어 공부 방식과 어휘·구문 습관을 봅니다",
+        "axes": _axes("reading_en", "영어 학습 습관", "어휘와 문장 구조를 어떻게 다루는가"),
+        "questions": _q([
+            ("motive", "영어를 '왜 배우는지' 스스로 납득이 되어야 집중이 된다."),
+            ("motive", "성적과 상관없이 영어로 된 글이나 영상을 보는 것이 재미있다."),
+            ("motive", "시키지 않아도 스스로 영어 공부를 시작한다."),
+            ("motive", "목표하는 대학이나 전공 때문에 영어가 꼭 필요하다고 느낀다."),
+            ("plan", "하루에 외울 단어 수나 읽을 지문 수를 정해두고 공부한다."),
+            ("plan", "정해둔 분량을 대체로 끝내는 편이다."),
+            ("plan", "시험 전에 범위를 나눠 복습 일정을 잡는다."),
+            ("plan", "미루다가 시험 직전에 몰아서 하는 편이다.", True),
+            ("focus", "한번 앉으면 50분 이상 흐름이 끊기지 않고 공부한다."),
+            ("focus", "공부 중 휴대폰 알림이 오면 바로 확인하게 된다.", True),
+            ("focus", "긴 지문을 읽을 때 중간에 딴생각이 자주 든다.", True),
+            ("focus", "듣기 문제를 풀 때 끝까지 집중해서 듣는다."),
+            ("meta", "지문을 읽고 나서 무엇을 이해했고 무엇을 못 했는지 구분할 수 있다."),
+            ("meta", "답을 맞혔어도 근거가 된 문장을 짚을 수 있는지 확인한다."),
+            ("meta", "배운 표현을 내 문장으로 바꿔 써 본다."),
+            ("meta", "점수가 나오면 어휘·구문·독해 중 무엇이 문제였는지 짚어낼 수 있다."),
+            ("review", "틀린 문제는 반드시 다시 풀어보고 넘어간다."),
+            ("review", "모르는 단어와 표현을 따로 모아 관리한다."),
+            ("review", "선생님의 지적을 들으면 기분이 상해 받아들이기 어렵다.", True),
+            ("review", "반복해서 틀리는 유형이 무엇인지 알고 있다."),
+            ("emotion", "시험 때 아는 문제도 긴장해서 틀린 적이 많다.", True),
+            ("emotion", "시간이 부족할 것 같으면 마음이 급해져 실수가 늘어난다.", True),
+            ("emotion", "어려운 지문은 일단 넘기고 뒤를 먼저 푼다."),
+            ("emotion", "시험이 끝나면 결과와 상관없이 감정을 빨리 추스른다."),
+            ("reading_en", "단어를 외울 때 예문이나 쓰임과 함께 익힌다."),
+            ("reading_en", "모르는 단어가 나오면 확인하지 않고 그냥 넘어간다.", True),
+            ("reading_en", "긴 문장은 주어와 동사를 먼저 찾아 구조를 파악한다."),
+            ("reading_en", "지문의 흐름(대조·예시·인과)을 의식하며 읽는다."),
+        ]),
+    },
+
+    "attitude": {
+        "key": "attitude", "name": "학습 태도 점검", "icon": "🧭",
+        "desc": "과목과 무관하게 공부하는 태도 전반을 봅니다",
+        "axes": [
+            {"key": "diligence", "name": "성실성",       "desc": "출결과 준비를 챙기는가"},
+            {"key": "classroom", "name": "수업 태도",    "desc": "수업 시간을 어떻게 쓰는가"},
+            {"key": "homework",  "name": "과제 수행",    "desc": "과제를 제때 제대로 하는가"},
+            {"key": "selfdrive", "name": "자기주도성",   "desc": "스스로 정하고 해결하는가"},
+            {"key": "environ",   "name": "환경 관리",    "desc": "공부할 여건을 스스로 만드는가"},
+            {"key": "grit",      "name": "끈기",         "desc": "잘 안 될 때도 계속하는가"},
+            {"key": "honesty",   "name": "정직성·자기점검", "desc": "자신을 속이지 않고 돌아보는가"},
+        ],
+        "questions": _q([
+            ("diligence", "수업에 늦지 않게 도착한다."),
+            ("diligence", "준비물과 교재를 빠뜨리지 않고 챙긴다."),
+            ("diligence", "몸이 조금 안 좋아도 수업에는 나온다."),
+            ("diligence", "결석하면 빠진 내용을 스스로 메운다."),
+            ("classroom", "수업 중 선생님 설명을 눈을 맞추며 듣는다."),
+            ("classroom", "이해가 안 되면 그 자리에서 질문한다."),
+            ("classroom", "수업 중 딴짓을 하거나 조는 때가 있다.", True),
+            ("classroom", "중요한 내용을 스스로 판단해 적어 둔다."),
+            ("homework", "과제를 기한 안에 낸다."),
+            ("homework", "과제를 대충 채워서 내는 일이 있다.", True),
+            ("homework", "과제를 하다 막히면 스스로 찾아보거나 물어본다."),
+            ("homework", "돌려받은 과제의 지적을 다음에 반영한다."),
+            ("selfdrive", "오늘 무엇을 공부할지 스스로 정한다."),
+            ("selfdrive", "시키는 것만 하는 편이다.", True),
+            ("selfdrive", "모르는 것이 생기면 그날 안에 해결하려 한다."),
+            ("selfdrive", "공부 방법이 안 맞는다 싶으면 스스로 바꿔 본다."),
+            ("environ", "공부할 때 휴대폰을 손이 닿지 않는 곳에 둔다."),
+            ("environ", "책상 위를 정리하고 시작한다."),
+            ("environ", "잠자는 시간이 들쭉날쭉하다.", True),
+            ("environ", "공부가 잘 되는 시간대를 알고 그때 어려운 것을 한다."),
+            ("grit", "성적이 안 나와도 방법을 바꿔가며 계속한다."),
+            ("grit", "어렵다 싶으면 금방 포기한다.", True),
+            ("grit", "오래 걸리는 목표도 꾸준히 밀고 간다."),
+            ("grit", "하루 계획이 어긋나도 다음 날 다시 잡는다."),
+            ("honesty", "모르면서 아는 척하지 않는다."),
+            ("honesty", "답을 미리 보고 맞힌 것처럼 넘어간 적이 있다.", True),
+            ("honesty", "공부한 시간을 부풀리지 않고 그대로 센다."),
+            ("honesty", "스스로 얼마나 했는지 돌아보는 시간을 갖는다."),
+        ]),
+    },
+}
+
+DEFAULT_TENDENCY_SET = "korean"
+
+
+def get_tendency_set(key: str) -> dict:
+    return TENDENCY_SETS.get(str(key or "").strip(), TENDENCY_SETS[DEFAULT_TENDENCY_SET])
+
+
+# 예전 코드가 쓰던 이름 — 국어 검사지를 가리킨다
+TENDENCY_AXES = TENDENCY_SETS["korean"]["axes"]
+TENDENCY_QUESTIONS = TENDENCY_SETS["korean"]["questions"]
+
+
+def score_tendency(answers: dict, set_key: str = DEFAULT_TENDENCY_SET) -> list:
     """문항 응답(1~5)을 축별 0~100점으로 환산."""
-    buckets = {a["key"]: [] for a in TENDENCY_AXES}
-    for q in TENDENCY_QUESTIONS:
+    tset = get_tendency_set(set_key)
+    axes, questions = tset["axes"], tset["questions"]
+    buckets = {a["key"]: [] for a in axes}
+    for q in questions:
         raw = answers.get(str(q["id"]), answers.get(q["id"]))
         try:
             v = int(raw)
@@ -2317,7 +2472,7 @@ def score_tendency(answers: dict) -> list:
         buckets[q["axis"]].append(v)
 
     out = []
-    for axis in TENDENCY_AXES:
+    for axis in axes:
         vals = buckets[axis["key"]]
         pct = round((sum(vals) / len(vals) - 1) / 4 * 100) if vals else 0
         out.append({**axis, "score": pct, "answered": len(vals)})
@@ -2818,6 +2973,18 @@ def load_counsel(student_name: str) -> dict:
     return doc.to_dict() if doc.exists else {}
 
 
+def _collect_tendencies(data: dict) -> dict:
+    """검사지별 결과를 모은다. 예전에 저장된 국어 검사도 끌어온다."""
+    out = dict(data.get("tendencies") or {})
+    legacy = data.get("tendency")
+    if legacy and "korean" not in out:
+        legacy = dict(legacy)
+        legacy.setdefault("set", "korean")
+        legacy.setdefault("set_name", TENDENCY_SETS["korean"]["name"])
+        out["korean"] = legacy
+    return out
+
+
 def build_counsel_view(student_name: str) -> dict:
     """상담 카드 한 장에 필요한 모든 계산을 끝낸 형태로 돌려준다."""
     data = load_counsel(student_name)
@@ -2861,6 +3028,7 @@ def build_counsel_view(student_name: str) -> dict:
         "tiers": tiers,
         "table_note": table.get("note", ""),
         "tendency": data.get("tendency"),
+        "tendencies": _collect_tendencies(data),
         "record_text": data.get("record_text", ""),
         "record_eval": data.get("record_eval", ""),
         "record_eval_at": data.get("record_eval_at", ""),
@@ -2922,11 +3090,20 @@ def fmt_memo_block(view: dict) -> str:
 
 
 def fmt_tendency_block(view: dict) -> str:
-    t = view.get("tendency") or {}
-    axes = t.get("axes") or []
-    if not axes:
+    sets = view.get("tendencies") or {}
+    if not sets:
         return "- 학습 성향 검사 미실시"
-    return "\n".join(f"- {a['name']}: {a['score']}점 / 100 ({a['desc']})" for a in axes)
+    out = []
+    for key, t in sets.items():
+        axes = t.get("axes") or []
+        if not axes:
+            continue
+        name = t.get("set_name") or get_tendency_set(key)["name"]
+        out.append(f"[{name}] ({t.get('submitted_at', '')})")
+        out += [f"  - {a['name']}: {a['score']}점 / 100 ({a['desc']})" for a in axes]
+        if t.get("analysis"):
+            out.append(f"  해석: {t['analysis'][:600]}")
+    return "\n".join(out) if out else "- 학습 성향 검사 미실시"
 
 
 def fmt_log_block(view: dict) -> str:
@@ -2943,15 +3120,28 @@ def fmt_log_block(view: dict) -> str:
 
 
 # ── 조회 ────────────────────────────────────────────────
+@app.get("/api/counsel/tendency_sets")
+def get_tendency_sets():
+    """어떤 검사지가 있는지 목록만 (문항은 빼고)."""
+    return {"success": True, "sets": [
+        {"key": s["key"], "name": s["name"], "icon": s["icon"], "desc": s["desc"],
+         "count": len(s["questions"]), "axes": [a["name"] for a in s["axes"]]}
+        for s in TENDENCY_SETS.values()
+    ]}
+
+
 @app.get("/api/counsel/tendency_questions")
-def get_tendency_questions():
+def get_tendency_questions(set: str = DEFAULT_TENDENCY_SET):
     """학습 성향 검사 문항 — 학생이 직접 응시하므로 로그인 없이도 문항만은 볼 수 있다."""
-    return {"success": True, "axes": TENDENCY_AXES, "questions": TENDENCY_QUESTIONS}
+    t = get_tendency_set(set)
+    return {"success": True, "key": t["key"], "name": t["name"], "icon": t["icon"],
+            "desc": t["desc"], "axes": t["axes"], "questions": t["questions"]}
 
 
 class TendencySubmitReq(BaseModel):
     student_name: str
     answers: dict
+    set: str = DEFAULT_TENDENCY_SET
 
 
 @app.post("/api/counsel/tendency_submit")
@@ -2967,21 +3157,35 @@ async def submit_tendency(req: TendencySubmitReq):
     if not s_doc.exists:
         return {"success": False, "detail": "등록된 학생이 아닙니다."}
 
-    axes = score_tendency(req.answers or {})
-    if sum(a["answered"] for a in axes) < len(TENDENCY_QUESTIONS):
+    tset = get_tendency_set(req.set)
+    axes = score_tendency(req.answers or {}, tset["key"])
+    if sum(a["answered"] for a in axes) < len(tset["questions"]):
         return {"success": False, "detail": "모든 문항에 답해주세요."}
 
     payload = {
+        "set": tset["key"], "set_name": tset["name"],
         "answers": {str(k): v for k, v in (req.answers or {}).items()},
         "axes": axes,
         "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "analysis": "",
     }
-    await asyncio.to_thread(lambda: counsel_ref(name).set(
-        {"student_name": name, "tendency": payload, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}, merge=True
-    ))
-    send_telegram_message(f"🧭 [학습 성향 검사]\n{name} 학생이 검사를 마쳤습니다.")
-    return {"success": True, "axes": axes}
+    data = load_counsel(name)
+    tendencies = data.get("tendencies") or {}
+    # 예전에 국어 검사만 있던 시절 자료를 이어받는다
+    if not tendencies and data.get("tendency"):
+        legacy = dict(data["tendency"])
+        legacy.setdefault("set", "korean")
+        legacy.setdefault("set_name", TENDENCY_SETS["korean"]["name"])
+        tendencies["korean"] = legacy
+    tendencies[tset["key"]] = payload
+
+    update = {"student_name": name, "tendencies": tendencies,
+              "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if tset["key"] == "korean":
+        update["tendency"] = payload          # 예전 화면과의 호환
+    await asyncio.to_thread(lambda: counsel_ref(name).set(update, merge=True))
+    send_telegram_message(f"🧭 [{tset['name']}]\n{name} 학생이 검사를 마쳤습니다.")
+    return {"success": True, "axes": axes, "set": tset["key"], "set_name": tset["name"]}
 
 
 @app.get("/api/counsel/me/{student_name}")
@@ -2993,7 +3197,8 @@ def get_my_counsel(student_name: str):
     return {"success": True, "counsel": {
         "naesin": v["naesin"], "mock": v["mock"], "track": v["track"], "tiers": v["tiers"],
         "table_note": v["table_note"],
-        "tendency": v["tendency"], "analysis": v["analysis"], "summary": v["summary"],
+        "tendency": v["tendency"], "tendencies": v["tendencies"],
+        "analysis": v["analysis"], "summary": v["summary"],
         "logs": v["logs"], "log_avg": v["log_avg"],
     }}
 
@@ -3187,27 +3392,38 @@ async def analyze_counsel(req: CounselNameReq):
 
 
 # ── 2) 학습 성향 분석 ───────────────────────────────────
+class TendencyAnalyzeReq(BaseModel):
+    student_name: str
+    set: str = DEFAULT_TENDENCY_SET
+
+
 @app.post("/api/admin/counsel/tendency_analyze", dependencies=[Depends(verify_admin)])
-async def analyze_tendency(req: CounselNameReq):
+async def analyze_tendency(req: TendencyAnalyzeReq):
     name = req.student_name.strip()
     view = build_counsel_view(name)
-    t = view.get("tendency") or {}
+    tset = get_tendency_set(req.set)
+    t = (view.get("tendencies") or {}).get(tset["key"]) or {}
     if not t.get("axes"):
-        return {"success": False, "detail": "학생이 아직 학습 성향 검사를 하지 않았습니다."}
+        return {"success": False, "detail": f"학생이 아직 '{tset['name']}' 검사를 하지 않았습니다."}
 
     answered = []
-    for q in TENDENCY_QUESTIONS:
+    for q in tset["questions"]:
         v = (t.get("answers") or {}).get(str(q["id"]))
         if v is not None:
             answered.append(f"- ({q['axis']}) {q['text']} → {v}점")
 
-    prompt = f"""당신은 학습 코칭 전문가입니다. 아래 학습 성향 검사 결과를 해석해 주세요.
+    axes_text = "\n".join(f"- {a['name']}: {a['score']}점 / 100 ({a['desc']})" for a in t["axes"])
+    subject_hint = {
+        "korean": "국어", "math": "수학", "english": "영어",
+    }.get(tset["key"], "")
+    prompt = f"""당신은 학습 코칭 전문가입니다. 아래 '{tset['name']}' 검사 결과를 해석해 주세요.
 
 [학생] {name}
+[검사지] {tset['name']} — {tset['desc']}
 [척도] 각 축은 0~100점이며, 점수가 높을수록 그 영역이 잘 갖춰진 상태입니다.
 
 [축별 점수]
-{fmt_tendency_block(view)}
+{axes_text}
 
 [문항별 응답] (5점 척도, 역채점 문항은 이미 뒤집어 계산됨)
 {chr(10).join(answered)}
@@ -3219,7 +3435,7 @@ async def analyze_tendency(req: CounselNameReq):
 1. 성격을 단정하거나 낙인찍지 마세요. '지금의 습관'에 대한 이야기로 쓰세요.
 2. 점수가 낮은 축을 지적할 때는 반드시 바꿀 방법을 함께 제시하세요.
 3. 학생이 직접 읽습니다. 존중하는 어조로 쓰되, 문제는 분명히 짚으세요.
-4. 국어 학습과 연결지어 구체적으로 쓰세요.
+4. {"이 검사는 " + subject_hint + " 과목에 대한 것이므로, " + subject_hint + " 공부와 연결지어 구체적으로 쓰세요." if subject_hint else "이 검사는 특정 과목이 아니라 공부하는 태도 전반에 대한 것입니다. 과목을 특정하지 말고 생활 습관과 태도에 초점을 맞춰 쓰세요."}
 
 [출력 형식 — 제목을 그대로 쓸 것]
 ## 1. 한눈에 보는 학습 성향
@@ -3247,8 +3463,14 @@ async def analyze_tendency(req: CounselNameReq):
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     t["analysis"] = text
     t["analyzed_at"] = at
-    counsel_ref(name).set({"tendency": t, "updated_at": at}, merge=True)
-    return {"success": True, "analysis": text, "at": at}
+    data = load_counsel(name)
+    tendencies = _collect_tendencies(data)
+    tendencies[tset["key"]] = t
+    update = {"tendencies": tendencies, "updated_at": at}
+    if tset["key"] == "korean":
+        update["tendency"] = t
+    counsel_ref(name).set(update, merge=True)
+    return {"success": True, "analysis": text, "at": at, "set": tset["key"]}
 
 
 # ── 3) 학생부 정성 평가 ─────────────────────────────────
@@ -3493,7 +3715,9 @@ async def make_summary(req: CounselNameReq):
 
     has = []
     if view["naesin"]["avg"] is not None or view["mock"]["avg"] is not None: has.append("성적")
-    if (view.get("tendency") or {}).get("axes"): has.append("성향검사")
+    for k, t in (view.get("tendencies") or {}).items():
+        if t.get("axes"):
+            has.append(t.get("set_name") or get_tendency_set(k)["name"])
     if view.get("record_eval"): has.append("학생부평가")
     if view.get("logs"): has.append("학습기록")
     if view.get("memos"): has.append("상담메모")
@@ -3515,8 +3739,6 @@ async def make_summary(req: CounselNameReq):
 [학습 성향]
 {fmt_tendency_block(view)}
 
-[성향 해석]
-{(view.get('tendency') or {}).get('analysis', '') or '분석 전'}
 
 [학생부 정성 평가]
 {view.get('record_eval', '') or '평가 전'}
