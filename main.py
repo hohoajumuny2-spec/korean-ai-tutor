@@ -1419,6 +1419,18 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
         raise HTTPException(status_code=400, detail="퀴즈 제목은 필수입니다.")
 
     safe_title = sanitize_doc_id(title)
+
+    # 💡 수정하면서 제목을 바꾼 경우, 예전 이름의 퀴즈가 남아 둘 다 배포되어 버린다.
+    #    old_title이 오면 그 문서를 지운다.
+    old_title = str(req.get("old_title", "") or "").strip()
+    if old_title and sanitize_doc_id(old_title) != safe_title:
+        await asyncio.to_thread(lambda: db.collection("quizzes").document(sanitize_doc_id(old_title)).delete())
+
+    # 고치는 경우에는 처음 만든 날짜를 그대로 둔다
+    prev = await asyncio.to_thread(lambda: db.collection("quizzes").document(safe_title).get())
+    created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
+    created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     await asyncio.to_thread(
         lambda: db.collection("quizzes").document(safe_title).set(
             {
@@ -1426,7 +1438,8 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
                 "questions": req.get("questions", []),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": created_at,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
     )
@@ -2225,11 +2238,31 @@ def delete_inquiry_admin(i_id: str):
     if db: db.collection("inquiries").document(i_id).delete()
     return {"success": True}
 
-class QuestionSaveReq(BaseModel): title: str; content: str
+class QuestionSaveReq(BaseModel):
+    title: str
+    content: str
+    id: str = ""          # 있으면 그 출제본을 고친다
+
+
 @app.post("/api/admin/questions", dependencies=[Depends(verify_admin)])
 def save_question_admin(req: QuestionSaveReq):
-    if db: db.collection("questions").add({"title": req.title, "content": req.content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-    return {"success": True}
+    """출제본을 저장한다. id가 오면 새로 만들지 않고 그 출제본을 고친다.
+    (자동 저장이 돌 때마다 사본이 쌓이지 않도록)"""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    title = req.title.strip() or "제목 없음"
+
+    if req.id.strip():
+        ref = db.collection("questions").document(req.id.strip())
+        if ref.get().exists:
+            ref.set({"title": title, "content": req.content, "updated_at": now}, merge=True)
+            return {"success": True, "id": req.id.strip(), "updated": True}
+
+    _, ref = db.collection("questions").add(
+        {"title": title, "content": req.content, "created_at": now}
+    )
+    return {"success": True, "id": ref.id, "updated": False}
 
 @app.get("/api/admin/questions", dependencies=[Depends(verify_admin)])
 def get_questions_admin():
