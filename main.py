@@ -1430,6 +1430,26 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     return {"success": True}
 
 
+@app.post("/api/admin/quiz/image", dependencies=[Depends(verify_admin)])
+async def upload_quiz_image(file: UploadFile = File(...)):
+    """퀴즈 문항 하나에 붙일 그림(지문 캡처·도표 등)을 올린다."""
+    if not file or not file.filename:
+        return {"success": False, "detail": "파일이 없습니다."}
+    raw = await file.read()
+    if not raw:
+        return {"success": False, "detail": "빈 파일입니다."}
+    ctype = (file.content_type or "").lower()
+    if not ctype.startswith("image/"):
+        return {"success": False, "detail": "그림 파일만 붙일 수 있습니다."}
+    try:
+        url = save_bytes(raw, file.filename, "quiz", ctype)
+    except HTTPException as e:
+        return {"success": False, "detail": str(e.detail)}
+    except Exception as e:
+        return {"success": False, "detail": f"올리지 못했습니다: {e}"}
+    return {"success": True, "url": url}
+
+
 @app.get("/api/quizzes")
 def get_quizzes():
     if db is None:
@@ -1499,6 +1519,7 @@ async def submit_quiz(req: QuizSubmitReq):
             details.append({
                 "no": i + 1,
                 "q_text": str(q.get("q_text", "")),
+                "image": str(q.get("image", "") or ""),
                 "my": my_ans,
                 "my_text": pick(my_ans),
                 "ans": correct_ans,
