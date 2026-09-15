@@ -2411,6 +2411,28 @@ def is_absolute_subject(name: str) -> bool:
 #   등급을 뽑는다. 영어·한국사는 절대평가라 컷이 고정이다.
 ABSOLUTE_DEFAULT_CUTS = [90, 80, 70, 60, 50, 40, 30, 20]   # 1~8등급컷, 나머지 9등급
 
+# 탐구 과목 목록 — 2028 대입 개편으로 탐구가 통합사회·통합과학으로 바뀌므로
+# 그 둘을 맨 앞에 두고, 현행 선택과목도 함께 남겨 둔다(재수생·기존 학년 대비).
+EXAM_SUBJECTS = {
+    "공통": ["국어", "수학", "영어", "한국사"],
+    "사회탐구": ["통합사회", "생활과 윤리", "윤리와 사상", "한국지리", "세계지리",
+                "동아시아사", "세계사", "경제", "정치와 법", "사회·문화"],
+    "과학탐구": ["통합과학", "물리학I", "물리학II", "화학I", "화학II",
+                "생명과학I", "생명과학II", "지구과학I", "지구과학II"],
+    "기타": ["제2외국어/한문", "직업탐구"],
+}
+
+# 학생 계열 — 예체능 포함
+TRACK_OPTIONS = ["미정", "인문", "자연", "예체능"]
+
+
+@app.get("/api/admin/exam_subjects", dependencies=[Depends(verify_admin)])
+def get_exam_subjects():
+    return {"success": True, "groups": EXAM_SUBJECTS, "tracks": TRACK_OPTIONS,
+            "absolute_default": ABSOLUTE_DEFAULT_CUTS}
+
+
+
 
 def raw_to_grade(raw, cuts):
     """원점수를 등급컷에 비춰 등급으로 바꾼다. cuts는 1등급컷부터 내림차순."""
@@ -2658,6 +2680,7 @@ def build_counsel_view(student_name: str) -> dict:
         "summary": data.get("summary"),
         "logs": logs,
         "log_avg": log_avg,
+        "memos": data.get("memos", []),
         "updated_at": data.get("updated_at", ""),
     }
     result["target_gap"] = build_target_gap(result)
@@ -2698,6 +2721,13 @@ def fmt_profile_block(view: dict) -> str:
     ]
     lines = [f"- {label}: {p[key]}" for key, label in labels if p.get(key)]
     return "\n".join(lines) if lines else "- 인적사항 미입력"
+
+
+def fmt_memo_block(view: dict) -> str:
+    memos = view.get("memos") or []
+    if not memos:
+        return "- 상담 메모 없음"
+    return "\n".join(f"- ({m.get('at', '')}) {m.get('text', '')}" for m in memos[:25])
 
 
 def fmt_tendency_block(view: dict) -> str:
@@ -2908,6 +2938,9 @@ async def analyze_counsel(req: CounselNameReq):
 
 [학생 기본 정보]
 {fmt_profile_block(view)}
+
+[원장님 상담 메모]
+{fmt_memo_block(view)}
 
 [성적 및 사전 판정]
 {fmt_grade_block(view)}
@@ -3211,6 +3244,55 @@ def delete_counsel_log(req: CounselLogDeleteReq):
     return {"success": True, "counsel": build_counsel_view(name)}
 
 
+# ── 상담 메모 ──────────────────────────────────────────
+#   상담하면서 그때그때 적어 둔 메모. 종합 소견서를 쓸 때 함께 읽는다.
+class CounselMemoReq(BaseModel):
+    student_name: str
+    text: str
+
+
+@app.post("/api/admin/counsel/memo", dependencies=[Depends(verify_admin)])
+def add_counsel_memo(req: CounselMemoReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    text = req.text.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    if not text:
+        return {"success": False, "detail": "메모 내용을 입력해주세요."}
+
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "text": text[:4000],
+    }
+    data = load_counsel(name)
+    memos = data.get("memos", [])
+    memos.insert(0, entry)
+    counsel_ref(name).set({
+        "student_name": name, "memos": memos[:300],
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
+class CounselMemoDeleteReq(BaseModel):
+    student_name: str
+    memo_id: str
+
+
+@app.post("/api/admin/counsel/memo/delete", dependencies=[Depends(verify_admin)])
+def delete_counsel_memo(req: CounselMemoDeleteReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    data = load_counsel(name)
+    memos = [m for m in data.get("memos", []) if m.get("id") != req.memo_id]
+    counsel_ref(name).set({"memos": memos, "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}, merge=True)
+    return {"success": True, "counsel": build_counsel_view(name)}
+
+
 # ── 통합 종합 소견 ──────────────────────────────────────
 @app.post("/api/admin/counsel/summary", dependencies=[Depends(verify_admin)])
 async def make_summary(req: CounselNameReq):
@@ -3223,6 +3305,7 @@ async def make_summary(req: CounselNameReq):
     if (view.get("tendency") or {}).get("axes"): has.append("성향검사")
     if view.get("record_eval"): has.append("학생부평가")
     if view.get("logs"): has.append("학습기록")
+    if view.get("memos"): has.append("상담메모")
     if not has:
         return {"success": False, "detail": "성적·성향검사·학생부·학습기록 중 아무거나 하나만 채우시면 소견서를 만들 수 있습니다."}
 
@@ -3251,8 +3334,12 @@ async def make_summary(req: CounselNameReq):
 {fmt_log_block(view)}
 {f"(기록된 점수 평균 {view['log_avg']}%)" if view.get('log_avg') is not None else ''}
 
+[원장님 상담 메모 — 직접 보고 적으신 내용입니다. 다른 어떤 자료보다 우선해서 반영하세요]
+{fmt_memo_block(view)}
+
 [반드시 지킬 것]
 1. 위 자료에 없는 사실을 지어내지 마세요. 빠진 자료는 '아직 확보되지 않았다'고 적으세요.
+1-1. [원장님 상담 메모]는 원장님이 학생을 직접 보고 적으신 것입니다. 숫자로 드러나지 않는 사정(가정 형편, 건강, 태도 변화, 진로 고민 등)이 담겨 있으니, 소견서 곳곳에 자연스럽게 녹여 반영하세요. 메모 내용과 다른 자료가 어긋나면 메모를 따르세요.
 2. 대학 이름은 위 성적 항목에 적힌 라인의 대학만 쓰세요.
 3. 학부모님이 읽습니다. 전문 용어는 풀어 쓰고, 아이를 깎아내리지 마세요.
 4. 전체 분량은 A4 한 장 정도로 압축하세요.
