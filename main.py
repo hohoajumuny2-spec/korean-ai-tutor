@@ -78,6 +78,139 @@ LEVELS = [
 ]
 
 
+# ── 아바타 꾸미기 ──────────────────────────────────────
+#   레벨마다 배지 하나씩만 주던 것을 여러 갈래로 늘렸다.
+#   갈래(slot)마다 따로 고를 수 있어 조합이 많아진다.
+#   level은 그 항목이 열리는 레벨. 1이면 처음부터 쓸 수 있다.
+AVATAR_SLOTS = [
+    {"key": "face",   "name": "캐릭터",  "icon": "🙂"},
+    {"key": "color",  "name": "색깔",    "icon": "🎨"},
+    {"key": "hat",    "name": "머리",    "icon": "🎩"},
+    {"key": "pet",    "name": "친구",    "icon": "🐾"},
+    {"key": "badge",  "name": "배지",    "icon": "🏅"},
+    {"key": "effect", "name": "효과",    "icon": "✨"},
+]
+
+# 내 사진을 아바타로 쓸 수 있게 되는 레벨
+PHOTO_UNLOCK_LEVEL = 3
+
+AVATAR_ITEMS = {
+    "face": [
+        {"id": "boy",      "emoji": "👦", "label": "남학생",   "level": 1},
+        {"id": "girl",     "emoji": "👧", "label": "여학생",   "level": 1},
+        {"id": "student",  "emoji": "🧑‍🎓", "label": "졸업생",  "level": 2},
+        {"id": "nerd",     "emoji": "🤓", "label": "안경",     "level": 2},
+        {"id": "cool",     "emoji": "😎", "label": "선글라스", "level": 4},
+        {"id": "star",     "emoji": "🤩", "label": "반짝눈",   "level": 5},
+        {"id": "ninja",    "emoji": "🥷", "label": "닌자",     "level": 6},
+        {"id": "wizard",   "emoji": "🧙", "label": "마법사",   "level": 7},
+        {"id": "astro",    "emoji": "🧑‍🚀", "label": "우주인",  "level": 8},
+        {"id": "hero",     "emoji": "🦸", "label": "영웅",     "level": 9},
+        {"id": "dragon",   "emoji": "🐉", "label": "용",       "level": 10},
+    ],
+    "color": [
+        {"id": "blue",    "label": "바다",     "css": "linear-gradient(135deg,#1e3a8a,#2563eb)", "ring": "#3b82f6", "level": 1},
+        {"id": "green",   "label": "새싹",     "css": "linear-gradient(135deg,#14532d,#16a34a)", "ring": "#22c55e", "level": 1},
+        {"id": "pink",    "label": "벚꽃",     "css": "linear-gradient(135deg,#831843,#db2777)", "ring": "#ec4899", "level": 2},
+        {"id": "purple",  "label": "포도",     "css": "linear-gradient(135deg,#4c1d95,#7c3aed)", "ring": "#8b5cf6", "level": 3},
+        {"id": "orange",  "label": "노을",     "css": "linear-gradient(135deg,#7c2d12,#ea580c)", "ring": "#f97316", "level": 4},
+        {"id": "teal",    "label": "민트",     "css": "linear-gradient(135deg,#134e4a,#0d9488)", "ring": "#14b8a6", "level": 5},
+        {"id": "red",     "label": "불꽃",     "css": "linear-gradient(135deg,#7f1d1d,#dc2626)", "ring": "#ef4444", "level": 6},
+        {"id": "night",   "label": "밤하늘",   "css": "linear-gradient(135deg,#0f172a,#334155)", "ring": "#64748b", "level": 7},
+        {"id": "candy",   "label": "솜사탕",   "css": "linear-gradient(135deg,#db2777,#38bdf8)", "ring": "#f472b6", "level": 8},
+        {"id": "aurora",  "label": "오로라",   "css": "linear-gradient(135deg,#059669,#7c3aed,#0ea5e9)", "ring": "#a78bfa", "level": 9},
+        {"id": "gold",    "label": "황금",     "css": "linear-gradient(135deg,#78350f,#f59e0b,#fde68a)", "ring": "#fbbf24", "level": 10},
+    ],
+    "hat": [
+        {"id": "none",     "emoji": "",   "label": "없음",       "level": 1},
+        {"id": "cap",      "emoji": "🧢", "label": "야구모자",   "level": 3},
+        {"id": "ribbon",   "emoji": "🎀", "label": "리본",       "level": 4},
+        {"id": "headband", "emoji": "🎧", "label": "헤드폰",     "level": 5},
+        {"id": "gradcap",  "emoji": "🎓", "label": "학사모",     "level": 6},
+        {"id": "tophat",   "emoji": "🎩", "label": "중절모",     "level": 7},
+        {"id": "crown",    "emoji": "👑", "label": "왕관",       "level": 8},
+        {"id": "halo",     "emoji": "😇", "label": "천사 고리",  "level": 10},
+    ],
+    "pet": [
+        {"id": "none",   "emoji": "",   "label": "없음",     "level": 1},
+        {"id": "chick",  "emoji": "🐣", "label": "병아리",   "level": 3},
+        {"id": "cat",    "emoji": "🐱", "label": "고양이",   "level": 4},
+        {"id": "dog",    "emoji": "🐶", "label": "강아지",   "level": 5},
+        {"id": "rabbit", "emoji": "🐰", "label": "토끼",     "level": 6},
+        {"id": "fox",    "emoji": "🦊", "label": "여우",     "level": 7},
+        {"id": "owl",    "emoji": "🦉", "label": "부엉이",   "level": 8},
+        {"id": "unicorn","emoji": "🦄", "label": "유니콘",   "level": 9},
+        {"id": "phoenix","emoji": "🔥", "label": "불사조",   "level": 10},
+    ],
+    # 예전에 레벨마다 하나씩 주던 아이템들 — id를 그대로 두어 이미 고른 학생 것이 유지된다
+    "badge": [
+        {"id": "none",      "emoji": "",   "label": "없음",           "level": 1},
+        {"id": "sprout",    "emoji": "🌱", "label": "새싹 배지",      "level": 2},
+        {"id": "clover",    "emoji": "🍀", "label": "네잎클로버",     "level": 3},
+        {"id": "bamboo",    "emoji": "🎍", "label": "대나무 장식",    "level": 4},
+        {"id": "flowerpin", "emoji": "🌸", "label": "꽃 머리핀",      "level": 5},
+        {"id": "wreath",    "emoji": "🌻", "label": "화관",           "level": 6},
+        {"id": "grapes",    "emoji": "🍇", "label": "열매 목걸이",    "level": 7},
+        {"id": "crown",     "emoji": "👑", "label": "작은 왕관",      "level": 8},
+        {"id": "sparkle",   "emoji": "✨", "label": "반짝이는 오라",  "level": 9},
+        {"id": "trophy",    "emoji": "🏆", "label": "황금 트로피",    "level": 10},
+    ],
+    "effect": [
+        {"id": "none",    "emoji": "",   "label": "없음",       "level": 1},
+        {"id": "twinkle", "emoji": "✨", "label": "반짝임",     "level": 4},
+        {"id": "hearts",  "emoji": "💖", "label": "하트",       "level": 5},
+        {"id": "stars",   "emoji": "🌟", "label": "별빛",       "level": 6},
+        {"id": "comet",   "emoji": "💫", "label": "혜성",       "level": 7},
+        {"id": "flame",   "emoji": "🔥", "label": "불꽃",       "level": 8},
+        {"id": "rainbow", "emoji": "🌈", "label": "무지개",     "level": 9},
+        {"id": "galaxy",  "emoji": "🌌", "label": "은하",       "level": 10},
+    ],
+}
+
+AVATAR_DEFAULTS = {"face": "boy", "color": "blue", "hat": "none",
+                   "pet": "none", "badge": "none", "effect": "none"}
+
+
+def avatar_unlocks(level: int) -> dict:
+    """그 레벨에서 쓸 수 있는 항목 id 목록을 갈래별로."""
+    return {slot: [it["id"] for it in items if it["level"] <= level]
+            for slot, items in AVATAR_ITEMS.items()}
+
+
+def new_items_at_level(level: int) -> list:
+    """이번 레벨에서 새로 열린 것들 (레벨업 축하 화면용)."""
+    out = []
+    for slot, items in AVATAR_ITEMS.items():
+        name = next((s["name"] for s in AVATAR_SLOTS if s["key"] == slot), slot)
+        for it in items:
+            if it["level"] == level:
+                out.append({"slot": slot, "slot_name": name,
+                            "emoji": it.get("emoji", "🎨"), "label": it["label"]})
+    if level == PHOTO_UNLOCK_LEVEL:
+        out.append({"slot": "photo", "slot_name": "내 사진", "emoji": "📷",
+                    "label": "내 사진을 아바타로 쓰기"})
+    return out
+
+
+def sanitize_avatar(raw: dict, level: int) -> dict:
+    """학생이 보낸 꾸미기 값을 레벨에 맞게 걸러낸다. 아직 못 여는 것은 기본값으로."""
+    raw = raw or {}
+    unlocked = avatar_unlocks(level)
+    out = {}
+    for slot, default in AVATAR_DEFAULTS.items():
+        want = str(raw.get(slot, "") or "").strip()
+        out[slot] = want if want in unlocked.get(slot, []) else default
+    out["use_photo"] = bool(raw.get("use_photo")) and level >= PHOTO_UNLOCK_LEVEL
+    return out
+
+
+@app.get("/api/student/avatar_catalog")
+def get_avatar_catalog():
+    """꾸미기 항목 전체 목록 — 어느 레벨에 열리는지 함께."""
+    return {"success": True, "slots": AVATAR_SLOTS, "items": AVATAR_ITEMS,
+            "defaults": AVATAR_DEFAULTS, "photo_level": PHOTO_UNLOCK_LEVEL}
+
+
 def compute_level_info(xp) -> dict:
     """누적 xp로 현재 레벨/다음 레벨까지 필요한 양/지금까지 잠금해제된 꾸미기 아이템을 계산한다."""
     try:
@@ -96,6 +229,7 @@ def compute_level_info(xp) -> dict:
 
     next_lv = LEVELS[idx + 1] if idx + 1 < len(LEVELS) else None
     unlocked_items = [lv["unlock_item"] for lv in LEVELS[: idx + 1] if lv["unlock_item"]]
+    lv_num = current["level"]
 
     return {
         "level": current["level"],
@@ -107,6 +241,10 @@ def compute_level_info(xp) -> dict:
         "next_name": next_lv["name"] if next_lv else None,
         "is_max": next_lv is None,
         "unlocked_items": unlocked_items,
+        "unlocked": avatar_unlocks(lv_num),
+        "new_at_this_level": new_items_at_level(lv_num),
+        "photo_unlocked": lv_num >= PHOTO_UNLOCK_LEVEL,
+        "photo_level": PHOTO_UNLOCK_LEVEL,
     }
 
 
@@ -117,7 +255,12 @@ def level_up_info(old_xp, delta):
     old_lv = compute_level_info(old_xp)
     new_lv = compute_level_info((old_xp or 0) + delta)
     if new_lv["level"] > old_lv["level"]:
-        return {"from": old_lv["level"], "to": new_lv["level"], "name": new_lv["name"], "icon": new_lv["icon"]}
+        # 건너뛴 레벨이 있을 수 있으니 그 사이에 열린 것을 모두 모은다
+        gained = []
+        for lv in range(old_lv["level"] + 1, new_lv["level"] + 1):
+            gained += new_items_at_level(lv)
+        return {"from": old_lv["level"], "to": new_lv["level"], "name": new_lv["name"],
+                "icon": new_lv["icon"], "unlocked": gained}
     return None
 
 # 💡 해결: 파일 업로드 제한을 25MB에서 100MB로 대폭 상향 조정
@@ -485,28 +628,43 @@ def get_student_profile(student_name: str):
 
 class AvatarSaveRequest(BaseModel):
     student_name: str
-    gender: str
-    item: str = "none"
+    gender: str = ""          # 예전 방식 (boy/girl) — 넘어오면 face로 옮긴다
+    item: str = ""            # 예전 방식 (배지 하나)
+    avatar: dict = None       # 새 방식 {face,color,hat,pet,badge,effect,use_photo}
 
 
 @app.post("/api/student/avatar")
 async def save_avatar(req: AvatarSaveRequest):
     if db is None:
         return {"success": False}
-    if req.gender not in ("boy", "girl"):
-        return {"success": False, "detail": "성별 값이 올바르지 않습니다."}
 
-    s_ref = db.collection("students").document(req.student_name)
+    s_ref = db.collection("students").document(sanitize_doc_id(req.student_name))
     doc = await asyncio.to_thread(s_ref.get)
     if not doc.exists:
         return {"success": False, "detail": "학생 정보를 찾을 수 없습니다."}
 
-    info = compute_level_info(doc.to_dict().get("xp"))
-    unlocked_ids = {it["id"] for it in info["unlocked_items"]}
-    item = req.item if (req.item == "none" or req.item in unlocked_ids) else "none"
+    data = doc.to_dict() or {}
+    info = compute_level_info(data.get("xp"))
 
-    await asyncio.to_thread(lambda: s_ref.set({"avatar_gender": req.gender, "avatar_item": item}, merge=True))
-    return {"success": True, "gender": req.gender, "item": item}
+    raw = dict(req.avatar or {})
+    # 예전 화면에서 온 요청도 받아준다
+    if not raw:
+        if req.gender in ("boy", "girl"):
+            raw["face"] = req.gender
+        if req.item:
+            raw["badge"] = req.item
+        prev = data.get("avatar_look") or {}
+        for k, v in prev.items():
+            raw.setdefault(k, v)
+
+    look = sanitize_avatar(raw, info["level"])
+    await asyncio.to_thread(lambda: s_ref.set({
+        "avatar_look": look,
+        # 예전 화면이 읽던 항목도 함께 맞춰 둔다
+        "avatar_gender": look["face"] if look["face"] in ("boy", "girl") else data.get("avatar_gender", "boy"),
+        "avatar_item": look["badge"],
+    }, merge=True))
+    return {"success": True, "avatar": look, "level_info": info}
 
 
 @app.post("/api/student/profile_update")
