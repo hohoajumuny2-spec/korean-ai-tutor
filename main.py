@@ -1463,11 +1463,28 @@ async def chat_with_ai(
     knowledge_base = await asyncio.to_thread(build_safe_knowledge_context, subject)
     ai_guidelines = await asyncio.to_thread(get_ai_guidelines, subject)
 
+    has_images = bool(files) and any(f.filename for f in files)
+    # 💡 수학은 사진 속 수식(분수, 지수, 루트, 그리스 문자, 손글씨 등)을 한 글자라도
+    # 잘못 읽으면 완전히 다른 문제가 돼버린다. 이미지가 있을 때는 "먼저 보이는 대로
+    # 정확히 옮겨 적고, 그다음에 풀라"고 못 박아서 대충 짐작해 답하는 것을 막는다.
+    math_image_note = ""
+    if subj_key == "math" and has_images:
+        math_image_note = """
+
+[사진이 첨부되었을 때 반드시 지킬 것]
+1. 답을 하기 전에, 사진 속 수식과 숫자를 빠짐없이 정확하게 옮겨 적으세요
+   (분수는 분자/분모를 각각, 지수·아래첨자·루트·시그마·적분 기호·그리스 문자까지
+   놓치지 말고, 읽은 그대로 텍스트로 먼저 옮겨 적으세요).
+2. 글씨가 흐리거나 겹쳐서 확실하지 않은 부분이 있으면, 짐작해서 넘어가지 말고
+   "이 부분이 OOO인지 XXX인지 확실하지 않다"고 먼저 말하고, 가장 그럴듯한 해석으로
+   풀이하되 그 사실을 학생에게 알려주세요.
+3. 옮겨 적은 식을 바탕으로 풀이 과정을 단계별로 보여준 뒤 답을 제시하세요."""
+
     system_prompt = f"""당신은 로지에듀 {subj['role']} AI 튜터 '{subj['persona']}'입니다.
 아래 [원장님 답변 원칙]이 있다면 그 방식과 관점을 최우선으로 따라서 설명하세요.
 그 다음으로 [학원 누적 자료]를 참고하여 다정하고 명쾌하게 답변하세요.
 만약 학생이 묻는 내용이 자료에 없더라도, {subj['label']} 전문가로서의 지식을 활용해 {subj['expertise']}을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
-단, 모의고사나 퀴즈의 정답을 직접적으로 물어볼 때는 정답 대신 힌트만 제공하세요.
+단, 모의고사나 퀴즈의 정답을 직접적으로 물어볼 때는 정답 대신 힌트만 제공하세요.{math_image_note}
 
 [원장님 답변 원칙]
 {ai_guidelines or f"(설정된 원칙 없음 - 일반적인 {subj['label']} 교육 원칙에 따라 설명)"}
@@ -1485,7 +1502,10 @@ async def chat_with_ai(
                 file_bytes = await f.read()
                 contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
     try:
-        response = await asyncio.to_thread(safe_generate, contents, False)
+        # 💡 사진 속 수식을 읽어내는 건 빠른(저렴한) 모델이 자주 틀린다 — 수학 + 사진일 때만
+        # 정밀한(비싼) 모델을 쓴다. 그 외(텍스트 질문, 국어·영어)는 기존처럼 빠른 모델 그대로.
+        use_quality_model = subj_key == "math" and has_images
+        response = await asyncio.to_thread(safe_generate, contents, False, use_quality_model)
         lvl_up = None
         if db is not None and student_name and student_name != "미상":
             try:
