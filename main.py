@@ -342,19 +342,48 @@ def ensure_owner_admin():
 def issue_admin_token(name: str) -> str:
     token = uuid.uuid4().hex
     _admin_tokens[token] = name
+    # 💡 토큰을 메모리에만 두면, 코드를 배포할 때마다(서버 재시작) 로그인해 있던
+    # 관리자가 전부 강제 로그아웃됐다 — 그것도 화면에 이유가 안 보이는 채로.
+    # DB에도 함께 저장해 재시작 후에도 같은 토큰이 계속 통하게 한다.
+    if db is not None:
+        try:
+            db.collection("admin_sessions").document(token).set({
+                "name": name, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception:
+            pass
     return token
 
 
+def _resolve_admin_token(token: str):
+    """메모리 캐시에 먼저 있는지 보고, 없으면(막 재시작된 서버) DB에서 찾아 캐시를 채운다."""
+    if token in _admin_tokens:
+        return _admin_tokens[token]
+    if db is None:
+        return None
+    try:
+        doc = db.collection("admin_sessions").document(token).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    name = (doc.to_dict() or {}).get("name")
+    if name:
+        _admin_tokens[token] = name
+    return name
+
+
 def verify_admin(x_admin_token: Optional[str] = Header(None)):
-    if not x_admin_token or x_admin_token not in _admin_tokens:
+    if not x_admin_token or _resolve_admin_token(x_admin_token) is None:
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
     return True
 
 
 def current_admin_name(x_admin_token: Optional[str] = Header(None)) -> str:
-    if not x_admin_token or x_admin_token not in _admin_tokens:
+    name = _resolve_admin_token(x_admin_token) if x_admin_token else None
+    if not name:
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
-    return _admin_tokens[x_admin_token]
+    return name
 
 
 # ─────────────────────────────────────────────────────────
