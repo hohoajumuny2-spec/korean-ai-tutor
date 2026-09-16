@@ -1429,6 +1429,8 @@ async def submit_exam(req: ExamSubmitRequest):
         "details": details,
         "correct_count": sum(1 for d in details if d["ok"]),
         "question_count": len(details),
+        "question_stats": (await asyncio.to_thread(
+            lambda: compute_question_stats(req.title, "모의고사")))["questions"],
         "video_url": data.get("video_url", ""),
         "explanation_text": data.get("explanation_text", ""),
         "level_up": lvl_up,
@@ -1701,6 +1703,89 @@ class QuizSubmitReq(BaseModel):
     answers: list
 
 
+def compute_question_stats(task_name: str, kind: str, with_names: bool = False) -> dict:
+    """문항마다 몇 명이 맞고 틀렸는지 센다.
+    제출 기록에 남는 wrongs(틀린 문항 번호)를 뒤집어 정답자를 구한다."""
+    if db is None:
+        return {"questions": [], "submitted": 0}
+    try:
+        docs = list(
+            db.collection("reports")
+            .where("task_name", "==", task_name)
+            .where("type", "==", kind)
+            .stream()
+        )
+    except Exception:
+        return {"questions": [], "submitted": 0}
+
+    # 한 학생이 여러 번 냈으면 가장 나중 것만 본다
+    latest = {}
+    for d in docs:
+        r = d.to_dict() or {}
+        name = str(r.get("student_name", "")).strip()
+        if not name:
+            continue
+        when = str(r.get("submitted_at", ""))
+        if name not in latest or when >= latest[name][0]:
+            latest[name] = (when, r)
+
+    rows = [r for _, r in latest.values()]
+    # 예전 기록에는 문항 수가 없을 수 있어 여러 곳에서 찾아본다
+    q_count = 0
+    for r in rows:
+        n = _num(r.get("question_count"))
+        if n:
+            q_count = max(q_count, int(n))
+        for w in (r.get("wrongs") or []):
+            wn = _num(w)
+            if wn:
+                q_count = max(q_count, int(wn))
+    if q_count <= 0:
+        return {"questions": [], "submitted": len(rows)}
+
+    stats = []
+    for no in range(1, q_count + 1):
+        correct = wrong = 0
+        wrong_names = []
+        for r in rows:
+            # wrongs가 아예 없는 예전 기록은 셀 수 없으니 건너뛴다
+            if "wrongs" not in r:
+                continue
+            if no in [int(x) for x in (r.get("wrongs") or []) if _num(x) is not None]:
+                wrong += 1
+                if with_names:
+                    wrong_names.append(str(r.get("student_name", "")))
+            else:
+                correct += 1
+        total = correct + wrong
+        item = {
+            "no": no, "correct": correct, "wrong": wrong, "total": total,
+            "rate": round(correct / total * 100) if total else None,
+        }
+        if with_names:
+            item["wrong_names"] = wrong_names[:60]
+        stats.append(item)
+
+    counted = sum(1 for r in rows if "wrongs" in r)
+    return {"questions": stats, "submitted": counted, "students": len(rows)}
+
+
+@app.get("/api/stats/questions")
+def get_question_stats(title: str, kind: str = "타임어택 퀴즈"):
+    """문항별 정답률 — 학생도 볼 수 있다. 이름은 나오지 않는다."""
+    if kind not in ("타임어택 퀴즈", "모의고사"):
+        return {"success": False, "detail": "알 수 없는 종류입니다."}
+    return {"success": True, **compute_question_stats(urllib.parse.unquote(title), kind)}
+
+
+@app.get("/api/admin/stats/questions", dependencies=[Depends(verify_admin)])
+def get_question_stats_admin(title: str, kind: str = "타임어택 퀴즈"):
+    """원장님용 — 어느 학생이 틀렸는지까지 함께."""
+    if kind not in ("타임어택 퀴즈", "모의고사"):
+        return {"success": False, "detail": "알 수 없는 종류입니다."}
+    return {"success": True, **compute_question_stats(urllib.parse.unquote(title), kind, with_names=True)}
+
+
 def compute_rank(task_name: str, kind: str, my_name: str, my_score) -> dict:
     """같은 퀴즈를 푼 학생들 사이에서 몇 등인지 센다.
     점수가 같으면 같은 등수를 주고, 그 다음 등수는 인원만큼 건너뛴다. (1, 2, 2, 4)"""
@@ -1863,6 +1948,8 @@ async def submit_quiz(req: QuizSubmitReq):
         "question_count": len(details),
         "wrongs": [d["no"] for d in details if not d["ok"]],
         "rank": rank,
+        "question_stats": (await asyncio.to_thread(
+            lambda: compute_question_stats(req.title, "타임어택 퀴즈")))["questions"],
         "level_up": lvl_up,
     }
 
