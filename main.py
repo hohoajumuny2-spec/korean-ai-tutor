@@ -1701,6 +1701,72 @@ class QuizSubmitReq(BaseModel):
     answers: list
 
 
+def compute_rank(task_name: str, kind: str, my_name: str, my_score) -> dict:
+    """같은 퀴즈를 푼 학생들 사이에서 몇 등인지 센다.
+    점수가 같으면 같은 등수를 주고, 그 다음 등수는 인원만큼 건너뛴다. (1, 2, 2, 4)"""
+    if db is None:
+        return {}
+    try:
+        docs = list(
+            db.collection("reports")
+            .where("task_name", "==", task_name)
+            .where("type", "==", kind)
+            .stream()
+        )
+    except Exception:
+        return {}
+
+    # 한 학생이 여러 번 들어가 있으면 가장 높은 점수만 센다
+    best = {}
+    for d in docs:
+        r = d.to_dict() or {}
+        name = str(r.get("student_name", "")).strip()
+        sc = _num(r.get("score"))
+        if not name or sc is None:
+            continue
+        if name not in best or sc > best[name]:
+            best[name] = sc
+
+    mine = _num(my_score)
+    if mine is not None:
+        # 방금 낸 점수가 아직 반영 안 됐을 수 있으니 직접 넣어 준다
+        if my_name not in best or mine > best[my_name]:
+            best[my_name] = mine
+
+    total = len(best)
+    if total == 0 or mine is None:
+        return {}
+
+    higher = sum(1 for s in best.values() if s > mine)
+    same = sum(1 for s in best.values() if s == mine)
+    rank = higher + 1
+
+    if rank == 1 and same == 1:
+        message = "🥇 1등입니다! 축하합니다!"
+    elif rank == 1:
+        message = f"🥇 공동 1등입니다! 축하합니다! ({same}명 공동)"
+    elif rank == 2:
+        message = "🥈 2등입니다! 아깝습니다, 잘했어요!"
+    elif rank == 3:
+        message = "🥉 3등입니다! 잘했어요!"
+    elif total >= 4 and rank <= max(1, round(total * 0.3)):
+        message = "👏 상위권입니다! 잘하고 있어요."
+    elif rank == total and total > 1:
+        message = "다음엔 더 잘할 수 있어요. 틀린 문제부터 다시 봅시다."
+    else:
+        message = "끝까지 푼 것만으로도 잘했습니다. 틀린 문제를 챙겨봅시다."
+
+    return {
+        "rank": rank,
+        "total": total,
+        "tied": same,
+        "top_score": max(best.values()),
+        "percentile": round((total - higher) / total * 100),
+        "message": message,
+        "text": f"지금까지 {total}명 중 {rank}등입니다" + (f" ({same}명 공동)" if same > 1 else ""),
+    }
+
+
 @app.post("/api/quiz/submit")
 async def submit_quiz(req: QuizSubmitReq):
     if db is None:
@@ -1785,6 +1851,9 @@ async def submit_quiz(req: QuizSubmitReq):
         lambda: s_ref.set({"xp": firestore.Increment(quiz_xp)}, merge=True)
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
+    rank = await asyncio.to_thread(
+        lambda: compute_rank(req.title, "타임어택 퀴즈", req.student_name, actual_score)
+    )
     return {
         "success": True,
         "score": actual_score,
@@ -1793,6 +1862,7 @@ async def submit_quiz(req: QuizSubmitReq):
         "correct_count": sum(1 for d in details if d["ok"]),
         "question_count": len(details),
         "wrongs": [d["no"] for d in details if not d["ok"]],
+        "rank": rank,
         "level_up": lvl_up,
     }
 
