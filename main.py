@@ -387,6 +387,154 @@ def current_admin_name(x_admin_token: Optional[str] = Header(None)) -> str:
 
 
 # ─────────────────────────────────────────────────────────
+# 레벨업 룰렛
+#   레벨업할 때마다 한 번, 그 레벨 전용 룰렛을 돌려 상품을 받는다.
+#   상품 내용은 원장님이 직접 적고, 레벨이 높을수록 더 좋은 상품을 넣을 수 있다.
+#   기본값은 꽝이 압도적으로 많고, 꽝 칸을 상품 칸 바로 옆에 둬서
+#   "아깝게 꽝"이 되는 느낌을 자주 주도록 배치했다.
+# ─────────────────────────────────────────────────────────
+def _default_roulette_config():
+    def miss():
+        return {"label": "꽝", "is_miss": True}
+
+    def prize(label):
+        return {"label": label, "is_miss": False}
+
+    def wheel(prizes):
+        """꽝 6~7칸 사이사이에 상품을 끼워 넣는다 — 상품 옆은 항상 꽝이라
+        '조금만 더 갔으면...' 하는 느낌이 나도록."""
+        slices = [miss() for _ in range(7)]
+        for i, p in enumerate(prizes):
+            pos = 1 + i * 3
+            slices.insert(min(pos, len(slices)), p)
+        return slices
+
+    return {
+        "1": wheel([prize("칭찬 한마디 🌟")]),
+        "2": wheel([prize("사탕 1개 🍬")]),
+        "3": wheel([prize("칭찬 스티커 🏅")]),
+        "4": wheel([prize("간식 교환권 🍪")]),
+        "5": wheel([prize("숙제 힌트 카드 💡")]),
+        "6": wheel([prize("간식 교환권 🍪"), prize("칭찬 상장 📜")]),
+        "7": wheel([prize("작은 선물 🎁")]),
+        "8": wheel([prize("작은 선물 🎁"), prize("특별 간식 🍰")]),
+        "9": wheel([prize("특별 선물 🎁")]),
+        "10": wheel([prize("원장님 특별 선물 🏆"), prize("깜짝 선물 🎉")]),
+    }
+
+
+def get_roulette_config():
+    """레벨(1~10)별 룰렛 칸 구성. 원장님이 저장한 값이 있으면 그걸, 없는 레벨은 기본값으로 채운다."""
+    defaults = _default_roulette_config()
+    if db is None:
+        return defaults
+    doc = db.collection("settings").document("roulette_config").get()
+    saved = (doc.to_dict() or {}).get("levels") if doc.exists else None
+    levels = dict(defaults)
+    if saved:
+        for k, v in saved.items():
+            if v:
+                levels[str(k)] = v
+    return levels
+
+
+@app.get("/api/admin/roulette_config", dependencies=[Depends(verify_admin)])
+def get_roulette_config_admin():
+    return {"success": True, "levels": get_roulette_config()}
+
+
+class RouletteConfigReq(BaseModel):
+    level: int
+    slices: list
+
+
+@app.post("/api/admin/roulette_config", dependencies=[Depends(verify_admin)])
+def save_roulette_config(req: RouletteConfigReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if req.level < 1 or req.level > 10:
+        return {"success": False, "detail": "레벨은 1~10 사이여야 합니다."}
+    slices = []
+    for s in (req.slices or []):
+        label = str((s or {}).get("label", "")).strip()
+        if not label:
+            return {"success": False, "detail": "빈 칸 내용이 있습니다."}
+        slices.append({"label": label, "is_miss": bool((s or {}).get("is_miss"))})
+    if len(slices) < 2:
+        return {"success": False, "detail": "룰렛 칸은 최소 2개 이상이어야 합니다."}
+    levels = get_roulette_config()
+    levels[str(req.level)] = slices
+    db.collection("settings").document("roulette_config").set({"levels": levels}, merge=True)
+    return {"success": True}
+
+
+@app.get("/api/student/roulette_config")
+def get_roulette_config_student(level: int = 1):
+    levels = get_roulette_config()
+    level = max(1, min(10, int(level or 1)))
+    slices = levels.get(str(level)) or levels.get("1")
+    return {"success": True, "level": level, "slices": slices}
+
+
+@app.get("/api/student/roulette/eligible")
+def roulette_eligible(student_name: str):
+    """학습실에 들어왔을 때, 아직 안 돌린 룰렛이 있는지 조용히 확인한다."""
+    if db is None:
+        return {"success": True, "eligible": False}
+    doc = db.collection("students").document(student_name.strip()).get()
+    if not doc.exists:
+        return {"success": True, "eligible": False}
+    data = doc.to_dict()
+    info = compute_level_info(data.get("xp"))
+    last = _num(data.get("roulette_last_level")) or 0
+    return {"success": True, "eligible": info["level"] > last, "level": info["level"]}
+
+
+class RouletteSpinReq(BaseModel):
+    student_name: str
+
+
+@app.post("/api/student/roulette/spin")
+async def spin_roulette(req: RouletteSpinReq):
+    """당첨 여부는 반드시 서버가 정한다 — 학생이 보내는 레벨/결과 값은 신뢰하지 않고,
+    학생 명단에 저장된 실제 경험치로 지금 레벨을 다시 계산한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    doc = await asyncio.to_thread(lambda: db.collection("students").document(name).get())
+    if not doc.exists:
+        return {"success": False, "detail": "학생 명단에서 찾을 수 없습니다."}
+    data = doc.to_dict()
+    info = compute_level_info(data.get("xp"))
+    level = info["level"]
+    last = _num(data.get("roulette_last_level")) or 0
+    if level <= last:
+        return {"success": False, "detail": "지금 레벨에서는 이미 룰렛을 돌렸습니다. 다음 레벨업을 기다려주세요."}
+
+    levels = get_roulette_config()
+    slices = levels.get(str(level)) or levels.get("1")
+    idx = random.randrange(len(slices))
+    won = slices[idx]
+
+    await asyncio.to_thread(
+        lambda: db.collection("students").document(name).set({"roulette_last_level": level}, merge=True)
+    )
+    await asyncio.to_thread(
+        lambda: db.collection("reports").add({
+            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "student_name": name, "school": data.get("school", ""), "grade": data.get("grade", ""),
+            "task_name": f"Lv.{level} 룰렛", "type": "룰렛", "score": won["label"],
+        })
+    )
+    if not won["is_miss"]:
+        send_telegram_message(f"🎰 [룰렛 당첨]\n{name} 학생이 Lv.{level} 룰렛에서 '{won['label']}'에 당첨됐습니다!")
+
+    return {"success": True, "level": level, "index": idx, "slices": slices,
+            "label": won["label"], "is_miss": won["is_miss"]}
+
+
+
+# ─────────────────────────────────────────────────────────
 # 파일 저장 (경로 조작 방지 + 확장자/용량 검증)
 # ─────────────────────────────────────────────────────────
 def get_safe_filename(filename: str) -> str:
