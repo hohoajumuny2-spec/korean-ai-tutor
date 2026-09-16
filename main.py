@@ -1136,21 +1136,59 @@ def get_reports(_: bool = Depends(verify_admin)):
 # ─────────────────────────────────────────────────────────
 # 챗봇 — 답변 자율성 부여 (족쇄 해제)
 # ─────────────────────────────────────────────────────────
-def build_safe_knowledge_context() -> str:
-    """학생 챗봇에 노출해도 안전한 자료만 모은다 (정답/해설 필드 제외)."""
+# ─────────────────────────────────────────────────────────
+# 과목 — 24시간 AI 튜터를 국어뿐 아니라 수학·영어로 확장.
+#   과목마다 자료학습(knowledge)과 AI 답변 원칙(ai_guidelines)을 완전히 분리해서
+#   국어 지문 자료가 수학·영어 질문에 섞여 들어가지 않게 한다.
+# ─────────────────────────────────────────────────────────
+SUBJECTS = {
+    "korean": {
+        "label": "국어", "persona": "국최", "greeting_persona": "스마트 국최",
+        "role": "국어학원", "expertise": "국어 개념(문법, 표현법 등)",
+    },
+    "math": {
+        "label": "수학", "persona": "수박", "greeting_persona": "스마트 수박",
+        "role": "수학학원", "expertise": "수학 개념(공식, 풀이 과정 등)",
+    },
+    "english": {
+        "label": "영어", "persona": "재우T", "greeting_persona": "스마트 재우T",
+        "role": "영어학원", "expertise": "영어 개념(문법, 어휘, 독해 등)",
+    },
+}
+
+
+def normalize_subject(subject) -> str:
+    s = str(subject or "korean").strip().lower()
+    return s if s in SUBJECTS else "korean"
+
+
+def build_safe_knowledge_context(subject: str = "korean") -> str:
+    """학생 챗봇에 노출해도 안전한 자료만, 그 과목 것만 모은다 (정답/해설 필드 제외)."""
     if db is None:
         return ""
-    kb_docs = db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).limit(50).stream()
-    knowledge_base = "\n".join([f"[{d.to_dict().get('title')}] {d.to_dict().get('content')}" for d in kb_docs])
+    subject = normalize_subject(subject)
+    rows = [d.to_dict() for d in db.collection("knowledge").stream()]
+    # 과목 구분이 생기기 전에 올라간 예전 자료는 전부 국어 자료였다.
+    rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
+    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    knowledge_base = "\n".join([f"[{r.get('title')}] {r.get('content')}" for r in rows[:50]])
     return knowledge_base
 
 
-def get_ai_guidelines() -> str:
-    """원장님이 설정한 'AI 답변 원칙'(수업 방식/설명 스타일 지침)을 가져온다."""
+def get_ai_guidelines(subject: str = "korean") -> str:
+    """원장님이 설정한 'AI 답변 원칙'(수업 방식/설명 스타일 지침)을 과목별로 가져온다."""
     if db is None:
         return ""
-    doc = db.collection("settings").document("ai_guidelines").get()
-    return doc.to_dict().get("text", "") if doc.exists else ""
+    subject = normalize_subject(subject)
+    doc = db.collection("settings").document(f"ai_guidelines_{subject}").get()
+    if doc.exists:
+        return doc.to_dict().get("text", "")
+    if subject == "korean":
+        # 과목 구분이 생기기 전에 적어둔 원칙은 국어 원칙으로 그대로 이어받는다.
+        legacy = db.collection("settings").document("ai_guidelines").get()
+        if legacy.exists:
+            return legacy.to_dict().get("text", "")
+    return ""
 
 
 def grant_chat_xp(student_name: str):
@@ -1175,25 +1213,27 @@ def grant_chat_xp(student_name: str):
 async def chat_with_ai(
     request: Request,
     prompt: str = Form(...),
+    subject: str = Form("korean"),
     school: str = Form("미상"),
     grade: str = Form("미상"),
     student_name: str = Form("미상"),
     files: Optional[List[UploadFile]] = File(None),
 ):
-    check_rate_limit(request, "chat", max_calls=15, window_seconds=60)
-    send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 국최에게 질문을 남겼습니다.\n\nQ: {prompt}")
+    subj = SUBJECTS[normalize_subject(subject)]
+    check_rate_limit(request, f"chat_{normalize_subject(subject)}", max_calls=15, window_seconds=60)
+    send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 {subj['persona']}에게 질문을 남겼습니다.\n\nQ: {prompt}")
 
-    knowledge_base = await asyncio.to_thread(build_safe_knowledge_context)
-    ai_guidelines = await asyncio.to_thread(get_ai_guidelines)
+    knowledge_base = await asyncio.to_thread(build_safe_knowledge_context, subject)
+    ai_guidelines = await asyncio.to_thread(get_ai_guidelines, subject)
 
-    system_prompt = f"""당신은 로지에듀 국어학원 AI 튜터 '국최'입니다.
+    system_prompt = f"""당신은 로지에듀 {subj['role']} AI 튜터 '{subj['persona']}'입니다.
 아래 [원장님 답변 원칙]이 있다면 그 방식과 관점을 최우선으로 따라서 설명하세요.
 그 다음으로 [학원 누적 자료]를 참고하여 다정하고 명쾌하게 답변하세요.
-만약 학생이 묻는 내용이 자료에 없더라도, 국어 전문가로서의 지식을 활용해 국어 개념(문법, 표현법 등)을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
+만약 학생이 묻는 내용이 자료에 없더라도, {subj['label']} 전문가로서의 지식을 활용해 {subj['expertise']}을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
 단, 모의고사나 퀴즈의 정답을 직접적으로 물어볼 때는 정답 대신 힌트만 제공하세요.
 
 [원장님 답변 원칙]
-{ai_guidelines or "(설정된 원칙 없음 - 일반적인 국어 교육 원칙에 따라 설명)"}
+{ai_guidelines or f"(설정된 원칙 없음 - 일반적인 {subj['label']} 교육 원칙에 따라 설명)"}
 
 [학원 누적 자료]
 {knowledge_base}
@@ -2652,30 +2692,43 @@ def delete_lecture_admin(lecture_id: str):
     return {"success": True}
 
 @app.get("/api/knowledge")
-def get_knowledge():
+def get_knowledge(subject: str = "korean"):
     if db is None: return {"success": False, "knowledge": []}
-    return {"success": True, "knowledge": [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    subject = normalize_subject(subject)
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").stream()]
+    rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
+    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return {"success": True, "knowledge": rows}
+
+
+@app.get("/api/subjects")
+def get_subjects():
+    """국어/수학/영어 등 지금 운영 중인 과목 목록 — 화면에서 탭을 만들 때 쓴다."""
+    return {"success": True, "subjects": [{"key": k, **v} for k, v in SUBJECTS.items()]}
 
 
 @app.get("/api/admin/ai_guidelines", dependencies=[Depends(verify_admin)])
-def get_ai_guidelines_admin():
-    return {"success": True, "text": get_ai_guidelines()}
+def get_ai_guidelines_admin(subject: str = "korean"):
+    return {"success": True, "text": get_ai_guidelines(subject)}
 
 
 class AIGuidelinesRequest(BaseModel):
     text: str
+    subject: str = "korean"
 
 
 @app.post("/api/admin/ai_guidelines", dependencies=[Depends(verify_admin)])
 async def save_ai_guidelines(req: AIGuidelinesRequest):
     if db is None:
         return {"success": False}
-    await asyncio.to_thread(lambda: db.collection("settings").document("ai_guidelines").set({"text": req.text.strip()}))
+    subject = normalize_subject(req.subject)
+    await asyncio.to_thread(lambda: db.collection("settings").document(f"ai_guidelines_{subject}").set({"text": req.text.strip()}))
     return {"success": True}
 
 @app.post("/api/admin/knowledge", dependencies=[Depends(verify_admin)])
-async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), files: Optional[List[UploadFile]] = File(None)):
+async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), subject: str = Form("korean"), files: Optional[List[UploadFile]] = File(None)):
     if db is None: return {"success": False}
+    subject = normalize_subject(subject)
     final_content = content
     if files:
         for file in files:
@@ -2684,12 +2737,13 @@ async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), f
                     res = await asyncio.to_thread(safe_generate, ["이 문서의 핵심 지식을 요약해줘.", {"mime_type": file.content_type, "data": await file.read()}], False)
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except: pass
-    await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": final_content, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": final_content, "subject": subject, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     return {"success": True}
 
 @app.post("/api/admin/knowledge/bulk", dependencies=[Depends(verify_admin)])
-async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...)):
+async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...), subject: str = Form("korean")):
     if db is None: return {"success": False}
+    subject = normalize_subject(subject)
     processed = 0
     for file in files:
         if file.filename:
@@ -2702,7 +2756,7 @@ async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...)):
                     for page in doc: extracted_text += page.get_text()
                 else: extracted_text = file_bytes.decode('utf-8', errors='ignore')
                 res = await asyncio.to_thread(safe_generate, [f"다음 문서의 핵심을 요약해줘.\n{extracted_text[:100000]}"], False)
-                await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": f"[{title} 요약]\n{res.text}", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+                await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": f"[{title} 요약]\n{res.text}", "subject": subject, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
                 processed += 1
             except: pass
     return {"success": True, "count": processed}
