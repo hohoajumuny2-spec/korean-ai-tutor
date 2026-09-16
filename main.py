@@ -667,6 +667,61 @@ async def save_avatar(req: AvatarSaveRequest):
     return {"success": True, "avatar": look, "level_info": info}
 
 
+# ── 관리자 아바타 ──────────────────────────────────────
+#   원장님은 학생 명단에 없어 xp가 쌓이지 않는다. 늘 최고 레벨로 두어
+#   모든 꾸미기를 직접 보고 학생에게 보여줄 수 있게 한다.
+MAX_LEVEL_XP = LEVELS[-1]["threshold"]
+
+
+@app.get("/api/admin/avatar", dependencies=[Depends(verify_admin)])
+def get_admin_avatar():
+    info = compute_level_info(MAX_LEVEL_XP)
+    look = dict(AVATAR_DEFAULTS)
+    look["use_photo"] = False
+    image = ""
+    if db is not None:
+        doc = db.collection("settings").document("admin_avatar").get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            look.update(data.get("look") or {})
+            image = data.get("profile_image", "")
+    return {"success": True, "avatar": sanitize_avatar(look, info["level"]),
+            "level_info": info, "profile_image": image}
+
+
+class AdminAvatarReq(BaseModel):
+    avatar: dict = None
+
+
+@app.post("/api/admin/avatar", dependencies=[Depends(verify_admin)])
+def save_admin_avatar(req: AdminAvatarReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    info = compute_level_info(MAX_LEVEL_XP)
+    look = sanitize_avatar(req.avatar or {}, info["level"])
+    db.collection("settings").document("admin_avatar").set({"look": look}, merge=True)
+    return {"success": True, "avatar": look, "level_info": info}
+
+
+@app.post("/api/admin/avatar/photo", dependencies=[Depends(verify_admin)])
+async def upload_admin_photo(file: UploadFile = File(...)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if not file or not file.filename:
+        return {"success": False, "detail": "파일이 없습니다."}
+    raw = await file.read()
+    if not raw:
+        return {"success": False, "detail": "빈 파일입니다."}
+    if not (file.content_type or "").lower().startswith("image/"):
+        return {"success": False, "detail": "그림 파일만 올릴 수 있습니다."}
+    try:
+        url = save_bytes(raw, file.filename, "profiles", file.content_type)
+    except HTTPException as e:
+        return {"success": False, "detail": str(e.detail)}
+    db.collection("settings").document("admin_avatar").set({"profile_image": url}, merge=True)
+    return {"success": True, "url": url}
+
+
 @app.post("/api/student/profile_update")
 async def update_profile(
     student_name: str = Form(...),
