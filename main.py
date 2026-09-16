@@ -774,6 +774,8 @@ def get_student_profile(student_name: str):
         .stream()
     ]
     profile = doc.to_dict()
+    if not profile.get("subjects"):
+        profile["subjects"] = ["korean"]   # 과목 등록 전 예전 학생은 국어만 듣던 학생들이었다
     return {"success": True, "profile": profile, "reports": reports, "level_info": compute_level_info(profile.get("xp"))}
 
 
@@ -974,13 +976,16 @@ class SingleStudentRequest(BaseModel):
     grade: str
     name: str
     class_name: str = ""
+    subjects: list = None
 
 @app.post("/api/admin/student")
 def add_single_student(req: SingleStudentRequest, _: bool = Depends(verify_admin)):
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
+    subjects = [normalize_subject(s) for s in req.subjects] if req.subjects else ["korean"]
     db.collection("students").document(sanitize_doc_id(req.name)).set(
-        {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip()}, merge=True
+        {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip(), "subjects": subjects},
+        merge=True,
     )
     return {"success": True}
 
@@ -999,6 +1004,7 @@ class StudentUpdateReq(BaseModel):
     school: str
     grade: str
     class_name: str = None
+    subjects: list = None
 
 @app.post("/api/admin/student/update")
 def update_student(req: StudentUpdateReq, _: bool = Depends(verify_admin)):
@@ -1010,6 +1016,8 @@ def update_student(req: StudentUpdateReq, _: bool = Depends(verify_admin)):
         data['school'] = req.school; data['grade'] = req.grade
         if req.class_name is not None:
             data['class_name'] = req.class_name.strip()
+        if req.subjects is not None:
+            data['subjects'] = [normalize_subject(s) for s in req.subjects] or ["korean"]
         if req.old_id != req.new_name:
             db.collection("students").document(req.new_name).set(data)
             doc_ref.delete()
@@ -1125,6 +1133,23 @@ def assign_class(req: AssignClassReq, _: bool = Depends(verify_admin)):
     return {"success": True, "updated": count}
 
 
+class AssignSubjectsReq(BaseModel):
+    ids: list = None
+    subjects: list = None
+
+
+@app.post("/api/admin/student/assign_subjects")
+def assign_subjects(req: AssignSubjectsReq, _: bool = Depends(verify_admin)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    subjects = [normalize_subject(s) for s in (req.subjects or [])] or ["korean"]
+    count = 0
+    for sid in (req.ids or []):
+        db.collection("students").document(sid).set({"subjects": subjects}, merge=True)
+        count += 1
+    return {"success": True, "updated": count}
+
+
 @app.get("/api/admin/reports")
 def get_reports(_: bool = Depends(verify_admin)):
     if db is None:
@@ -1160,6 +1185,21 @@ SUBJECTS = {
 def normalize_subject(subject) -> str:
     s = str(subject or "korean").strip().lower()
     return s if s in SUBJECTS else "korean"
+
+
+def student_subjects(student_name: str):
+    """학생이 듣는 과목 목록을 학생 명단에서 가져온다.
+    명단에 없는 이름(관리자 등)이면 None을 돌려줘 과목 제한 없이 통과시킨다.
+    과목을 아직 등록하지 않은(예전부터 있던) 학생은 국어만 듣던 학생들이었으므로 국어로 간주한다."""
+    if db is None or not student_name:
+        return None
+    doc = db.collection("students").document(student_name).get()
+    if not doc.exists:
+        return None
+    subs = doc.to_dict().get("subjects")
+    if not subs:
+        return ["korean"]
+    return [normalize_subject(s) for s in subs]
 
 
 def build_safe_knowledge_context(subject: str = "korean") -> str:
@@ -1219,8 +1259,21 @@ async def chat_with_ai(
     student_name: str = Form("미상"),
     files: Optional[List[UploadFile]] = File(None),
 ):
-    subj = SUBJECTS[normalize_subject(subject)]
-    check_rate_limit(request, f"chat_{normalize_subject(subject)}", max_calls=15, window_seconds=60)
+    subj_key = normalize_subject(subject)
+    subj = SUBJECTS[subj_key]
+    check_rate_limit(request, f"chat_{subj_key}", max_calls=15, window_seconds=60)
+
+    # 💡 국어를 듣는 학생과 수학·영어를 듣는 학생은 구분되어야 한다.
+    #    화면에서 숨겨도 요청을 직접 보내면 우회될 수 있으니, 서버에서 학생 명단의
+    #    실제 수강 과목을 다시 확인한다(클라이언트가 보낸 값은 신뢰하지 않음).
+    allowed = await asyncio.to_thread(student_subjects, student_name)
+    if allowed is not None and subj_key not in allowed:
+        return {
+            "success": False,
+            "reply": f"{subj['label']} 수업을 듣는 학생만 {subj['persona']}를 이용할 수 있습니다. 선생님께 문의해주세요.",
+            "detail": "not_enrolled",
+        }
+
     send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 {subj['persona']}에게 질문을 남겼습니다.\n\nQ: {prompt}")
 
     knowledge_base = await asyncio.to_thread(build_safe_knowledge_context, subject)
