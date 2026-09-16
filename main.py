@@ -617,6 +617,13 @@ async def authenticate(req: AuthRequest):
         if admin_name in ("", "관리자"):
             admin_name = "원장님"
         adoc = await asyncio.to_thread(get_admin_doc, admin_name)
+        # 💡 예전에는 이름 칸이 뭘 넣든 무시되고 비밀번호만 맞으면 원장님으로 로그인됐다.
+        #    그 습관대로 아무 이름(예: 원장님 본명)을 넣는 분들이 있으니, 등록된 관리자
+        #    이름이 아니더라도 비밀번호가 원장님 것과 같으면 원장님으로 로그인시킨다.
+        if not adoc and admin_name != "원장님":
+            owner_doc = await asyncio.to_thread(get_admin_doc, "원장님")
+            if owner_doc and _hash_password(req.admin_password, owner_doc.get("salt", "")) == owner_doc.get("password_hash"):
+                adoc, admin_name = owner_doc, "원장님"
         if adoc and _hash_password(req.admin_password, adoc.get("salt", "")) == adoc.get("password_hash"):
             token = issue_admin_token(admin_name)
             return {
