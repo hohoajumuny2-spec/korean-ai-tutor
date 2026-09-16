@@ -2534,6 +2534,7 @@ DEFAULT_ADMISSION_TABLE = {
         {"from_pct": 50, "tier": "하위권",   "examples": "경기·인천권 대학 · 지방 거점 국립대"},
         {"from_pct": 0,  "tier": "기초 재정비 구간", "examples": "지방 사립대 · 전문대 (성적 향상이 최우선)"},
     ],
+    "scale": "9",
     "note": "학원 자체 기준표입니다. 실제 입시 결과에 맞게 원장님이 직접 수정해 사용하세요.",
 }
 
@@ -2546,6 +2547,7 @@ def load_admission_table() -> dict:
         if doc.exists:
             data = doc.to_dict() or {}
             if data.get("susi") and data.get("jeongsi"):
+                data["scale"] = normalize_scale(data.get("scale") or "9")
                 return data
     except Exception:
         pass
@@ -2949,11 +2951,20 @@ def summarize_mock(rows: list) -> dict:
     }
 
 
-def pick_tier(table: dict, naesin_avg, pct_avg) -> dict:
-    out = {"susi": None, "jeongsi": None}
-    if naesin_avg is not None:
+def pick_tier(table: dict, naesin_avg, pct_avg, naesin_scale: str = "9") -> dict:
+    """기준표는 9등급제나 5등급제 중 하나로 적혀 있다. 학생 내신이 다른 체계로
+    입력되어 있으면 기준표 쪽 체계로 바꿔서 대본다.
+    (그러지 않으면 5등급제 2.0등급이 9등급제 2.0등급 자리에 걸려 라인이 부풀려진다)"""
+    out = {"susi": None, "jeongsi": None, "converted": None}
+    table_scale = normalize_scale(table.get("scale") or "9")
+    mine = naesin_avg
+    if mine is not None and normalize_scale(naesin_scale) != table_scale:
+        mine = convert_grade_scale(mine, naesin_scale, table_scale)
+        out["converted"] = {"from": normalize_scale(naesin_scale), "to": table_scale, "value": mine}
+    out["table_scale"] = table_scale
+    if mine is not None:
         for row in table.get("susi", []):
-            if naesin_avg <= _num(row.get("upto"), 99):
+            if mine <= _num(row.get("upto"), 99):
                 out["susi"] = row
                 break
     if pct_avg is not None:
@@ -3026,7 +3037,7 @@ def build_counsel_view(student_name: str) -> dict:
     mock = summarize_mock(data.get("mock", []))
     table = load_admission_table()
     track = judge_track(naesin["avg"], mock["avg"])
-    tiers = pick_tier(table, naesin["avg"], mock["pct_avg"])
+    tiers = pick_tier(table, naesin["avg"], mock["pct_avg"], scale)
 
     logs = data.get("logs", [])
     scored = [l for l in logs if _num(l.get("score")) is not None and _num(l.get("max_score")) not in (None, 0)]
@@ -3097,8 +3108,11 @@ def fmt_grade_block(view: dict) -> str:
         f"- 내신·모의 격차 판정: {t['verdict']} ({t['reason']})",
     ]
     susi, jeongsi = view["tiers"]["susi"], view["tiers"]["jeongsi"]
+    conv = view["tiers"].get("converted")
     if susi:
-        lines.append(f"- 학원 기준표상 수시 라인: {susi['tier']} / {susi['examples']}")
+        base = f" (기준표는 {view['tiers'].get('table_scale', '9')}등급제 기준"
+        base += f", 학생 내신을 {conv['value']}등급으로 환산해 대조)" if conv else ")"
+        lines.append(f"- 학원 기준표상 수시 라인: {susi['tier']} / {susi['examples']}{base}")
     if jeongsi:
         lines.append(f"- 학원 기준표상 정시 라인: {jeongsi['tier']} / {jeongsi['examples']}")
     return "\n".join(lines)
@@ -4329,6 +4343,7 @@ class AdmissionTableReq(BaseModel):
     susi: list
     jeongsi: list
     note: str = ""
+    scale: str = "9"
 
 
 @app.post("/api/admin/counsel/admission_table", dependencies=[Depends(verify_admin)])
@@ -4337,6 +4352,7 @@ def save_admission_table(req: AdmissionTableReq):
         return {"success": False, "detail": "DB 연결 오류"}
     db.collection("settings").document("admission_table").set({
         "susi": req.susi, "jeongsi": req.jeongsi,
+        "scale": normalize_scale(req.scale),
         "note": req.note.strip() or DEFAULT_ADMISSION_TABLE["note"],
     })
     return {"success": True, "table": load_admission_table()}
