@@ -4,6 +4,8 @@ import re
 import json
 import time
 import uuid
+import hashlib
+import secrets
 import random
 import requests
 import threading
@@ -295,12 +297,51 @@ if firebase_key_str:
 # 관리자 인증
 # ─────────────────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1234")
-_admin_tokens = set()
 STUDENT_SIGNUP_CODE = os.environ.get("STUDENT_SIGNUP_CODE", "logyedu2024")
 
-def issue_admin_token() -> str:
+# 💡 관리자는 이제 한 명("원장님")이 아니라 여러 명일 수 있다. 각자 이름과 비밀번호로
+# 로그인하고, 자기 비밀번호는 스스로 바꿀 수 있다. 다만 이 관리자 권한은 학습실 화면
+# 안에서의 역할일 뿐이며, 서버 코드나 배포에는 전혀 접근할 수 없다.
+_admin_tokens = {}   # token -> 관리자 이름
+
+
+def _hash_password(raw: str, salt: str) -> str:
+    return hashlib.sha256((salt + ":" + raw).encode("utf-8")).hexdigest()
+
+
+def _new_salt() -> str:
+    return secrets.token_hex(8)
+
+
+def get_admin_doc(name: str):
+    if db is None or not name:
+        return None
+    doc = db.collection("admins").document(name).get()
+    return doc.to_dict() if doc.exists else None
+
+
+def ensure_owner_admin():
+    """처음 실행될 때, 환경변수 비밀번호로 '원장님' 계정을 DB에 만들어 둔다.
+    이후로는 이 계정의 비밀번호도 DB에서 관리되며, 마이페이지에서 직접 바꿀 수 있다.
+    (즉 한 번 만들어지고 나면 ADMIN_PASSWORD 환경변수를 바꿔도 반영되지 않는다 —
+    비밀번호는 그때부터 원장님이 직접 관리하는 것이기 때문이다.)"""
+    if db is None:
+        return
+    ref = db.collection("admins").document("원장님")
+    if not ref.get().exists:
+        salt = _new_salt()
+        ref.set({
+            "name": "원장님",
+            "password_hash": _hash_password(ADMIN_PASSWORD, salt),
+            "salt": salt,
+            "is_owner": True,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+
+def issue_admin_token(name: str) -> str:
     token = uuid.uuid4().hex
-    _admin_tokens.add(token)
+    _admin_tokens[token] = name
     return token
 
 
@@ -308,6 +349,12 @@ def verify_admin(x_admin_token: Optional[str] = Header(None)):
     if not x_admin_token or x_admin_token not in _admin_tokens:
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
     return True
+
+
+def current_admin_name(x_admin_token: Optional[str] = Header(None)) -> str:
+    if not x_admin_token or x_admin_token not in _admin_tokens:
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
+    return _admin_tokens[x_admin_token]
 
 
 # ─────────────────────────────────────────────────────────
@@ -562,10 +609,21 @@ def health_check():
 @app.post("/api/auth")
 async def authenticate(req: AuthRequest):
     if req.admin_password:
-        if req.admin_password == ADMIN_PASSWORD:
-            token = issue_admin_token()
-            return {"success": True, "is_admin": True, "admin_token": token}
-        return {"success": False, "detail": "관리자 비밀번호가 올바르지 않습니다."}
+        if db is None:
+            return {"success": False, "detail": "DB 연결 오류"}
+        await asyncio.to_thread(ensure_owner_admin)
+        # 이름 칸을 비워둔 채 비밀번호만 넣으면(예전 방식) 원장님 계정으로 시도한다.
+        admin_name = req.student_name.strip()
+        if admin_name in ("", "관리자"):
+            admin_name = "원장님"
+        adoc = await asyncio.to_thread(get_admin_doc, admin_name)
+        if adoc and _hash_password(req.admin_password, adoc.get("salt", "")) == adoc.get("password_hash"):
+            token = issue_admin_token(admin_name)
+            return {
+                "success": True, "is_admin": True, "admin_token": token,
+                "admin_name": admin_name, "is_owner": bool(adoc.get("is_owner")),
+            }
+        return {"success": False, "detail": "관리자 이름 또는 비밀번호가 올바르지 않습니다."}
 
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
@@ -605,6 +663,99 @@ async def authenticate(req: AuthRequest):
             send_telegram_message(f"🔔 [접속 알림]\n{school} {grade}학년 {student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "level_up": lvl_up}
     return {"success": False, "detail": "명부에 이름이 없거나 정보가 틀립니다."}
+
+
+# ─────────────────────────────────────────────────────────
+# 관리자 계정 관리
+#   - 목록/추가/삭제는 원장님(is_owner)만
+#   - 비밀번호 변경은 로그인한 그 관리자 본인만, 현재 비밀번호를 확인한 뒤에
+# ─────────────────────────────────────────────────────────
+@app.get("/api/admin/admins", dependencies=[Depends(verify_admin)])
+def list_admins():
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    rows = []
+    for d in db.collection("admins").stream():
+        a = d.to_dict() or {}
+        rows.append({
+            "name": a.get("name", d.id),
+            "is_owner": bool(a.get("is_owner")),
+            "created_at": a.get("created_at", ""),
+        })
+    rows.sort(key=lambda x: (not x["is_owner"], x["name"]))
+    return {"success": True, "admins": rows}
+
+
+class AdminCreateReq(BaseModel):
+    name: str
+    password: str
+
+
+@app.post("/api/admin/admins")
+def create_admin(req: AdminCreateReq, name: str = Depends(current_admin_name)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "원장님 계정만 관리자를 추가할 수 있습니다."}
+    new_name = req.name.strip()
+    if not new_name:
+        return {"success": False, "detail": "이름을 입력해 주세요."}
+    if len(req.password) < 4:
+        return {"success": False, "detail": "비밀번호는 4자 이상이어야 합니다."}
+    if get_admin_doc(new_name):
+        return {"success": False, "detail": "이미 있는 관리자 이름입니다."}
+    salt = _new_salt()
+    db.collection("admins").document(new_name).set({
+        "name": new_name,
+        "password_hash": _hash_password(req.password, salt),
+        "salt": salt,
+        "is_owner": False,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    return {"success": True}
+
+
+class AdminDeleteReq(BaseModel):
+    name: str
+
+
+@app.post("/api/admin/admins/delete")
+def delete_admin(req: AdminDeleteReq, name: str = Depends(current_admin_name)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "원장님 계정만 관리자를 삭제할 수 있습니다."}
+    target = req.name.strip()
+    if target == "원장님":
+        return {"success": False, "detail": "원장님 계정은 삭제할 수 없습니다."}
+    db.collection("admins").document(target).delete()
+    return {"success": True}
+
+
+class AdminPasswordReq(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/admin/change_password")
+def change_admin_password(req: AdminPasswordReq, name: str = Depends(current_admin_name)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    me = get_admin_doc(name)
+    if not me:
+        return {"success": False, "detail": "계정 정보를 찾을 수 없습니다."}
+    if _hash_password(req.current_password, me.get("salt", "")) != me.get("password_hash"):
+        return {"success": False, "detail": "현재 비밀번호가 올바르지 않습니다."}
+    if len(req.new_password) < 4:
+        return {"success": False, "detail": "새 비밀번호는 4자 이상이어야 합니다."}
+    salt = _new_salt()
+    db.collection("admins").document(name).update({
+        "password_hash": _hash_password(req.new_password, salt),
+        "salt": salt,
+    })
+    return {"success": True}
 
 
 @app.get("/api/student/profile/{student_name}")
