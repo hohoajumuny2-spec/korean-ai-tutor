@@ -1520,19 +1520,25 @@ async def chat_with_ai(
 
     send_telegram_message(f"💬 [질문 알림]\n{student_name} 학생이 {subj['persona']}에게 질문을 남겼습니다.\n\nQ: {prompt}")
 
-    knowledge_base = await asyncio.to_thread(build_safe_knowledge_context, subject)
-    ai_guidelines = await asyncio.to_thread(get_ai_guidelines, subject)
+    # 💡 예전에는 아래 준비 과정(자료 조회, 프롬프트 조립, 파일 읽기)이 try 밖에
+    # 있어서, 여기서 뭐가 하나라도 실패하면 전역 오류 처리기가 "서버 처리 중 오류가
+    # 발생했습니다"라는 뭉뚱그린 500 오류로만 돌려줘 원인을 전혀 알 수 없었다.
+    # 이제 이 함수의 준비 과정과 AI 호출을 통째로 하나의 try로 묶어서, 어디서
+    # 실패하든 실제 원인이 화면에 그대로 나오게 한다.
+    try:
+        knowledge_base = await asyncio.to_thread(build_safe_knowledge_context, subject)
+        ai_guidelines = await asyncio.to_thread(get_ai_guidelines, subject)
 
-    has_images = bool(files) and any(f.filename for f in files)
-    # 💡 수학은 사진 속 수식(분수, 지수, 루트, 그리스 문자, 손글씨 등)을 한 글자라도
-    # 잘못 읽으면 완전히 다른 문제가 돼버린다. 이미지가 있을 때는 "먼저 보이는 대로
-    # 정확히 옮겨 적고, 그다음에 풀라"고 못 박아서 대충 짐작해 답하는 것을 막는다.
-    # 채팅창이 이제 KaTeX으로 LaTeX 수식을 실제로 그려주므로($...$는 줄 안에,
-    # $$...$$는 독립된 줄에 쓰면 분수·제곱근·지수가 교과서처럼 그려진다),
-    # 억지로 캐럿(^)이나 슬래시로 풀어쓰게 하지 않고 정식 LaTeX을 쓰게 한다.
-    math_image_note = ""
-    if subj_key == "math":
-        math_image_note = """
+        has_images = bool(files) and any(f.filename for f in files)
+        # 💡 수학은 사진 속 수식(분수, 지수, 루트, 그리스 문자, 손글씨 등)을 한 글자라도
+        # 잘못 읽으면 완전히 다른 문제가 돼버린다. 이미지가 있을 때는 "먼저 보이는 대로
+        # 정확히 옮겨 적고, 그다음에 풀라"고 못 박아서 대충 짐작해 답하는 것을 막는다.
+        # 채팅창이 이제 KaTeX으로 LaTeX 수식을 실제로 그려주므로($...$는 줄 안에,
+        # $$...$$는 독립된 줄에 쓰면 분수·제곱근·지수가 교과서처럼 그려진다),
+        # 억지로 캐럿(^)이나 슬래시로 풀어쓰게 하지 않고 정식 LaTeX을 쓰게 한다.
+        math_image_note = ""
+        if subj_key == "math":
+            math_image_note = """
 
 [수식 표기 방법 — 반드시 지킬 것]
 이 채팅창은 LaTeX 수식을 실제 기호(분수, 제곱근, 지수 등)로 그려줍니다.
@@ -1551,8 +1557,8 @@ async def chat_with_ai(
   순서로, 계산 과정을 건너뛰지 말고 이어가세요.
 - 마지막에 구한 핵심 결과(최종 답이나 그 문제의 핵심 식)는 $$\\boxed{...}$$ 로
   감싸서 한눈에 띄게 표시하세요."""
-        if has_images:
-            math_image_note += """
+            if has_images:
+                math_image_note += """
 
 [사진이 첨부되었을 때 반드시 지킬 것]
 1. 답을 하기 전에, 사진 속 수식과 숫자를 빠짐없이 정확하게(위 표기법으로) 옮겨 적으세요
@@ -1567,7 +1573,7 @@ async def chat_with_ai(
    바로 그 문제만 풀어주세요.
 4. 그 문제만 옮겨 적은 뒤, 풀이 과정을 단계별로 보여주고 답을 제시하세요."""
 
-    system_prompt = f"""당신은 로지에듀 {subj['role']} AI 튜터 '{subj['persona']}'입니다.
+        system_prompt = f"""당신은 로지에듀 {subj['role']} AI 튜터 '{subj['persona']}'입니다.
 아래 [원장님 답변 원칙]이 있다면 그 방식과 관점을 최우선으로 따라서 설명하세요.
 그 다음으로 [학원 누적 자료]를 참고하여 다정하고 명쾌하게 답변하세요.
 만약 학생이 묻는 내용이 자료에 없더라도, {subj['label']} 전문가로서의 지식을 활용해 {subj['expertise']}을 친절하게 설명해 주세요. "자료에 없어서 모른다"는 말은 절대 하지 마세요.
@@ -1583,13 +1589,13 @@ async def chat_with_ai(
 [학생 질문]
 {prompt}"""
 
-    contents = [system_prompt]
-    if files:
-        for f in files:
-            if f.filename:
-                file_bytes = await f.read()
-                contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
-    try:
+        contents = [system_prompt]
+        if files:
+            for f in files:
+                if f.filename:
+                    file_bytes = await f.read()
+                    contents.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
+
         # 💡 사진 속 수식을 읽어내는 건 빠른(저렴한) 모델이 자주 틀린다 — 수학 + 사진일 때만
         # 정밀한(비싼) 모델을 쓴다. 그 외(텍스트 질문, 국어·영어)는 기존처럼 빠른 모델 그대로.
         use_quality_model = subj_key == "math" and has_images
