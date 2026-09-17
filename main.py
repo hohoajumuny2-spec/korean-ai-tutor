@@ -2624,35 +2624,10 @@ def normalize_vocab_difficulty(d) -> str:
     return d if d in VOCAB_DIFFICULTIES else "mid"
 
 
-_VOCAB_HANGUL_RE = re.compile(r"[가-힣]")
-_VOCAB_ENGLISH_RE = re.compile(r"^[A-Za-z][A-Za-z'\- ]*$")
-
-
-def parse_vocab_rows(rows: list) -> list:
-    """엑셀/CSV를 [{word, meaning, is_phrase}, ...]로 바꾼다.
-    💡 예전에는 '1열=단어, 2열=뜻'만 믿었는데, 실제 파일에 순번(1, 2, 3...) 열이
-    앞에 섞여 있으면 순번을 단어로, 진짜 단어를 뜻으로 잘못 읽어버렸다(학생 화면에
-    단어 대신 문항 번호만 뜨는 원인이 됐음). 이제 열 순서에 의존하지 않고, 그 줄
-    안에서 영어처럼 생긴 칸과 한글이 섞인 칸을 각각 찾아 단어/뜻으로 삼는다."""
-    out = []
-    for r in rows:
-        cells = [str(c or "").strip() for c in r if str(c or "").strip()]
-        word_cell, meaning_cell = None, None
-        for c in cells:
-            if word_cell is None and len(c) <= 60 and _VOCAB_ENGLISH_RE.match(c):
-                word_cell = c
-            elif meaning_cell is None and _VOCAB_HANGUL_RE.search(c):
-                meaning_cell = c
-        if not word_cell or not meaning_cell:
-            continue  # 순번만 있는 열, 제목 줄('단어'/'뜻' 등), 빈 줄은 자연히 걸러짐
-        out.append({"word": word_cell, "meaning": meaning_cell, "is_phrase": " " in word_cell})
-    return out
-
-
-async def extract_vocab_words_from_media(parts: list) -> list:
-    """사진/이미지/PDF로 올라온 단어장을 AI가 직접 읽어 [{word, meaning, is_phrase}, ...]로 만든다."""
-    prompt = """첨부된 자료는 영어 단어장(단어 또는 구절과 그 뜻이 나열된 자료)입니다.
-여기 실린 모든 단어(또는 숙어·구절)와 뜻을 정확하게 읽어내세요.
+VOCAB_EXTRACT_PROMPT = """첨부된 자료는 영어 단어장(단어 또는 구절과 그 뜻이 나열된 자료)입니다.
+표 형식이든 사진이든 줄글이든 상관없이, 여기 실린 모든 단어(또는 숙어·구절)와 뜻을
+정확하게, 빠짐없이 읽어내세요. 열 순서나 번호가 섞여 있어도 어느 것이 영어 단어이고
+어느 것이 뜻인지 스스로 판단해서 올바르게 짝지으세요.
 
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
@@ -2661,8 +2636,15 @@ async def extract_vocab_words_from_media(parts: list) -> list:
   적되, 절대 지어내지 마세요.
 - 뜻은 자료에 적힌 그대로 옮기세요(여러 뜻이 있으면 '/'로 이어 붙이세요).
 - 번호, 페이지 번호, 챕터/단원 제목처럼 단어장 내용이 아닌 것은 포함하지 마세요."""
+
+VOCAB_TABLE_ROWS_PER_BATCH = 200  # 표가 아주 크면 한 번에 다 넣지 않고 나눠서 시킨다
+
+
+async def extract_vocab_words_via_ai(contents: list) -> list:
+    """AI에게 무엇을 보여주든(표 텍스트/사진/PDF 페이지) 단어장을 읽어
+    [{word, meaning, is_phrase}, ...]로 만든다."""
     try:
-        resp = await asyncio.to_thread(lambda: safe_generate([prompt] + parts))
+        resp = await asyncio.to_thread(lambda: safe_generate(contents))
         text = (resp.text or "").strip()
     except Exception:
         return []
@@ -2684,6 +2666,10 @@ async def extract_vocab_words_from_media(parts: list) -> list:
 
 @app.post("/api/admin/vocab/upload", dependencies=[Depends(verify_admin)])
 async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form("mid")):
+    """💡 엑셀 열 순서를 규칙(1열=단어, 2열=뜻)으로 미리 짐작하다가, 순번 열이
+    섞인 실제 파일에서 단어 대신 번호를 저장해버린 적이 있다 — "어떤 형태의 자료든
+    상관없이" 되어야 한다는 요청에 따라, 엑셀/CSV도 규칙으로 추측하지 않고 표
+    내용을 AI에게 그대로 보여주고 읽게 한다(사진·PDF와 동일한 방식)."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     diff = normalize_vocab_difficulty(difficulty)
@@ -2695,9 +2681,15 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
             rows = await asyncio.to_thread(_read_sheet, raw, file.filename)
         except ValueError as e:
             return {"success": False, "detail": str(e)}
-        words = parse_vocab_rows(rows)
+        data_rows = [[str(c or "").strip() for c in r] for r in rows if any(str(c or "").strip() for c in r)]
+        if not data_rows:
+            return {"success": False, "detail": "파일에서 읽을 내용이 없습니다."}
+        words = []
+        for i in range(0, len(data_rows), VOCAB_TABLE_ROWS_PER_BATCH):
+            batch = data_rows[i:i + VOCAB_TABLE_ROWS_PER_BATCH]
+            table_text = "\n".join(" | ".join(r) for r in batch)
+            words += await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT + "\n\n[표 데이터 — 줄마다 칸을 '|'로 구분]\n" + table_text])
     else:
-        # 💡 엑셀이 아니라 사진/이미지/PDF로 올린 단어장 — AI가 직접 읽어서 추출한다.
         parts = []
         if name.endswith(".pdf"):
             try:
@@ -2712,10 +2704,10 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
             parts.append({"mime_type": file.content_type, "data": raw})
         else:
             return {"success": False, "detail": "엑셀(.xlsx/.csv), 이미지, PDF 파일만 올릴 수 있습니다."}
-        words = await extract_vocab_words_from_media(parts)
+        words = await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT] + parts)
 
     if not words:
-        return {"success": False, "detail": "읽을 수 있는 단어가 없습니다. 엑셀은 한 줄에 단어와 뜻이 함께 있어야 하고, 사진/PDF는 단어·뜻이 또렷하게 보여야 합니다."}
+        return {"success": False, "detail": "읽을 수 있는 단어를 찾지 못했습니다. 자료에 단어와 뜻이 함께 있는지 확인해주세요."}
 
     file_id = uuid.uuid4().hex[:12]
     await asyncio.to_thread(
