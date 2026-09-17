@@ -2735,6 +2735,18 @@ class VocabTestCreateReq(BaseModel):
     time_limit: int = 15
     target_class: str = ""
     counts: dict = {}
+    manual_questions: list = None
+
+
+@app.get("/api/admin/vocab/words", dependencies=[Depends(verify_admin)])
+def list_vocab_words(difficulty: str = "mid"):
+    """원장님이 무작위가 아니라 단어를 직접 골라 출제하고 싶을 때, 그 난이도에
+    올라와 있는 단어를 목록으로 보여준다(파일 여러 개면 전부 합쳐서)."""
+    diff = normalize_vocab_difficulty(difficulty)
+    pool = load_vocab_pool(diff)
+    return {"success": True, "difficulty": diff, "words": [
+        {"word": w.get("word", ""), "meaning": w.get("meaning", ""), "is_phrase": bool(w.get("is_phrase"))} for w in pool
+    ]}
 
 
 @app.post("/api/admin/vocab_test", dependencies=[Depends(verify_admin)])
@@ -2743,12 +2755,34 @@ async def create_vocab_test(req: VocabTestCreateReq):
         return {"success": False, "detail": "DB 오류"}
     if not req.title.strip():
         return {"success": False, "detail": "시험 제목은 필수입니다."}
-    try:
-        questions = await asyncio.to_thread(generate_vocab_questions, req.counts)
-    except ValueError as e:
-        return {"success": False, "detail": str(e)}
-    if not questions:
-        return {"success": False, "detail": "출제할 단어 수를 1개 이상 입력하세요."}
+
+    if req.manual_questions:
+        # 💡 무작위가 아니라 원장님이 직접 고른 단어·문제 유형 그대로 문항을 만든다.
+        # 그래도 스펠링 빈칸(3번 유형)은 매번 새로 빈칸을 만들어야 하므로
+        # build_vocab_question을 그대로 재사용한다.
+        questions = []
+        for item in req.manual_questions:
+            word = str(item.get("word", "")).strip()
+            meaning = str(item.get("meaning", "")).strip()
+            if not word or not meaning:
+                continue
+            entry = {"word": word, "meaning": meaning, "difficulty": normalize_vocab_difficulty(item.get("difficulty"))}
+            try:
+                qtype = int(item.get("type", 1))
+            except (TypeError, ValueError):
+                qtype = 1
+            if qtype not in (1, 2, 3, 4):
+                qtype = 1
+            questions.append(build_vocab_question(entry, qtype, len(questions) + 1))
+        if not questions:
+            return {"success": False, "detail": "선택한 문항이 없습니다."}
+    else:
+        try:
+            questions = await asyncio.to_thread(generate_vocab_questions, req.counts)
+        except ValueError as e:
+            return {"success": False, "detail": str(e)}
+        if not questions:
+            return {"success": False, "detail": "출제할 단어 수를 1개 이상 입력하세요."}
 
     title = with_subject_prefix(req.title, "english")
     safe_title = sanitize_doc_id(title)
