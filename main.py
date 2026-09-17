@@ -2640,28 +2640,33 @@ VOCAB_EXTRACT_PROMPT = """첨부된 자료는 영어 단어장(단어 또는 구
 VOCAB_TABLE_ROWS_PER_BATCH = 200  # 표가 아주 크면 한 번에 다 넣지 않고 나눠서 시킨다
 
 
-async def extract_vocab_words_via_ai(contents: list) -> list:
+async def extract_vocab_words_via_ai(contents: list) -> tuple:
     """AI에게 무엇을 보여주든(표 텍스트/사진/PDF 페이지) 단어장을 읽어
-    [{word, meaning, is_phrase}, ...]로 만든다."""
+    [{word, meaning, is_phrase}, ...]로 만든다. (단어 목록, 실패 사유) 를 돌려준다 —
+    실패 사유가 있어야 "왜 0개가 나왔는지" 화면에서 바로 알 수 있다(예전엔
+    무슨 이유든 뭉뚱그려 "단어를 찾지 못했습니다"만 보여줘서 원인 파악이 불가능했음)."""
     try:
         resp = await asyncio.to_thread(lambda: safe_generate(contents))
         text = (resp.text or "").strip()
-    except Exception:
-        return []
+    except Exception as e:
+        return [], f"AI 호출 실패: {e}"
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
-        return []
+        preview = re.sub(r"\s+", " ", text)[:200]
+        return [], f"AI가 단어장 형식으로 답하지 않았습니다" + (f": {preview}" if preview else " (빈 응답)")
     try:
         parsed = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return []
+    except (ValueError, TypeError) as e:
+        return [], f"AI 응답을 해석하지 못했습니다: {e}"
     out = []
     for item in parsed.get("words", []) if isinstance(parsed, dict) else []:
         word = str((item or {}).get("word", "")).strip()
         meaning = str((item or {}).get("meaning", "")).strip()
         if word and meaning:
             out.append({"word": word, "meaning": meaning, "is_phrase": " " in word})
-    return out
+    if not out:
+        return [], "AI가 이 자료에서 단어·뜻 쌍을 찾지 못했습니다. 단어와 뜻이 함께 뚜렷하게 보이는 자료인지 확인해주세요."
+    return out, ""
 
 
 @app.post("/api/admin/vocab/upload", dependencies=[Depends(verify_admin)])
@@ -2685,10 +2690,13 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
         if not data_rows:
             return {"success": False, "detail": "파일에서 읽을 내용이 없습니다."}
         words = []
+        last_error = ""
         for i in range(0, len(data_rows), VOCAB_TABLE_ROWS_PER_BATCH):
             batch = data_rows[i:i + VOCAB_TABLE_ROWS_PER_BATCH]
             table_text = "\n".join(" | ".join(r) for r in batch)
-            words += await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT + "\n\n[표 데이터 — 줄마다 칸을 '|'로 구분]\n" + table_text])
+            batch_words, err = await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT + "\n\n[표 데이터 — 줄마다 칸을 '|'로 구분]\n" + table_text])
+            words += batch_words
+            last_error = err or last_error
     else:
         parts = []
         if name.endswith(".pdf"):
@@ -2704,10 +2712,10 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
             parts.append({"mime_type": file.content_type, "data": raw})
         else:
             return {"success": False, "detail": "엑셀(.xlsx/.csv), 이미지, PDF 파일만 올릴 수 있습니다."}
-        words = await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT] + parts)
+        words, last_error = await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT] + parts)
 
     if not words:
-        return {"success": False, "detail": "읽을 수 있는 단어를 찾지 못했습니다. 자료에 단어와 뜻이 함께 있는지 확인해주세요."}
+        return {"success": False, "detail": last_error or "읽을 수 있는 단어를 찾지 못했습니다. 자료에 단어와 뜻이 함께 있는지 확인해주세요."}
 
     file_id = uuid.uuid4().hex[:12]
     await asyncio.to_thread(
