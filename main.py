@@ -4886,6 +4886,28 @@ class TendencySubmitReq(BaseModel):
     set: str = DEFAULT_TENDENCY_SET
 
 
+class TendencyAllowReq(BaseModel):
+    student_name: str
+    allow: bool
+
+
+@app.post("/api/admin/student/tendency_allow", dependencies=[Depends(verify_admin)])
+async def set_tendency_allow(req: TendencyAllowReq):
+    """💡 학생이 마음대로(원장님 승인 없이) 학습 성향 검사를 시작·재검사하지 못하도록,
+    원장님이 미리 허락해준 경우에만 제출을 받는다. 여기서 그 허락을 켜고 끈다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    ref = db.collection("students").document(sanitize_doc_id(name))
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "등록된 학생이 아닙니다."}
+    await asyncio.to_thread(lambda: ref.set({"tendency_allowed": bool(req.allow)}, merge=True))
+    return {"success": True, "allowed": bool(req.allow)}
+
+
 @app.post("/api/counsel/tendency_submit")
 async def submit_tendency(req: TendencySubmitReq):
     """학생 본인이 검사를 제출한다. 채점은 서버에서만 한다."""
@@ -4895,9 +4917,16 @@ async def submit_tendency(req: TendencySubmitReq):
     if not name:
         return {"success": False, "detail": "학생 정보가 없습니다."}
 
-    s_doc = await asyncio.to_thread(lambda: db.collection("students").document(sanitize_doc_id(name)).get())
+    s_ref = db.collection("students").document(sanitize_doc_id(name))
+    s_doc = await asyncio.to_thread(s_ref.get)
     if not s_doc.exists:
         return {"success": False, "detail": "등록된 학생이 아닙니다."}
+
+    # 💡 원장님이 미리 허락해준 경우에만 제출을 받는다 — 학생이 마음대로 응시하지
+    # 못하게 해달라는 요청. 제출이 끝나면 허락을 그 자리에서 소모(reset)해서,
+    # 다음에 또 하려면 다시 허락을 받아야 한다.
+    if not bool(s_doc.to_dict().get("tendency_allowed")):
+        return {"success": False, "detail": "원장님의 승인이 필요합니다. 선생님께 검사 허락을 요청해주세요."}
 
     tset = get_tendency_set(req.set)
     axes = score_tendency(req.answers or {}, tset["key"])
@@ -4926,6 +4955,7 @@ async def submit_tendency(req: TendencySubmitReq):
     if tset["key"] == "korean":
         update["tendency"] = payload          # 예전 화면과의 호환
     await asyncio.to_thread(lambda: counsel_ref(name).set(update, merge=True))
+    await asyncio.to_thread(lambda: s_ref.set({"tendency_allowed": False}, merge=True))
     send_telegram_message(f"🧭 [{tset['name']}]\n{name} 학생이 검사를 마쳤습니다.")
     return {"success": True, "axes": axes, "set": tset["key"], "set_name": tset["name"]}
 
@@ -4935,11 +4965,17 @@ def get_my_counsel(student_name: str):
     """학생 본인이 보는 상담 카드 — 원장님만 보는 항목(학생부 원문 등)은 빼고 준다."""
     if db is None:
         return {"success": False}
-    v = build_counsel_view(urllib.parse.unquote(student_name))
+    name = urllib.parse.unquote(student_name)
+    v = build_counsel_view(name)
+    tendency_allowed = False
+    if db is not None:
+        s_doc = db.collection("students").document(sanitize_doc_id(name)).get()
+        if s_doc.exists:
+            tendency_allowed = bool(s_doc.to_dict().get("tendency_allowed"))
     return {"success": True, "counsel": {
         "naesin": v["naesin"], "mock": v["mock"], "track": v["track"], "tiers": v["tiers"],
         "table_note": v["table_note"],
-        "tendency": v["tendency"], "tendencies": v["tendencies"],
+        "tendency": v["tendency"], "tendencies": v["tendencies"], "tendency_allowed": tendency_allowed,
         "analysis": v["analysis"], "summary": v["summary"],
         "logs": v["logs"], "log_avg": v["log_avg"],
     }}
@@ -6060,4 +6096,8 @@ def save_admission_table(req: AdmissionTableReq):
 def get_counsel_admin(student_name: str):
     if db is None:
         return {"success": False}
-    return {"success": True, "counsel": build_counsel_view(urllib.parse.unquote(student_name))}
+    name = urllib.parse.unquote(student_name)
+    view = build_counsel_view(name)
+    s_doc = db.collection("students").document(sanitize_doc_id(name)).get()
+    view["tendency_allowed"] = bool(s_doc.to_dict().get("tendency_allowed")) if s_doc.exists else False
+    return {"success": True, "counsel": view}
