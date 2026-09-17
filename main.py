@@ -1708,6 +1708,9 @@ async def create_exam(
             }
         )
     )
+    know_content = "\n\n".join(t for t in (objective, explanation_text) if t.strip())
+    if know_content:
+        await asyncio.to_thread(sync_knowledge_from_source, f"exam_{safe_title}", f"[모의고사] {title}", know_content, subj_key, "exam")
     return {"success": True, "title": title}
 
 
@@ -1725,6 +1728,7 @@ def get_exams(student_name: str = ""):
 def delete_exam(title: str, _: bool = Depends(verify_admin)):
     if db:
         db.collection("exams").document(title).delete()
+        delete_synced_knowledge(f"exam_{sanitize_doc_id(title)}")
     return {"success": True}
 
 
@@ -2201,6 +2205,7 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
     created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    questions = req.get("questions", [])
     await asyncio.to_thread(
         lambda: db.collection("quizzes").document(safe_title).set(
             {
@@ -2209,12 +2214,24 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
                 "target_class": str(req.get("target_class", "") or "").strip(),
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
-                "questions": req.get("questions", []),
+                "questions": questions,
                 "created_at": created_at,
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
     )
+    # 💡 AI가 '이 퀴즈 몇 번 문제 이해가 안 돼요' 같은 질문을 받을 수 있으려면 문항
+    # 내용을 알아야 한다. 다만 정답을 그대로 실으면 학생이 그걸 캐낼 수 있으니
+    # (기존 knowledge 업로드의 '정답 필드 제외' 원칙과 동일하게) 문제·보기만 싣는다.
+    circles = ["①", "②", "③", "④", "⑤"]
+    know_lines = []
+    for i, q in enumerate(questions):
+        opts = [o for o in (q.get("options") or []) if o]
+        opt_text = " ".join(f"{circles[j] if j < len(circles) else j+1}{o}" for j, o in enumerate(opts))
+        know_lines.append(f"{i + 1}. {q.get('q_text', '')}\n{opt_text}".strip())
+    know_content = "\n\n".join(l for l in know_lines if l)
+    if know_content:
+        await asyncio.to_thread(sync_knowledge_from_source, f"quiz_{safe_title}", f"[퀴즈] {title}", know_content, subject, "quiz")
     return {"success": True, "title": title}
 
 
@@ -2255,6 +2272,7 @@ def get_quizzes(student_name: str = ""):
 def delete_quiz(title: str, _: bool = Depends(verify_admin)):
     if db:
         db.collection("quizzes").document(title).delete()
+        delete_synced_knowledge(f"quiz_{sanitize_doc_id(title)}")
     return {"success": True}
 
 
@@ -3674,7 +3692,64 @@ def delete_inquiry_admin(i_id: str):
 class QuestionSaveReq(BaseModel):
     title: str
     content: str
+    subject: str = "korean"
     id: str = ""          # 있으면 그 출제본을 고친다
+
+
+def sync_knowledge_from_source(doc_id: str, title: str, content: str, subject: str, source: str):
+    """💡 원장님이 출제한 모의고사/퀴즈/문제 보관함 자료를 AI 채팅(학원 누적 자료)에
+    자동으로 반영한다 — 학생이 'AI 국최'에게 그 시험 문제에 대해 물어볼 수 있으려면
+    AI가 그 내용을 알고 있어야 하기 때문. 정답을 직접 알려주지 말라는 지시는
+    시스템 프롬프트에 이미 있으므로(chat_with_ai), 내용 자체는 그대로 싣는다."""
+    if db is None or not content.strip():
+        return
+    db.collection("knowledge").document(doc_id).set({
+        "title": title, "content": content, "subject": normalize_subject(subject),
+        "source": source, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, merge=True)
+
+
+def delete_synced_knowledge(doc_id: str):
+    if db is not None:
+        db.collection("knowledge").document(doc_id).delete()
+
+
+PROBLEM_NUM_RE = re.compile(r"^(\d{1,2})\.\s+", re.M)
+
+
+def parse_question_bank_content(content: str) -> dict:
+    """'출제' 탭에서 만든 자료 한 편(지문+문항+해설+정답표가 한 텍스트에 뒤섞여 있음)을
+    문항 번호 기준으로 갈라서, 나중에 원하는 번호만 골라 재조합할 수 있게 만든다."""
+    body = content or ""
+    table_text = ""
+    if "[정답표]" in body:
+        body, table_text = body.rsplit("[정답표]", 1)
+    expl_text = ""
+    if "[정답 및 해설]" in body:
+        body, expl_text = body.split("[정답 및 해설]", 1)
+
+    matches = list(PROBLEM_NUM_RE.finditer(body))
+    preamble = body[:matches[0].start()].strip() if matches else body.strip()
+    problems = {}
+    for i, m in enumerate(matches):
+        no = int(m.group(1))
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        problems[no] = body[m.start():end].strip()
+
+    expl_matches = list(PROBLEM_NUM_RE.finditer(expl_text))
+    explanations = {}
+    for i, m in enumerate(expl_matches):
+        no = int(m.group(1))
+        end = expl_matches[i + 1].start() if i + 1 < len(expl_matches) else len(expl_text)
+        explanations[no] = expl_text[m.start():end].strip()
+
+    answers = {}
+    for line in table_text.splitlines():
+        am = re.match(r"\s*(\d{1,2})[.\)]\s*(.+)", line)
+        if am:
+            answers[int(am.group(1))] = am.group(2).strip()
+
+    return {"preamble": preamble, "problems": problems, "explanations": explanations, "answers": answers}
 
 
 @app.post("/api/admin/questions", dependencies=[Depends(verify_admin)])
@@ -3685,27 +3760,116 @@ def save_question_admin(req: QuestionSaveReq):
         return {"success": False, "detail": "DB 연결 오류"}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     title = req.title.strip() or "제목 없음"
+    subject = normalize_subject(req.subject)
 
     if req.id.strip():
         ref = db.collection("questions").document(req.id.strip())
         if ref.get().exists:
-            ref.set({"title": title, "content": req.content, "updated_at": now}, merge=True)
+            ref.set({"title": title, "content": req.content, "subject": subject, "updated_at": now}, merge=True)
+            sync_knowledge_from_source(f"qbank_{req.id.strip()}", f"[출제] {title}", req.content, subject, "question_bank")
             return {"success": True, "id": req.id.strip(), "updated": True}
 
     _, ref = db.collection("questions").add(
-        {"title": title, "content": req.content, "created_at": now}
+        {"title": title, "content": req.content, "subject": subject, "created_at": now}
     )
+    sync_knowledge_from_source(f"qbank_{ref.id}", f"[출제] {title}", req.content, subject, "question_bank")
     return {"success": True, "id": ref.id, "updated": False}
 
 @app.get("/api/admin/questions", dependencies=[Depends(verify_admin)])
-def get_questions_admin():
+def get_questions_admin(subject: str = ""):
     if db is None: return {"success": False, "questions": []}
-    return {"success": True, "questions": [{"id": d.id, **d.to_dict()} for d in db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("questions").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if subject:
+        subj = normalize_subject(subject)
+        rows = [r for r in rows if normalize_subject(r.get("subject", "korean")) == subj]
+    return {"success": True, "questions": rows}
 
 @app.delete("/api/admin/questions/{q_id}", dependencies=[Depends(verify_admin)])
 def delete_question_admin(q_id: str):
-    if db: db.collection("questions").document(q_id).delete()
+    if db:
+        db.collection("questions").document(q_id).delete()
+        delete_synced_knowledge(f"qbank_{q_id}")
     return {"success": True}
+
+
+@app.get("/api/admin/questions/{q_id}/parsed", dependencies=[Depends(verify_admin)])
+def get_parsed_question_bank(q_id: str):
+    """이 출제본 안에 문항이 몇 번까지 있는지, 각 문항이 무슨 내용인지 보여준다 —
+    재조합할 때 몇 번 문항을 가져올지 고르는 화면에서 쓴다."""
+    if db is None:
+        return {"success": False}
+    doc = db.collection("questions").document(q_id).get()
+    if not doc.exists:
+        return {"success": False, "detail": "존재하지 않는 자료입니다."}
+    data = doc.to_dict()
+    parsed = parse_question_bank_content(data.get("content", ""))
+    problems = [{"no": no, "text": text} for no, text in sorted(parsed["problems"].items())]
+    return {"success": True, "title": data.get("title", ""), "subject": data.get("subject", "korean"),
+            "preamble": parsed["preamble"], "problems": problems}
+
+
+class RecombineSource(BaseModel):
+    id: str
+    numbers: list = []
+
+
+class RecombineReq(BaseModel):
+    sources: list  # [{"id": "...", "numbers": [1,3,5]}]
+
+
+@app.post("/api/admin/questions/recombine", dependencies=[Depends(verify_admin)])
+async def recombine_questions(req: RecombineReq):
+    """무작위로 새로 뽑는 게 아니라, 원장님이 이미 저장해둔 여러 출제본에서
+    원하는 문항 번호만 골라 한 편으로 다시 엮는다."""
+    if db is None:
+        return {"success": False, "detail": "DB 오류"}
+    if not req.sources:
+        return {"success": False, "detail": "재조합할 자료를 선택하세요."}
+
+    parts_body, parts_expl, parts_table = [], [], []
+    cursor = 1
+
+    for src in req.sources:
+        sid = str((src or {}).get("id", "")).strip()
+        try:
+            numbers = sorted(set(int(n) for n in (src or {}).get("numbers") or []))
+        except (TypeError, ValueError):
+            numbers = []
+        if not sid or not numbers:
+            continue
+        doc = await asyncio.to_thread(lambda sid=sid: db.collection("questions").document(sid).get())
+        if not doc.exists:
+            continue
+        data = doc.to_dict()
+        parsed = parse_question_bank_content(data.get("content", ""))
+        src_title = data.get("title", "제목 없음")
+
+        picked_here = [n for n in numbers if n in parsed["problems"]]
+        if not picked_here:
+            continue
+
+        if parsed["preamble"]:
+            parts_body.append(f"[{src_title}에서 가져온 지문]\n{parsed['preamble']}")
+
+        for n in picked_here:
+            parts_body.append(re.sub(r"^\d{1,2}\.", f"{cursor}.", parsed["problems"][n], count=1))
+            if n in parsed["explanations"]:
+                parts_expl.append(re.sub(r"^\d{1,2}\.", f"{cursor}.", parsed["explanations"][n], count=1))
+            if n in parsed["answers"]:
+                parts_table.append(f"{cursor}. {parsed['answers'][n]}")
+            cursor += 1
+
+    total_picked = cursor - 1
+    if not total_picked:
+        return {"success": False, "detail": "선택한 문항을 찾지 못했습니다."}
+
+    content = "\n\n".join(parts_body)
+    if parts_expl:
+        content += "\n\n[정답 및 해설]\n" + "\n\n".join(parts_expl)
+    if parts_table:
+        content += "\n\n[정답표]\n" + "\n".join(parts_table)
+
+    return {"success": True, "content": content, "count": total_picked}
 
 
 # ═════════════════════════════════════════════════════════
