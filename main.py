@@ -2176,6 +2176,54 @@ def delete_quiz(title: str, _: bool = Depends(verify_admin)):
     return {"success": True}
 
 
+class QuizStartReq(BaseModel):
+    student_name: str
+    title: str
+
+
+@app.post("/api/quiz/start")
+async def start_quiz(req: QuizStartReq):
+    """💡 '타임어택' 퀴즈인데 예전에는 제한 시간이 브라우저 안의 카운트다운 하나뿐이었다.
+    학생이 퀴즈방을 나갔다가 다시 들어오면 타이머가 매번 처음부터 다시 시작돼서,
+    정해둔 제한 시간을 넘겨도 계속 풀 수 있는 구멍이 있었다. 이제 학생이 그 퀴즈를
+    처음 시작한 시각을 서버에 기록해두고, 다시 들어와도 그 시각부터 남은 시간만
+    돌려준다 — 재입장으로 타이머를 리셋할 수 없게 한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    quiz_doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
+    if not quiz_doc.exists:
+        return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
+    time_limit = int(quiz_doc.to_dict().get("time_limit", 0) or 0)
+
+    existing = await asyncio.to_thread(
+        lambda: list(
+            db.collection("reports")
+            .where("student_name", "==", req.student_name)
+            .where("task_name", "==", req.title)
+            .where("type", "==", "타임어택 퀴즈")
+            .limit(1)
+            .stream()
+        )
+    )
+    if existing:
+        return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
+
+    attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
+    a_ref = db.collection("quiz_attempts").document(attempt_id)
+    a_doc = await asyncio.to_thread(a_ref.get)
+    if a_doc.exists:
+        started_at = a_doc.to_dict().get("started_at")
+    else:
+        started_at = datetime.now().timestamp()
+        await asyncio.to_thread(
+            lambda: a_ref.set({
+                "student_name": req.student_name, "title": req.title, "started_at": started_at,
+            })
+        )
+    return {"success": True, "started_at": started_at, "time_limit": time_limit}
+
+
 class QuizSubmitReq(BaseModel):
     school: str
     grade: str
@@ -2352,6 +2400,20 @@ async def submit_quiz(req: QuizSubmitReq):
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
+
+    # 💡 클라이언트 타이머는 재입장으로 우회될 수 있으니(퀴즈방을 나갔다 다시 들어오면
+    # 카운트다운이 처음부터 다시 시작됨), 서버에 기록해둔 실제 시작 시각을 기준으로
+    # 제한 시간을 넘겼는지 다시 한번 확인한다. 제출 요청이 오가는 시간을 감안해
+    # 20초 정도는 너그럽게 봐준다.
+    time_limit = int((doc.to_dict() or {}).get("time_limit", 0) or 0) if doc.exists else 0
+    if time_limit > 0:
+        attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
+        a_doc = await asyncio.to_thread(lambda: db.collection("quiz_attempts").document(attempt_id).get())
+        if a_doc.exists:
+            started_at = a_doc.to_dict().get("started_at")
+            if started_at and datetime.now().timestamp() - float(started_at) > time_limit * 60 + 20:
+                return {"success": False, "detail": "제한 시간이 지나 제출할 수 없습니다."}
+
     actual_score = 0
     total_possible = 0
     details = []
