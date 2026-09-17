@@ -1434,6 +1434,22 @@ def task_visible_to_student(subject: str, target_class: str, student_name: str) 
     return get_student_class_for_subject(student_name, subject) == target_class
 
 
+def task_visibility_denied_reason(subject: str, target_class: str, student_name: str) -> str:
+    """💡 예전에는 응시가 막힌 이유를 "응시할 수 없는 시험입니다"로만 뭉뚱그려서,
+    과목 미등록 때문인지 반이 달라서인지 학생도 원장님도 알 수 없었다. 어느
+    조건에서 막혔는지 구체적으로 짚어서 알려준다(task_visible_to_student와
+    반드시 같은 판정 순서를 따라야 한다)."""
+    subj_label = SUBJECTS[normalize_subject(subject)]["label"]
+    subs = student_subjects(student_name)
+    if subs is not None and normalize_subject(subject) not in subs:
+        return f"'{student_name}' 학생은 {subj_label} 과목에 등록되어 있지 않아 응시할 수 없습니다. 학생 명단에서 {subj_label} 과목을 등록해주세요."
+    target_class = (target_class or "").strip()
+    if target_class:
+        my_class = get_student_class_for_subject(student_name, subject) or "(반 미배정)"
+        return f"'{target_class}' 반 학생만 응시할 수 있는 시험입니다. ('{student_name}' 학생의 {subj_label} 반: {my_class})"
+    return "응시할 수 없는 시험입니다."
+
+
 def with_subject_prefix(title: str, subject: str) -> str:
     """퀴즈/모의고사 제목 앞에 과목 표시를 붙인다. 이미 다른 과목 표시가 붙어 있으면
     (과목을 바꿔 수정한 경우) 떼어내고 새로 붙인다."""
@@ -1925,7 +1941,8 @@ async def submit_exam(req: ExamSubmitRequest):
     data = doc.to_dict() if doc.exists else {}
 
     if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "korean"), data.get("target_class", ""), req.student_name):
-        return {"success": False, "detail": "응시할 수 없는 시험입니다."}
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "korean"), data.get("target_class", ""), req.student_name)
+        return {"success": False, "detail": reason}
 
     actual_score = 0
     wrongs = []
@@ -2304,9 +2321,8 @@ async def start_quiz(req: QuizStartReq):
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
     if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), quiz_data.get("target_class", ""), req.student_name):
-        target_class = (quiz_data.get("target_class") or "").strip()
-        detail = f"'{target_class}' 학급 학생만 응시할 수 있는 퀴즈입니다." if target_class else "응시할 수 없는 퀴즈입니다."
-        return {"success": False, "detail": detail}
+        reason = await asyncio.to_thread(task_visibility_denied_reason, quiz_data.get("subject", "korean"), quiz_data.get("target_class", ""), req.student_name)
+        return {"success": False, "detail": reason}
 
     existing = await asyncio.to_thread(
         lambda: list(
@@ -2515,7 +2531,8 @@ async def submit_quiz(req: QuizSubmitReq):
     doc_data = doc.to_dict() or {}
 
     if not await asyncio.to_thread(task_visible_to_student, doc_data.get("subject", "korean"), doc_data.get("target_class", ""), req.student_name):
-        return {"success": False, "detail": "응시할 수 없는 퀴즈입니다."}
+        reason = await asyncio.to_thread(task_visibility_denied_reason, doc_data.get("subject", "korean"), doc_data.get("target_class", ""), req.student_name)
+        return {"success": False, "detail": reason}
 
     # 💡 클라이언트 타이머는 재입장으로 우회될 수 있으니(퀴즈방을 나갔다 다시 들어오면
     # 카운트다운이 처음부터 다시 시작됨), 서버에 기록해둔 실제 시작 시각을 기준으로
@@ -2935,9 +2952,8 @@ async def start_vocab_test(req: VocabTestStartReq):
     time_limit = int(data.get("time_limit", 0) or 0)
 
     if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
-        target_class = (data.get("target_class") or "").strip()
-        detail = f"'{target_class}' 학급 학생만 응시할 수 있는 시험입니다." if target_class else "응시할 수 없는 시험입니다."
-        return {"success": False, "detail": detail}
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), data.get("target_class", ""), req.student_name)
+        return {"success": False, "detail": reason}
 
     existing = await asyncio.to_thread(
         lambda: list(
@@ -3031,7 +3047,8 @@ async def submit_vocab_test(req: VocabTestSubmitReq):
     data = doc.to_dict()
 
     if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
-        return {"success": False, "detail": "응시할 수 없는 시험입니다."}
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), data.get("target_class", ""), req.student_name)
+        return {"success": False, "detail": reason}
 
     time_limit = int(data.get("time_limit", 0) or 0)
     if time_limit > 0:
