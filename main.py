@@ -1165,6 +1165,7 @@ class SingleStudentRequest(BaseModel):
     grade: str
     name: str
     class_name: str = ""
+    class_names: dict = None
     subjects: list = None
 
 @app.post("/api/admin/student")
@@ -1172,10 +1173,10 @@ def add_single_student(req: SingleStudentRequest, _: bool = Depends(verify_admin
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     subjects = [normalize_subject(s) for s in req.subjects] if req.subjects else ["korean"]
-    db.collection("students").document(sanitize_doc_id(req.name)).set(
-        {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip(), "subjects": subjects},
-        merge=True,
-    )
+    payload = {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip(), "subjects": subjects}
+    if req.class_names is not None:
+        payload["class_names"] = {normalize_subject(k): str(v or "").strip() for k, v in req.class_names.items()}
+    db.collection("students").document(sanitize_doc_id(req.name)).set(payload, merge=True)
     return {"success": True}
 
 class BulkDeleteReq(BaseModel):
@@ -1193,6 +1194,7 @@ class StudentUpdateReq(BaseModel):
     school: str
     grade: str
     class_name: str = None
+    class_names: dict = None
     subjects: list = None
 
 @app.post("/api/admin/student/update")
@@ -1205,6 +1207,13 @@ def update_student(req: StudentUpdateReq, _: bool = Depends(verify_admin)):
         data['school'] = req.school; data['grade'] = req.grade
         if req.class_name is not None:
             data['class_name'] = req.class_name.strip()
+        if req.class_names is not None:
+            # 💡 화면에서 국어반/수학반/영어반을 한 번에 같이 보내므로, 통째로 덮어쓰면
+            # 안 되고 기존 값과 합쳐야 한다 — 안 그러면 다른 과목 칸을 그대로 뒀을 뿐인데
+            # (빈 문자열로 넘어와) 이미 지정해둔 반이 지워져 버린다.
+            merged = dict(data.get('class_names') or {})
+            merged.update({normalize_subject(k): str(v or "").strip() for k, v in req.class_names.items()})
+            data['class_names'] = merged
         if req.subjects is not None:
             data['subjects'] = [normalize_subject(s) for s in req.subjects] or ["korean"]
         if req.old_id != req.new_name:
@@ -1389,6 +1398,52 @@ def student_subjects(student_name: str):
     if not subs:
         return ["korean"]
     return [normalize_subject(s) for s in subs]
+
+
+def get_student_class_for_subject(student_name: str, subject: str) -> str:
+    """학생의 과목별 반을 가져온다. 과목별로 따로 지정한 반이 없으면(예전 방식으로
+    반 하나만 쓰던 학생) 기존 단일 반 값을 그대로 대신 쓴다."""
+    if db is None or not student_name:
+        return ""
+    doc = db.collection("students").document(student_name).get()
+    if not doc.exists:
+        return ""
+    data = doc.to_dict()
+    subj_key = normalize_subject(subject)
+    class_names = data.get("class_names") or {}
+    val = class_names.get(subj_key)
+    if val:
+        return str(val).strip()
+    # 💡 예전에는 반이 하나뿐이었고, 그 학생들은 전부 국어만 듣던 학생들이었다
+    # (student_subjects와 같은 전제). 그래서 국어만 그 값을 그대로 물려받고,
+    # 수학·영어는 따로 지정하지 않았다면 "미배정"으로 본다.
+    if subj_key == "korean":
+        return str(data.get("class_name", "") or "").strip()
+    return ""
+
+
+def task_visible_to_student(subject: str, target_class: str, student_name: str) -> bool:
+    """퀴즈/모의고사가 이 학생에게 보여도 되는지 — 그 과목을 듣지 않으면 안 되고,
+    특정 반 대상으로 지정된 경우 그 반이 아니면 안 된다."""
+    subs = student_subjects(student_name)
+    if subs is not None and normalize_subject(subject) not in subs:
+        return False
+    target_class = (target_class or "").strip()
+    if not target_class:
+        return True
+    return get_student_class_for_subject(student_name, subject) == target_class
+
+
+def with_subject_prefix(title: str, subject: str) -> str:
+    """퀴즈/모의고사 제목 앞에 과목 표시를 붙인다. 이미 다른 과목 표시가 붙어 있으면
+    (과목을 바꿔 수정한 경우) 떼어내고 새로 붙인다."""
+    label = SUBJECTS[normalize_subject(subject)]["label"]
+    t = (title or "").strip()
+    for s in SUBJECTS.values():
+        if t.startswith(f"[{s['label']}]"):
+            t = t[len(f"[{s['label']}]"):].lstrip()
+            break
+    return f"[{label}] {t}"
 
 
 def build_safe_knowledge_context(subject: str = "korean") -> str:
@@ -1613,6 +1668,8 @@ async def create_exam(
     exam_data: str = Form(...),
     video_url: str = Form(""),
     explanation_text: str = Form(""),
+    subject: str = Form("korean"),
+    target_class: str = Form(""),
     file: Optional[UploadFile] = File(None),
     ans_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
@@ -1631,11 +1688,16 @@ async def create_exam(
     if ans_file and ans_file.filename:
         ans_pdf_url = await asyncio.to_thread(save_bytes, await ans_file.read(), ans_file.filename, "exams", ans_file.content_type)
 
+    # 💡 문서 id는 화면/제출 요청이 그대로 쓰는 제목(과목 접두어 포함)과 같아야 한다.
+    subj_key = normalize_subject(subject)
+    title = with_subject_prefix(title, subj_key)
     safe_title = sanitize_doc_id(title)
     await asyncio.to_thread(
         lambda: db.collection("exams").document(safe_title).set(
             {
                 "title": title,
+                "subject": subj_key,
+                "target_class": str(target_class or "").strip(),
                 "objective": objective,
                 "exam_data": exam_data,
                 "pdf_url": pdf_url,
@@ -1646,14 +1708,17 @@ async def create_exam(
             }
         )
     )
-    return {"success": True}
+    return {"success": True, "title": title}
 
 
 @app.get("/api/exams")
-def get_exams():
+def get_exams(student_name: str = ""):
     if db is None:
         return {"success": False, "exams": []}
-    return {"success": True, "exams": [{"id": d.id, **d.to_dict()} for d in db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if student_name:
+        rows = [e for e in rows if task_visible_to_student(e.get("subject", "korean"), e.get("target_class", ""), student_name)]
+    return {"success": True, "exams": rows}
 
 
 @app.delete("/api/admin/exam/{title}")
@@ -1848,6 +1913,10 @@ async def submit_exam(req: ExamSubmitRequest):
 
     doc = await asyncio.to_thread(lambda: db.collection("exams").document(req.title).get())
     data = doc.to_dict() if doc.exists else {}
+
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "korean"), data.get("target_class", ""), req.student_name):
+        return {"success": False, "detail": "응시할 수 없는 시험입니다."}
+
     actual_score = 0
     wrongs = []
 
@@ -2114,6 +2183,11 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     if not title or not str(title).strip():
         raise HTTPException(status_code=400, detail="퀴즈 제목은 필수입니다.")
 
+    # 💡 문서 id(=제출/시작 API가 그대로 조회 키로 쓰는 문자열)는 화면에 보이는
+    # 제목(과목 접두어 포함)과 항상 같아야 한다 — 접두어를 붙이기 전 제목으로 id를
+    # 만들면, 학생이 실제로 보내는 값(접두어 붙은 제목)과 어긋나 퀴즈를 찾지 못한다.
+    subject = normalize_subject(req.get("subject", "korean"))
+    title = with_subject_prefix(title, subject)
     safe_title = sanitize_doc_id(title)
 
     # 💡 수정하면서 제목을 바꾼 경우, 예전 이름의 퀴즈가 남아 둘 다 배포되어 버린다.
@@ -2131,6 +2205,8 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
         lambda: db.collection("quizzes").document(safe_title).set(
             {
                 "title": title,
+                "subject": subject,
+                "target_class": str(req.get("target_class", "") or "").strip(),
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
                 "questions": req.get("questions", []),
@@ -2139,7 +2215,7 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
             }
         )
     )
-    return {"success": True}
+    return {"success": True, "title": title}
 
 
 @app.post("/api/admin/quiz/image", dependencies=[Depends(verify_admin)])
@@ -2163,10 +2239,16 @@ async def upload_quiz_image(file: UploadFile = File(...)):
 
 
 @app.get("/api/quizzes")
-def get_quizzes():
+def get_quizzes(student_name: str = ""):
     if db is None:
         return {"success": False, "quizzes": []}
-    return {"success": True, "quizzes": [{"id": d.id, **d.to_dict()} for d in db.collection("quizzes").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("quizzes").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    # 💡 student_name이 오면(학생 화면) 그 학생이 듣는 과목이 아니거나, 특정 반 전용으로
+    # 지정된 퀴즈인데 그 반이 아니면 목록에서 아예 뺀다. 관리자 화면은 student_name 없이
+    # 부르므로 전체가 그대로 보인다.
+    if student_name:
+        rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), q.get("target_class", ""), student_name)]
+    return {"success": True, "quizzes": rows}
 
 
 @app.delete("/api/admin/quiz/{title}")
@@ -2194,7 +2276,13 @@ async def start_quiz(req: QuizStartReq):
     quiz_doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     if not quiz_doc.exists:
         return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
-    time_limit = int(quiz_doc.to_dict().get("time_limit", 0) or 0)
+    quiz_data = quiz_doc.to_dict()
+    time_limit = int(quiz_data.get("time_limit", 0) or 0)
+
+    if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), quiz_data.get("target_class", ""), req.student_name):
+        target_class = (quiz_data.get("target_class") or "").strip()
+        detail = f"'{target_class}' 학급 학생만 응시할 수 있는 퀴즈입니다." if target_class else "응시할 수 없는 퀴즈입니다."
+        return {"success": False, "detail": detail}
 
     existing = await asyncio.to_thread(
         lambda: list(
@@ -2400,6 +2488,10 @@ async def submit_quiz(req: QuizSubmitReq):
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
+    doc_data = doc.to_dict() or {}
+
+    if not await asyncio.to_thread(task_visible_to_student, doc_data.get("subject", "korean"), doc_data.get("target_class", ""), req.student_name):
+        return {"success": False, "detail": "응시할 수 없는 퀴즈입니다."}
 
     # 💡 클라이언트 타이머는 재입장으로 우회될 수 있으니(퀴즈방을 나갔다 다시 들어오면
     # 카운트다운이 처음부터 다시 시작됨), 서버에 기록해둔 실제 시작 시각을 기준으로
