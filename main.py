@@ -283,7 +283,12 @@ if firebase_key_str:
         cred_dict = json.loads(firebase_key_str)
         cred = credentials.Certificate(cred_dict)
         project_id = cred_dict.get("project_id")
-        bucket_name = os.environ.get("FIREBASE_BUCKET", f"{project_id}.appspot.com").replace("gs://", "").strip("/")
+        # 💡 2024년 10월 이후 새로 만든 Firebase 프로젝트는 기본 버킷 이름이
+        # "프로젝트ID.appspot.com"이 아니라 "프로젝트ID.firebasestorage.app"이다.
+        # FIREBASE_BUCKET 환경변수가 없을 때는(설정을 깜빡했을 때) 예전 방식 대신
+        # 이 새 방식을 기본값으로 쓴다 — 실제 버킷 이름과 안 맞아 업로드가 전부
+        # 임시 저장소로 빠지던 문제(logyedu24h 프로젝트에서 실제로 겪음)의 재발 방지.
+        bucket_name = os.environ.get("FIREBASE_BUCKET", f"{project_id}.firebasestorage.app").replace("gs://", "").strip("/")
 
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
