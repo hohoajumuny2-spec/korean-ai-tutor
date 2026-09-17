@@ -2590,6 +2590,386 @@ async def submit_quiz(req: QuizSubmitReq):
 
 
 # ─────────────────────────────────────────────────────────
+# 영어 단어 시험 — 난이도별(상/중/하) 단어장을 여러 파일 올려두면,
+# 원장님이 난이도별로 몇 개씩 뽑을지 정해서 무작위로 출제한다.
+# 4가지 형태(단어→뜻, 뜻→단어, 스펠링 빈칸, 구절 해석)를 섞어 낸다.
+# 채점은 객관적으로 판정 가능한 유형(뜻→단어, 스펠링)은 정확히 비교하고,
+# 뜻을 써야 하는 유형(단어→뜻, 구절 해석)은 동의어도 맞게 봐야 하므로
+# AI에게 한 번에 모아 채점을 맡긴다(문항마다 따로 부르지 않아 비용을 아낀다).
+# ─────────────────────────────────────────────────────────
+VOCAB_CHUNK_SIZE = 500
+VOCAB_DIFFICULTIES = {"high": "상", "mid": "중", "low": "하"}
+
+
+def normalize_vocab_difficulty(d) -> str:
+    d = str(d or "mid").strip().lower()
+    return d if d in VOCAB_DIFFICULTIES else "mid"
+
+
+def parse_vocab_rows(rows: list) -> list:
+    """엑셀/CSV 2열(단어 또는 구절, 뜻)을 [{word, meaning, is_phrase}, ...]로 바꾼다.
+    첫 줄이 '단어'/'뜻' 같은 제목 줄이면 건너뛴다."""
+    out = []
+    for i, r in enumerate(rows):
+        if len(r) < 2:
+            continue
+        word = str(r[0] or "").strip()
+        meaning = str(r[1] or "").strip()
+        if not word or not meaning:
+            continue
+        if i == 0 and word.lower() in ("단어", "word", "영단어", "구절"):
+            continue
+        out.append({"word": word, "meaning": meaning, "is_phrase": " " in word})
+    return out
+
+
+@app.post("/api/admin/vocab/upload", dependencies=[Depends(verify_admin)])
+async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form("mid")):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    diff = normalize_vocab_difficulty(difficulty)
+    raw = await file.read()
+    try:
+        rows = await asyncio.to_thread(_read_sheet, raw, file.filename)
+    except ValueError as e:
+        return {"success": False, "detail": str(e)}
+    words = parse_vocab_rows(rows)
+    if not words:
+        return {"success": False, "detail": "읽을 수 있는 단어가 없습니다. 1열은 단어(또는 구절), 2열은 뜻으로 구성해주세요."}
+
+    file_id = uuid.uuid4().hex[:12]
+    await asyncio.to_thread(
+        lambda: db.collection("vocab_files").document(file_id).set({
+            "label": file.filename, "difficulty": diff, "count": len(words),
+            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    )
+    chunks = [words[i:i + VOCAB_CHUNK_SIZE] for i in range(0, len(words), VOCAB_CHUNK_SIZE)] or [[]]
+    for i, chunk in enumerate(chunks):
+        await asyncio.to_thread(
+            lambda i=i, chunk=chunk: db.collection("vocab_words").document(f"{file_id}_{i:03d}").set({
+                "file_id": file_id, "difficulty": diff, "words": chunk,
+            })
+        )
+    return {"success": True, "file_id": file_id, "count": len(words)}
+
+
+@app.get("/api/admin/vocab/files", dependencies=[Depends(verify_admin)])
+def list_vocab_files():
+    if db is None:
+        return {"success": False, "files": [], "counts": {}}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("vocab_files").stream()]
+    rows.sort(key=lambda r: r.get("uploaded_at", ""), reverse=True)
+    counts = {"high": 0, "mid": 0, "low": 0}
+    for r in rows:
+        counts[normalize_vocab_difficulty(r.get("difficulty"))] += int(r.get("count", 0) or 0)
+    return {"success": True, "files": rows, "counts": counts}
+
+
+@app.delete("/api/admin/vocab/files/{file_id}", dependencies=[Depends(verify_admin)])
+async def delete_vocab_file(file_id: str):
+    if db is None:
+        return {"success": False}
+    await asyncio.to_thread(lambda: db.collection("vocab_files").document(file_id).delete())
+    docs = await asyncio.to_thread(lambda: list(db.collection("vocab_words").where("file_id", "==", file_id).stream()))
+    for d in docs:
+        await asyncio.to_thread(d.reference.delete)
+    return {"success": True}
+
+
+def load_vocab_pool(difficulty: str) -> list:
+    """그 난이도로 올라와 있는 모든 파일의 단어를 하나로 모은다."""
+    if db is None:
+        return []
+    diff = normalize_vocab_difficulty(difficulty)
+    pool = []
+    for d in db.collection("vocab_words").where("difficulty", "==", diff).stream():
+        pool.extend((d.to_dict() or {}).get("words", []))
+    return pool
+
+
+def blank_word(word: str) -> tuple:
+    """단어의 일부 글자를 빈칸(_)으로 바꾼 표시용 문자열을 만든다."""
+    letters = list(word)
+    idxs = [i for i, c in enumerate(letters) if c.isalpha()]
+    if not idxs:
+        return word
+    n_blank = max(1, min(len(idxs) - 1 if len(idxs) > 1 else 1, round(len(idxs) * 0.4)))
+    blanks = set(random.sample(idxs, n_blank))
+    return "".join("_" if i in blanks else c for i, c in enumerate(letters))
+
+
+def build_vocab_question(entry: dict, qtype: int, no: int) -> dict:
+    word, meaning, diff = entry["word"], entry["meaning"], entry["difficulty"]
+    if qtype == 1:
+        return {"no": no, "type": 1, "prompt": word, "answer": meaning, "difficulty": diff}
+    if qtype == 2:
+        return {"no": no, "type": 2, "prompt": meaning, "answer": word, "difficulty": diff}
+    if qtype == 3:
+        return {"no": no, "type": 3, "prompt": blank_word(word), "prompt_meaning": meaning, "answer": word, "difficulty": diff}
+    return {"no": no, "type": 4, "prompt": word, "answer": meaning, "difficulty": diff}
+
+
+def generate_vocab_questions(counts: dict) -> list:
+    picked_all = []
+    for diff_key, n in (counts or {}).items():
+        diff_key = normalize_vocab_difficulty(diff_key)
+        n = int(n or 0)
+        if n <= 0:
+            continue
+        pool = load_vocab_pool(diff_key)
+        if len(pool) < n:
+            raise ValueError(f"{VOCAB_DIFFICULTIES[diff_key]} 난이도에 등록된 단어가 {len(pool)}개뿐이라 {n}개를 낼 수 없습니다.")
+        for entry in random.sample(pool, n):
+            entry = dict(entry)
+            entry["difficulty"] = diff_key
+            qtype = random.choice([1, 4]) if entry.get("is_phrase") else random.choice([1, 2, 3])
+            picked_all.append((entry, qtype))
+    random.shuffle(picked_all)
+    return [build_vocab_question(entry, qtype, i + 1) for i, (entry, qtype) in enumerate(picked_all)]
+
+
+class VocabTestCreateReq(BaseModel):
+    title: str
+    deadline: str = ""
+    time_limit: int = 15
+    target_class: str = ""
+    counts: dict = {}
+
+
+@app.post("/api/admin/vocab_test", dependencies=[Depends(verify_admin)])
+async def create_vocab_test(req: VocabTestCreateReq):
+    if db is None:
+        return {"success": False, "detail": "DB 오류"}
+    if not req.title.strip():
+        return {"success": False, "detail": "시험 제목은 필수입니다."}
+    try:
+        questions = await asyncio.to_thread(generate_vocab_questions, req.counts)
+    except ValueError as e:
+        return {"success": False, "detail": str(e)}
+    if not questions:
+        return {"success": False, "detail": "출제할 단어 수를 1개 이상 입력하세요."}
+
+    title = with_subject_prefix(req.title, "english")
+    safe_title = sanitize_doc_id(title)
+    await asyncio.to_thread(
+        lambda: db.collection("vocab_tests").document(safe_title).set({
+            "title": title, "subject": "english", "target_class": (req.target_class or "").strip(),
+            "deadline": req.deadline, "time_limit": int(req.time_limit or 0),
+            "questions": questions,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    )
+    return {"success": True, "title": title}
+
+
+def vocab_test_public(data: dict) -> dict:
+    """학생에게 보여줄 때는 정답(answer)만 빼고 준다."""
+    out = dict(data)
+    out["questions"] = [{k: v for k, v in q.items() if k != "answer"} for q in (data.get("questions") or [])]
+    out["question_count"] = len(data.get("questions") or [])
+    return out
+
+
+@app.get("/api/vocab_tests")
+def get_vocab_tests(student_name: str = ""):
+    if db is None:
+        return {"success": False, "tests": []}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("vocab_tests").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if student_name:
+        rows = [vocab_test_public(t) for t in rows if task_visible_to_student(t.get("subject", "english"), t.get("target_class", ""), student_name)]
+    return {"success": True, "tests": rows}
+
+
+@app.delete("/api/admin/vocab_test/{title}", dependencies=[Depends(verify_admin)])
+def delete_vocab_test(title: str):
+    if db:
+        db.collection("vocab_tests").document(title).delete()
+    return {"success": True}
+
+
+class VocabTestStartReq(BaseModel):
+    student_name: str
+    title: str
+
+
+@app.post("/api/vocab_test/start")
+async def start_vocab_test(req: VocabTestStartReq):
+    """💡 타임어택 퀴즈와 같은 이유로(재입장하면 타이머가 리셋되는 구멍을 막기 위해)
+    시작 시각을 서버에 기록해두고, 다시 들어와도 그 시각부터 남은 시간만 돌려준다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    doc = await asyncio.to_thread(lambda: db.collection("vocab_tests").document(req.title).get())
+    if not doc.exists:
+        return {"success": False, "detail": "존재하지 않는 시험입니다."}
+    data = doc.to_dict()
+    time_limit = int(data.get("time_limit", 0) or 0)
+
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
+        target_class = (data.get("target_class") or "").strip()
+        detail = f"'{target_class}' 학급 학생만 응시할 수 있는 시험입니다." if target_class else "응시할 수 없는 시험입니다."
+        return {"success": False, "detail": detail}
+
+    existing = await asyncio.to_thread(
+        lambda: list(
+            db.collection("reports")
+            .where("student_name", "==", req.student_name)
+            .where("task_name", "==", req.title)
+            .where("type", "==", "영어 단어 시험")
+            .limit(1)
+            .stream()
+        )
+    )
+    if existing:
+        return {"success": False, "detail": "이미 완료한 시험입니다."}
+
+    attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
+    a_ref = db.collection("vocab_test_attempts").document(attempt_id)
+    a_doc = await asyncio.to_thread(a_ref.get)
+    if a_doc.exists:
+        started_at = a_doc.to_dict().get("started_at")
+    else:
+        started_at = datetime.now().timestamp()
+        await asyncio.to_thread(
+            lambda: a_ref.set({"student_name": req.student_name, "title": req.title, "started_at": started_at})
+        )
+    return {"success": True, "started_at": started_at, "time_limit": time_limit, "test": vocab_test_public(data)}
+
+
+def normalize_vocab_answer(s) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip()).lower()
+
+
+async def ai_grade_vocab_meanings(items: list) -> dict:
+    """뜻/해석형 문항(1,4번 유형)을 한 번의 AI 호출로 모아 채점한다.
+    items: [{no, word, correct, student}] → {no: True/False}."""
+    if not items:
+        return {}
+    lines = "\n".join(
+        f'{{"no": {it["no"]}, "단어또는구절": "{it["word"]}", "모범답안": "{it["correct"]}", "학생답안": "{it["student"]}"}}'
+        for it in items
+    )
+    prompt = f"""다음은 영어 단어/구절 뜻풀이 시험의 채점 대상입니다. 각 문항마다 학생 답안이 모범답안과
+뜻이 통하면(동의어거나 표현이 달라도 의미가 같으면) 정답으로 채점하세요. 철자·띄어쓰기·조사가
+달라도 의미가 같으면 정답입니다. 의미가 다르거나 답을 안 썼으면 오답입니다.
+
+[채점 대상]
+{lines}
+
+[출력 형식 - 반드시 이 JSON 배열 형식으로만, 다른 말 없이 출력하세요]
+[{{"no": 1, "ok": true}}, {{"no": 2, "ok": false}}]"""
+    try:
+        resp = await asyncio.to_thread(safe_generate, [prompt], False, False)
+        text = (resp.text or "").strip()
+        match = re.search(r"\[.*\]", text, re.S)
+        if not match:
+            return {}
+        parsed = json.loads(match.group(0))
+        return {int(p["no"]): bool(p.get("ok")) for p in parsed if "no" in p}
+    except Exception:
+        return {}
+
+
+class VocabTestSubmitReq(BaseModel):
+    school: str
+    grade: str
+    student_name: str
+    title: str
+    answers: list
+
+
+@app.post("/api/vocab_test/submit")
+async def submit_vocab_test(req: VocabTestSubmitReq):
+    if db is None:
+        return {"success": False}
+
+    existing = await asyncio.to_thread(
+        lambda: list(
+            db.collection("reports")
+            .where("student_name", "==", req.student_name)
+            .where("task_name", "==", req.title)
+            .where("type", "==", "영어 단어 시험")
+            .limit(1)
+            .stream()
+        )
+    )
+    if existing:
+        return {"success": False, "detail": "이미 완료한 시험입니다."}
+
+    doc = await asyncio.to_thread(lambda: db.collection("vocab_tests").document(req.title).get())
+    if not doc.exists:
+        return {"success": False, "detail": "존재하지 않는 시험입니다."}
+    data = doc.to_dict()
+
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
+        return {"success": False, "detail": "응시할 수 없는 시험입니다."}
+
+    time_limit = int(data.get("time_limit", 0) or 0)
+    if time_limit > 0:
+        attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
+        a_doc = await asyncio.to_thread(lambda: db.collection("vocab_test_attempts").document(attempt_id).get())
+        if a_doc.exists:
+            started_at = a_doc.to_dict().get("started_at")
+            if started_at and datetime.now().timestamp() - float(started_at) > time_limit * 60 + 20:
+                return {"success": False, "detail": "제한 시간이 지나 제출할 수 없습니다."}
+
+    questions = data.get("questions") or []
+    ai_batch = []
+    results = []
+    for i, q in enumerate(questions):
+        my = str(req.answers[i]).strip() if i < len(req.answers) and req.answers[i] is not None else ""
+        results.append({
+            "no": q["no"], "type": q["type"], "prompt": q["prompt"], "answer": q["answer"],
+            "my": my, "difficulty": q.get("difficulty", "mid"), "ok": None,
+        })
+        if q["type"] in (1, 4):
+            ai_batch.append({"no": q["no"], "word": q["prompt"], "correct": q["answer"], "student": my or "(빈칸)"})
+        else:
+            results[-1]["ok"] = bool(my) and normalize_vocab_answer(my) == normalize_vocab_answer(q["answer"])
+
+    if ai_batch:
+        ai_results = await ai_grade_vocab_meanings(ai_batch)
+        for r in results:
+            if r["ok"] is None:
+                r["ok"] = ai_results.get(r["no"], normalize_vocab_answer(r["my"]) == normalize_vocab_answer(r["answer"]))
+
+    correct_count = sum(1 for r in results if r["ok"])
+    actual_score = round(correct_count / len(results) * 100) if results else 0
+
+    diff_stats = {}
+    for r in results:
+        s = diff_stats.setdefault(r["difficulty"], {"total": 0, "correct": 0})
+        s["total"] += 1
+        if r["ok"]:
+            s["correct"] += 1
+
+    await asyncio.to_thread(
+        lambda: db.collection("reports").add({
+            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "student_name": req.student_name, "school": req.school, "grade": req.grade,
+            "task_name": req.title, "type": "영어 단어 시험",
+            "score": actual_score, "question_count": len(results), "correct_count": correct_count,
+            "wrongs": [r["no"] for r in results if not r["ok"]],
+        })
+    )
+
+    vocab_xp = XP_REWARD_QUIZ_BASE + actual_score // 5
+    s_ref = db.collection("students").document(req.student_name)
+    s_doc = await asyncio.to_thread(s_ref.get)
+    old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
+    lvl_up = level_up_info(old_xp, vocab_xp)
+    await asyncio.to_thread(lambda: s_ref.set({"xp": firestore.Increment(vocab_xp)}, merge=True))
+    send_telegram_message(f"🔤 [영어 단어 시험 완료]\n{req.student_name} 학생이 '{req.title}' 시험을 완료했습니다. (점수: {actual_score}점)")
+
+    return {
+        "success": True, "score": actual_score, "correct_count": correct_count,
+        "question_count": len(results), "details": results, "difficulty_stats": diff_stats,
+        "level_up": lvl_up,
+    }
+
+
+# ─────────────────────────────────────────────────────────
 # 난이도별 출제 원칙 (원장님 지정)
 # ─────────────────────────────────────────────────────────
 DIFFICULTY_PRINCIPLES = {
