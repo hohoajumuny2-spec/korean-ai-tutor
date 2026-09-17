@@ -2821,11 +2821,19 @@ class VocabTestCreateReq(BaseModel):
 @app.get("/api/admin/vocab/words", dependencies=[Depends(verify_admin)])
 def list_vocab_words(difficulty: str = "mid"):
     """원장님이 무작위가 아니라 단어를 직접 골라 출제하고 싶을 때, 그 난이도에
-    올라와 있는 단어를 목록으로 보여준다(파일 여러 개면 전부 합쳐서)."""
+    올라와 있는 단어를 목록으로 보여준다(파일 여러 개면 전부 합쳐서).
+    difficulty='all'이면 난이도 구분 없이 전체를 한 번에 보여준다."""
+    if str(difficulty).strip().lower() == "all":
+        words = []
+        for d in ("high", "mid", "low"):
+            for w in load_vocab_pool(d):
+                words.append({"word": w.get("word", ""), "meaning": w.get("meaning", ""), "is_phrase": bool(w.get("is_phrase")), "difficulty": d})
+        return {"success": True, "difficulty": "all", "words": words}
+
     diff = normalize_vocab_difficulty(difficulty)
     pool = load_vocab_pool(diff)
     return {"success": True, "difficulty": diff, "words": [
-        {"word": w.get("word", ""), "meaning": w.get("meaning", ""), "is_phrase": bool(w.get("is_phrase"))} for w in pool
+        {"word": w.get("word", ""), "meaning": w.get("meaning", ""), "is_phrase": bool(w.get("is_phrase")), "difficulty": diff} for w in pool
     ]}
 
 
