@@ -1459,7 +1459,7 @@ async def chat_with_ai(
     if allowed is not None and subj_key not in allowed:
         return {
             "success": False,
-            "reply": f"{subj['label']} 수업을 듣는 학생만 {subj['persona']}를 이용할 수 있습니다. 선생님께 문의해주세요.",
+            "reply": f"아직 {subj['label']} 수업에 등록되어 있지 않아 {subj['persona']}를 이용할 수 없어요. {subj['label']}에 등록하면 이 AI를 포함한 다양한 학습 프로그램을 이용할 수 있으니, 선생님께 등록을 문의해주세요!",
             "detail": "not_enrolled",
         }
 
