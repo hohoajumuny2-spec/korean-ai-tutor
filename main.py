@@ -1470,7 +1470,12 @@ def build_safe_knowledge_context(subject: str = "korean") -> str:
     rows = [d.to_dict() for d in db.collection("knowledge").stream()]
     # 과목 구분이 생기기 전에 올라간 예전 자료는 전부 국어 자료였다.
     rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
-    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    # 💡 대부분 created_at을 문자열(strftime)로 저장하지만, 문서 하나라도 Firestore
+    # 콘솔 등에서 직접 만들어져 실제 타임스탬프(DatetimeWithNanoseconds) 타입으로 들어가
+    # 있으면 문자열과 비교할 수 없어("'<' not supported between instances of 'str' and
+    # 'DatetimeWithNanoseconds'") 이 함수를 부르는 모든 채팅 질문이 그대로 실패했다.
+    # 정렬 기준을 항상 문자열로 맞춰서 어떤 타입이 섞여 있어도 죽지 않게 한다.
+    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
     knowledge_base = "\n".join([f"[{r.get('title')}] {r.get('content')}" for r in rows[:50]])
     return knowledge_base
 
@@ -2053,7 +2058,7 @@ def get_student_exam_report(student_name: str, _: bool = Depends(verify_admin)):
     except Exception as e:
         return {"success": False, "detail": f"성적 조회 실패: {e}", "exams": []}
 
-    report_docs.sort(key=lambda r: r.to_dict().get("submitted_at") or "")
+    report_docs.sort(key=lambda r: str(r.to_dict().get("submitted_at") or ""))
 
     def _safe_int(v, default=0):
         try:
@@ -2762,7 +2767,7 @@ def list_vocab_files():
     if db is None:
         return {"success": False, "files": [], "counts": {}}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("vocab_files").stream()]
-    rows.sort(key=lambda r: r.get("uploaded_at", ""), reverse=True)
+    rows.sort(key=lambda r: str(r.get("uploaded_at", "")), reverse=True)
     counts = {"high": 0, "mid": 0, "low": 0}
     for r in rows:
         counts[normalize_vocab_difficulty(r.get("difficulty"))] += int(r.get("count", 0) or 0)
@@ -3666,7 +3671,7 @@ def get_knowledge(subject: str = "korean"):
     subject = normalize_subject(subject)
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("knowledge").stream()]
     rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
-    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
     return {"success": True, "knowledge": rows}
 
 
