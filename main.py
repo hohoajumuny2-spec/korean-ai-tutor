@@ -4439,6 +4439,41 @@ async def split_video_scenes(text: str) -> list:
     return _fallback_split_scenes(text)
 
 
+@app.post("/api/admin/ai_status")
+async def ai_status(name: str = Depends(current_admin_name)):
+    """AI가 지금 쓸 수 있는 상태인지 아주 짧은 호출 한 번으로 확인한다.
+
+    💡 크레딧이 떨어진 줄 모르고 30분짜리 출제를 맡겼다가 뒤늦게 실패를 보는 일이
+       있었다. 시작하기 전에 1초 만에 확인할 수 있게 한다. 호출 비용이 들므로
+       원장님 계정만 쓸 수 있고, 답도 한 글자만 받도록 최소로 요청한다."""
+    me = await asyncio.to_thread(get_admin_doc, name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다."}
+
+    try:
+        model_name = get_best_model().model_name
+    except Exception:
+        model_name = ""
+
+    try:
+        resp = await asyncio.to_thread(safe_generate, "1+1은? 숫자만 답해.")
+        reply = (getattr(resp, "text", "") or "").strip()
+        return {
+            "success": True,
+            "ok": True,
+            "model": model_name,
+            "reply": reply[:40],
+            "message": "AI가 정상 동작합니다. 출제·해설 영상·채점 모두 바로 쓰실 수 있습니다.",
+        }
+    except Exception as e:
+        return {
+            "success": True,
+            "ok": False,
+            "model": model_name,
+            "message": friendly_ai_error(e),
+        }
+
+
 @app.post("/api/admin/generate_video")
 async def generate_video(text: str = Form(...), title: str = Form(""), question_no: int = Form(0),
                           name: str = Depends(current_admin_name)):
