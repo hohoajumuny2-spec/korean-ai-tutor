@@ -3593,6 +3593,7 @@ async def start_question_job(
 
 @app.post("/api/admin/jobs/video")
 async def start_video_job(text: str = Form(...), title: str = Form(""), question_no: int = Form(0),
+                          script: str = Form(""),
                           name: str = Depends(current_admin_name)):
     """해설 영상 만들기를 작업으로 맡긴다."""
     if db is None:
@@ -3606,7 +3607,7 @@ async def start_video_job(text: str = Form(...), title: str = Form(""), question
     label = (title.strip() or "해설영상") + (f" — {question_no}번" if question_no else "")
     job_id = await asyncio.to_thread(create_job, "video", label, name, {"question_no": question_no})
     asyncio.create_task(run_video_job(job_id, {
-        "text": text, "title": title, "question_no": question_no, "name": name,
+        "text": text, "title": title, "question_no": question_no, "script": script, "name": name,
     }))
     return {"success": True, "job_id": job_id}
 
@@ -4508,8 +4509,79 @@ async def ai_status(name: str = Depends(current_admin_name)):
         }
 
 
+def parse_manual_script(script: str, question_no: int) -> dict:
+    """원장님이 손수 고친 대본(JSON)을 읽어들인다.
+    💡 이 길로 들어오면 AI를 한 번도 부르지 않으므로 사용료가 들지 않는다.
+       형식이 어긋나면 빈 값을 돌려주고, 호출부에서 AI 쪽으로 넘긴다."""
+    raw = (script or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    if question_no > 0:
+        narration = [str(x).strip() for x in (data.get("narration") or []) if str(x).strip()]
+        reasons = {}
+        for k, v in (data.get("wrong_reasons") or {}).items():
+            txt = str(v).strip()
+            if txt:
+                reasons[str(k)] = txt[:40]
+        out = {
+            "evidence_quote": str(data.get("evidence_quote", "")).strip(),
+            "wrong_reasons": reasons,
+            "narration": narration[:VIDEO_MAX_SCENES],
+        }
+        # 하나라도 채워져 있어야 손수 만든 대본으로 인정한다
+        return out if (out["evidence_quote"] or out["wrong_reasons"] or out["narration"]) else {}
+
+    scenes = [str(x).strip() for x in (data.get("scenes") or []) if str(x).strip()]
+    return {"scenes": scenes[:VIDEO_MAX_SCENES]} if scenes else {}
+
+
+@app.post("/api/admin/video_draft")
+async def video_draft(text: str = Form(...), question_no: int = Form(0),
+                      name: str = Depends(current_admin_name)):
+    """영상 대본 초안을 AI 없이 만들어 돌려준다.
+    💡 원장님이 이 초안을 고쳐서 그대로 영상으로 만들면 AI 사용료가 한 푼도 들지 않는다.
+       문장 부호를 기준으로 기계적으로 나누기만 하므로 공짜다."""
+    me = await asyncio.to_thread(get_admin_doc, name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다."}
+    source_text = (text or "").strip()
+    if not source_text:
+        return {"success": False, "detail": "영상으로 만들 설명 내용을 입력해주세요."}
+
+    if question_no > 0:
+        parsed = parse_question_bank_content(source_text)
+        problem_text = parsed["problems"].get(question_no)
+        if not problem_text:
+            return {"success": False, "detail": f"{question_no}번 문항을 찾지 못했습니다. 문항 번호와 내용을 확인해주세요."}
+        explanation_text = parsed["explanations"].get(question_no, "")
+        answer_text = parsed["answers"].get(question_no, "")
+        stem, options = _split_question_options(problem_text)
+        correct = _extract_option_number(answer_text)
+        return {
+            "success": True,
+            "question_no": question_no,
+            "stem": stem,
+            "options": options,
+            "correct": correct,
+            "preamble": parsed["preamble"][:4000],
+            "evidence_quote": "",
+            "wrong_reasons": {str(n): "" for n in range(1, len(options) + 1) if n != correct},
+            "narration": _fallback_split_scenes(explanation_text or problem_text),
+        }
+
+    return {"success": True, "scenes": _fallback_split_scenes(source_text)}
+
+
 @app.post("/api/admin/generate_video")
 async def generate_video(text: str = Form(...), title: str = Form(""), question_no: int = Form(0),
+                          script: str = Form(""),
                           name: str = Depends(current_admin_name)):
     # 💡 해설 영상 자동 생성은 서버 비용(AI 호출 + TTS + 렌더링)이 크게 드는 기능이라,
     # 다른 관리자 계정이 아니라 원장님(is_owner)만 쓸 수 있도록 제한한다.
@@ -4530,7 +4602,11 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
         preamble = parsed["preamble"]
         explanation_text = parsed["explanations"].get(question_no, "")
         answer_text = parsed["answers"].get(question_no, "")
-        analysis = await analyze_question_for_video(preamble, problem_text, explanation_text)
+        # 💡 손수 고친 대본이 넘어왔으면 AI를 부르지 않는다 (사용료 0원).
+        analysis = parse_manual_script(script, question_no)
+        used_ai = not analysis
+        if used_ai:
+            analysis = await analyze_question_for_video(preamble, problem_text, explanation_text)
         try:
             video_bytes = await asyncio.to_thread(
                 render_question_video, question_no, preamble, problem_text, explanation_text, answer_text, analysis,
@@ -4540,7 +4616,9 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
         scene_count = 4
         safe_title = (title.strip() or f"{question_no}번 문항 해설영상")[:60]
     else:
-        scenes = await split_video_scenes(source_text)
+        manual = parse_manual_script(script, 0)
+        used_ai = not manual
+        scenes = manual.get("scenes") if manual else await split_video_scenes(source_text)
         if not scenes:
             return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
         try:
@@ -4556,10 +4634,12 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
     if db is not None:
         await asyncio.to_thread(lambda: db.collection("explain_videos").document(doc_id).set({
             "title": safe_title, "url": url, "scene_count": scene_count, "question_no": question_no,
+            "used_ai": used_ai,
             "source_text": source_text[:2000],
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }))
-    return {"success": True, "id": doc_id, "title": safe_title, "url": url, "scene_count": scene_count}
+    return {"success": True, "id": doc_id, "title": safe_title, "url": url,
+            "scene_count": scene_count, "used_ai": used_ai}
 
 
 @app.get("/api/admin/explain_videos")
