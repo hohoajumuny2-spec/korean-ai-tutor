@@ -3398,6 +3398,7 @@ DIFFICULTY_PRINCIPLES = {
 #   결과는 jobs 컬렉션에 쌓이므로, 나중에 아무 때나 돌아와서 받아 가면 된다.
 # ─────────────────────────────────────────────────────────
 JOB_STALE_MINUTES = 20      # 이만큼 소식이 없으면 서버가 재시작된 것으로 본다
+PARTIAL_KEEP_CHARS = 60000  # 진행 중 보여줄 본문은 이만큼만 (문서 크기 한도 때문)
 
 
 class MemUpload:
@@ -3456,24 +3457,25 @@ async def run_question_job(job_id: str, params: dict):
         body = text.split("[정답 및 해설]")[0]
         return len(set(PROBLEM_NUM_RE.findall(body)))
 
-    buf, last_saved, last_count = [], time.time(), -1
+    buf, last_saved = [], time.time()
     try:
         resp = await generate_stream(**params)
         async for chunk in resp.body_iterator:
             buf.append(chunk)
-            # 너무 자주 쓰면 비용이 커서, 5초에 한 번씩만 진행 상황을 남긴다
+            # 💡 끝날 때만 저장하면 "지금 뭐가 만들어지고 있는지" 볼 방법이 없다.
+            #    5초에 한 번씩 여기까지 만든 문제를 그대로 적어둬서, 원장님이 진행 중에도
+            #    어떤 문제가 나오고 있는지 눈으로 확인할 수 있게 한다.
             if time.time() - last_saved >= 5:
-                n = count_questions("".join(buf))
-                if n != last_count:
-                    update_job(job_id, progress=f"{n}문항까지 만들었습니다...")
-                    last_count = n
+                text = "".join(buf)
+                update_job(job_id, progress=f"{count_questions(text)}문항까지 만들었습니다...",
+                           partial=text[-PARTIAL_KEEP_CHARS:])
                 last_saved = time.time()
         text = "".join(buf)
         if text.lstrip().startswith("❌"):
             update_job(job_id, status="error", detail=text.strip()[:500], progress="실패")
             return
         n = count_questions(text)
-        update_job(job_id, status="done", result=text, progress=f"{n}문항 완성",
+        update_job(job_id, status="done", result=text, partial="", progress=f"{n}문항 완성",
                    done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
         update_job(job_id, status="error", detail=f"{e}", progress="실패")
@@ -3573,8 +3575,10 @@ def list_jobs(limit: int = 20):
         if job_is_stale(r):
             r["status"] = "stalled"
             r["detail"] = r.get("detail") or "서버가 다시 시작되어 작업이 끊긴 것 같습니다. 다시 맡겨주세요."
-        # 목록에서는 결과 본문까지 실어 보내지 않는다(길다)
-        out.append({k: v for k, v in r.items() if k != "result"} | {"has_result": bool(r.get("result"))})
+        # 목록에서는 본문까지 실어 보내지 않는다(길다). 있다는 사실만 알려주고,
+        # 실제 내용은 작업 하나를 열어볼 때 준다.
+        out.append({k: v for k, v in r.items() if k not in ("result", "partial")}
+                   | {"has_result": bool(r.get("result")), "has_partial": bool(r.get("partial"))})
     running = sum(1 for r in out if r["status"] == "running")
     return {"success": True, "jobs": out, "running": running}
 
