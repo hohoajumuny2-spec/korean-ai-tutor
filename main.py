@@ -973,6 +973,85 @@ def get_student_profile(student_name: str):
     return {"success": True, "profile": profile, "reports": reports, "level_info": compute_level_info(profile.get("xp"))}
 
 
+@app.get("/api/student/wrong_questions/{student_name}")
+def get_wrong_questions(student_name: str, limit: int = 30):
+    """학생이 그동안 틀린 문항을 한자리에 모아 준다.
+    💡 '몇 점'만 남으면 무엇을 틀렸는지 알 수 없어 복습이 안 된다. 그래서 채점 때 남겨둔
+    틀린 문항 번호를 가지고, 원래 문제(퀴즈·모의고사·과제)를 되짚어 문제 내용과 정답까지 붙여준다."""
+    if db is None:
+        return {"success": False, "tasks": []}
+    name = urllib.parse.unquote(student_name).strip()
+    if not name:
+        return {"success": False, "tasks": []}
+
+    rows = [r.to_dict() for r in db.collection("reports")
+            .where("student_name", "==", name)
+            .order_by("submitted_at", direction=firestore.Query.DESCENDING)
+            .limit(200).stream()]
+
+    cache = {}
+
+    def source_questions(kind: str, title: str) -> list:
+        """그 과제·시험의 문항 목록을 [(문제글, 정답)] 로 꺼낸다. 못 찾으면 빈 목록."""
+        key = (kind, title)
+        if key in cache:
+            return cache[key]
+        out = []
+        try:
+            if kind == "타임어택 퀴즈":
+                d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+                for q in ((d.to_dict() or {}).get("questions") or []) if d.exists else []:
+                    opts = q.get("options") or []
+                    ans = q.get("answer", "")
+                    idx = _num(ans)
+                    label = opts[int(idx) - 1] if idx and 1 <= int(idx) <= len(opts) else str(ans)
+                    out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
+                                "options": opts})
+            elif kind == "모의고사":
+                d = db.collection("exams").document(sanitize_doc_id(title)).get()
+                if d.exists:
+                    data = json.loads((d.to_dict() or {}).get("exam_data") or "{}")
+                    for q in (data.get("questions") or []):
+                        out.append({"text": "", "answer": str(q.get("ans", "")), "answer_text": "",
+                                    "options": []})
+            elif kind == "과제 제출":
+                d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+                for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
+                    out.append({"text": "", "answer": str(a), "answer_text": "", "options": []})
+        except Exception as e:
+            print("틀린 문제 되짚기 실패:", title, e)
+        cache[key] = out
+        return out
+
+    tasks, total_wrong = [], 0
+    for r in rows:
+        wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
+        if not wrongs:
+            continue
+        kind = r.get("type", "")
+        title = r.get("task_name", "")
+        qs = source_questions(kind, title)
+        items = []
+        for no in sorted(wrongs):
+            q = qs[no - 1] if 0 < no <= len(qs) else {}
+            items.append({"no": no, "text": q.get("text", ""),
+                          "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
+                          "options": q.get("options", [])})
+        total_wrong += len(items)
+        tasks.append({
+            "title": title, "type": kind,
+            "submitted_at": r.get("submitted_at", ""),
+            "score": r.get("score", ""),
+            "subject": r.get("subject", ""),
+            "wrong_count": len(items), "items": items,
+        })
+        if len(tasks) >= max(1, min(100, limit)):
+            break
+
+    return {"success": True, "student": name, "tasks": tasks,
+            "total_wrong": total_wrong, "task_count": len(tasks)}
+
+
 class AvatarSaveRequest(BaseModel):
     student_name: str
     gender: str = ""          # 예전 방식 (boy/girl) — 넘어오면 face로 옮긴다
@@ -1744,6 +1823,29 @@ async def create_exam(
     if know_content:
         await asyncio.to_thread(sync_knowledge_from_source, f"exam_{safe_title}", f"[모의고사] {title}", know_content, subj_key, "exam")
     return {"success": True, "title": title}
+
+
+class ExamFileDeleteReq(BaseModel):
+    title: str
+    which: str = "pdf"       # pdf(시험지) | ans(해답지) | video(영상)
+
+
+@app.post("/api/admin/exam/file/delete", dependencies=[Depends(verify_admin)])
+def delete_exam_file(req: ExamFileDeleteReq):
+    """모의고사에 붙여둔 파일을 떼어낸다 — 잘못 올렸을 때 시험 자체를 지우지 않고 파일만."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    field = {"pdf": "pdf_url", "ans": "ans_pdf_url", "video": "video_url"}.get(req.which)
+    if not field:
+        return {"success": False, "detail": "어떤 파일을 뗄지 알 수 없습니다."}
+    ref = db.collection("exams").document(sanitize_doc_id(req.title))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "그런 모의고사가 없습니다."}
+    if not (doc.to_dict() or {}).get(field):
+        return {"success": False, "detail": "이미 비어 있습니다."}
+    ref.set({field: ""}, merge=True)
+    return {"success": True, "which": req.which}
 
 
 @app.get("/api/exams")
@@ -3289,6 +3391,215 @@ DIFFICULTY_PRINCIPLES = {
 
 
 # ─────────────────────────────────────────────────────────
+# 관리자 - 오래 걸리는 일은 '작업'으로 맡겨두기
+#   문제 출제나 해설 영상 만들기는 1~2분씩 걸린다. 예전에는 그동안 그 화면에
+#   붙들려 있어야 했고, 다른 일을 하거나 페이지를 나가면 작업이 끊겼다.
+#   이제는 서버에 일을 맡겨두고(작업 등록) 화면을 떠나도 서버가 계속 진행한다.
+#   결과는 jobs 컬렉션에 쌓이므로, 나중에 아무 때나 돌아와서 받아 가면 된다.
+# ─────────────────────────────────────────────────────────
+JOB_STALE_MINUTES = 20      # 이만큼 소식이 없으면 서버가 재시작된 것으로 본다
+
+
+class MemUpload:
+    """업로드된 파일을 메모리에 담아 두는 대역.
+    요청이 끝나면 UploadFile은 닫히기 때문에, 작업으로 넘길 때는 미리 읽어 둬야 한다."""
+
+    def __init__(self, filename: str, content_type: str, data: bytes):
+        self.filename = filename
+        self.content_type = content_type
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def job_ref(job_id: str):
+    return db.collection("jobs").document(job_id)
+
+
+def create_job(kind: str, title: str, admin_name: str = "", meta: dict = None) -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    job_id = uuid.uuid4().hex[:12]
+    job_ref(job_id).set({
+        "kind": kind, "title": title or "", "status": "running",
+        "progress": "시작하는 중...", "result": "", "detail": "",
+        "meta": meta or {}, "admin_name": admin_name,
+        "created_at": now, "updated_at": now,
+    })
+    return job_id
+
+
+def update_job(job_id: str, **fields):
+    fields["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        job_ref(job_id).set(fields, merge=True)
+    except Exception as e:
+        print("작업 상태 저장 실패:", e)
+
+
+def job_is_stale(row: dict) -> bool:
+    if row.get("status") != "running":
+        return False
+    try:
+        last = datetime.strptime(str(row.get("updated_at", "")), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return (datetime.now() - last).total_seconds() > JOB_STALE_MINUTES * 60
+
+
+async def run_question_job(job_id: str, params: dict):
+    """문제 출제를 백그라운드에서 돌린다. 화면은 이미 떠났을 수 있으므로
+    진행 상황과 결과를 모두 jobs 문서에 적어 둔다."""
+    def count_questions(text: str) -> int:
+        # 💡 [정답 및 해설]에도 '1. 정답 ①'처럼 번호가 붙어 있어, 그대로 세면 두 번 센다.
+        #    문항 본문 구간만 잘라서 센다.
+        body = text.split("[정답 및 해설]")[0]
+        return len(set(PROBLEM_NUM_RE.findall(body)))
+
+    buf, last_saved, last_count = [], time.time(), -1
+    try:
+        resp = await generate_stream(**params)
+        async for chunk in resp.body_iterator:
+            buf.append(chunk)
+            # 너무 자주 쓰면 비용이 커서, 5초에 한 번씩만 진행 상황을 남긴다
+            if time.time() - last_saved >= 5:
+                n = count_questions("".join(buf))
+                if n != last_count:
+                    update_job(job_id, progress=f"{n}문항까지 만들었습니다...")
+                    last_count = n
+                last_saved = time.time()
+        text = "".join(buf)
+        if text.lstrip().startswith("❌"):
+            update_job(job_id, status="error", detail=text.strip()[:500], progress="실패")
+            return
+        n = count_questions(text)
+        update_job(job_id, status="done", result=text, progress=f"{n}문항 완성",
+                   done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        update_job(job_id, status="error", detail=f"{e}", progress="실패")
+
+
+async def run_video_job(job_id: str, params: dict):
+    """해설 영상 만들기를 백그라운드에서 돌린다."""
+    try:
+        update_job(job_id, progress="장면을 나누는 중...")
+        res = await generate_video(**params)
+        if not res.get("success"):
+            update_job(job_id, status="error", detail=res.get("detail", "")[:500], progress="실패")
+            return
+        update_job(job_id, status="done", progress=f"장면 {res.get('scene_count', 0)}개로 완성",
+                   result=res.get("url", ""), meta={"title": res.get("title", ""), "video_id": res.get("id", "")},
+                   done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        update_job(job_id, status="error", detail=f"{e}", progress="실패")
+
+
+@app.post("/api/admin/jobs/questions")
+async def start_question_job(
+    q_mode: str = Form(...),
+    q_types: str = Form(...),
+    cnt_killer: int = Form(0),
+    cnt_semi: int = Form(0),
+    cnt_high: int = Form(0),
+    cnt_mid: int = Form(0),
+    cnt_low: int = Form(0),
+    q_text: str = Form(""),
+    q_texts: str = Form(""),
+    q_principle: str = Form(""),
+    start_num: int = Form(1),
+    source_counts: str = Form(""),
+    title: str = Form(""),
+    files: Optional[List[UploadFile]] = File(None),
+    name: str = Depends(current_admin_name),
+):
+    """문제 출제를 작업으로 맡긴다. 바로 작업 번호만 돌려주고, 출제는 서버가 이어서 한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
+    if total <= 0:
+        return {"success": False, "detail": "문항 수를 1개 이상 지정해주세요."}
+
+    # 요청이 끝나면 업로드 파일이 닫히므로 지금 다 읽어서 들고 간다
+    mem_files = []
+    for f in (files or []):
+        if f.filename:
+            mem_files.append(MemUpload(f.filename, f.content_type or "application/octet-stream", await f.read()))
+
+    params = {
+        "q_mode": q_mode, "q_types": q_types,
+        "cnt_killer": cnt_killer, "cnt_semi": cnt_semi, "cnt_high": cnt_high,
+        "cnt_mid": cnt_mid, "cnt_low": cnt_low,
+        "q_text": q_text, "q_texts": q_texts, "q_principle": q_principle,
+        "start_num": start_num, "source_counts": source_counts,
+        "files": mem_files or None, "_": True,
+    }
+    job_id = await asyncio.to_thread(
+        create_job, "questions", title or "제목 없는 출제", name,
+        {"total": total, "start_num": start_num},
+    )
+    asyncio.create_task(run_question_job(job_id, params))
+    return {"success": True, "job_id": job_id}
+
+
+@app.post("/api/admin/jobs/video")
+async def start_video_job(text: str = Form(...), title: str = Form(""), question_no: int = Form(0),
+                          name: str = Depends(current_admin_name)):
+    """해설 영상 만들기를 작업으로 맡긴다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다."}
+    if not text.strip():
+        return {"success": False, "detail": "영상으로 만들 설명 내용을 입력해주세요."}
+
+    label = (title.strip() or "해설영상") + (f" — {question_no}번" if question_no else "")
+    job_id = await asyncio.to_thread(create_job, "video", label, name, {"question_no": question_no})
+    asyncio.create_task(run_video_job(job_id, {
+        "text": text, "title": title, "question_no": question_no, "name": name,
+    }))
+    return {"success": True, "job_id": job_id}
+
+
+@app.get("/api/admin/jobs", dependencies=[Depends(verify_admin)])
+def list_jobs(limit: int = 20):
+    """맡겨둔 작업들. 화면을 떠났다 돌아와도 여기서 결과를 찾아갈 수 있다."""
+    if db is None:
+        return {"success": False, "jobs": []}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("jobs").stream()]
+    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+    out = []
+    for r in rows[:max(1, min(100, limit))]:
+        if job_is_stale(r):
+            r["status"] = "stalled"
+            r["detail"] = r.get("detail") or "서버가 다시 시작되어 작업이 끊긴 것 같습니다. 다시 맡겨주세요."
+        # 목록에서는 결과 본문까지 실어 보내지 않는다(길다)
+        out.append({k: v for k, v in r.items() if k != "result"} | {"has_result": bool(r.get("result"))})
+    running = sum(1 for r in out if r["status"] == "running")
+    return {"success": True, "jobs": out, "running": running}
+
+
+@app.get("/api/admin/jobs/{job_id}", dependencies=[Depends(verify_admin)])
+def get_job(job_id: str):
+    if db is None:
+        return {"success": False}
+    doc = job_ref(job_id).get()
+    if not doc.exists:
+        return {"success": False, "detail": "이미 지워졌거나 없는 작업입니다."}
+    row = {"id": doc.id, **doc.to_dict()}
+    if job_is_stale(row):
+        row["status"] = "stalled"
+    return {"success": True, "job": row}
+
+
+@app.delete("/api/admin/jobs/{job_id}", dependencies=[Depends(verify_admin)])
+def delete_job(job_id: str):
+    if db is not None:
+        job_ref(job_id).delete()
+    return {"success": True}
+
+
+# ─────────────────────────────────────────────────────────
 # 관리자 - 문제 생성 스트리밍
 # ─────────────────────────────────────────────────────────
 @app.post("/api/admin/generate_stream")
@@ -4164,11 +4475,68 @@ def get_homeworks():
     return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
 
 
+# 과제는 수업에서 내주는 것과 클리닉(보충)에서 내주는 것이 쓰임이 다르다.
+HOMEWORK_KINDS = {"class": "수업 과제", "clinic": "클리닉 과제"}
+
+
+def normalize_homework_kind(v) -> str:
+    t = str(v or "").strip().lower()
+    if t in ("clinic", "클리닉", "클리닉 과제"):
+        return "clinic"
+    return "class"
+
+
+def parse_answer_list(raw) -> list:
+    """정답표를 목록으로 만든다. '①②③' / '1,2,3' / 줄바꿈 — 어떻게 적어도 받는다."""
+    if isinstance(raw, list):
+        items = [str(x).strip() for x in raw]
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                items = [str(x).strip() for x in parsed]
+            else:
+                raise ValueError
+        except (ValueError, TypeError):
+            # 줄바꿈/쉼표로 나누되, '1번 ③' 처럼 번호가 앞에 붙어 있으면 뒷부분만 쓴다
+            items = []
+            for line in re.split(r"[\n,]", text):
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r"^\s*\d{1,3}\s*(?:번|[.)])\s*(.+)$", line)
+                items.append((m.group(1) if m else line).strip())
+    circled = "①②③④⑤"
+    out = []
+    for it in items:
+        it = (it or "").strip()
+        if not it:
+            continue
+        # 💡 '①②③'처럼 한 줄에 원문자만 죽 붙여 적는 경우가 많다 — 한 글자씩 갈라 받는다.
+        if len(it) > 1 and all(ch in circled for ch in it.replace(" ", "")):
+            out += [str(circled.index(ch) + 1) for ch in it if ch in circled]
+            continue
+        # '3 1 5'처럼 한 자리 숫자만 띄어 적은 경우도 갈라 받는다
+        parts = it.split()
+        if len(parts) > 1 and all(p in "12345" and len(p) == 1 for p in parts):
+            out += parts
+            continue
+        for i, ch in enumerate(circled):      # ③ → 3
+            it = it.replace(ch, str(i + 1))
+        out.append(it.strip()[:20])
+    return out
+
+
 @app.post("/api/admin/homework")
 async def create_homework(
     title: str = Form(...),
     desc: str = Form(""),
     answer_text: str = Form(""),
+    kind: str = Form("class"),
+    answers: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -4178,19 +4546,108 @@ async def create_homework(
     if answer_file and answer_file.filename:
         ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
 
+    answer_list = parse_answer_list(answers)
     safe_title = sanitize_doc_id(title)
     await asyncio.to_thread(
         lambda: db.collection("homeworks").document(safe_title).set(
             {
                 "title": title,
                 "desc": desc,
+                "kind": normalize_homework_kind(kind),
                 "answer_text": answer_text,
                 "answer_file": ans_url,
+                # 정답을 넣어두면 학생이 OMR로 답만 마킹해도 그 자리에서 채점된다
+                "answers": answer_list,
+                "question_count": len(answer_list),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
     )
+    return {"success": True, "question_count": len(answer_list)}
+
+
+class HomeworkFileDeleteReq(BaseModel):
+    title: str
+
+
+@app.post("/api/admin/homework/file/delete", dependencies=[Depends(verify_admin)])
+def delete_homework_file(req: HomeworkFileDeleteReq):
+    """과제에 붙여둔 해답 파일만 떼어낸다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    ref = db.collection("homeworks").document(sanitize_doc_id(req.title))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "그런 과제가 없습니다."}
+    if not (doc.to_dict() or {}).get("answer_file"):
+        return {"success": False, "detail": "붙어 있는 파일이 없습니다."}
+    ref.set({"answer_file": ""}, merge=True)
     return {"success": True}
+
+
+class HomeworkOmrReq(BaseModel):
+    school: str = ""
+    grade: str = ""
+    student_name: str
+    title: str
+    answers: list = []
+
+
+@app.post("/api/homework/omr_submit")
+async def submit_homework_omr(req: HomeworkOmrReq):
+    """수업·클리닉 과제를 OMR로 제출하면 그 자리에서 채점한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+
+    doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(sanitize_doc_id(req.title)).get())
+    if not doc.exists:
+        return {"success": False, "detail": "그런 과제가 없습니다."}
+    data = doc.to_dict() or {}
+    key = parse_answer_list(data.get("answers") or [])
+    if not key:
+        return {"success": False, "detail": "이 과제에는 정답이 등록되어 있지 않아 자동 채점을 할 수 없습니다. 선생님께 알려주세요."}
+
+    existing = await asyncio.to_thread(
+        lambda: list(
+            db.collection("reports")
+            .where("student_name", "==", name)
+            .where("task_name", "==", req.title)
+            .where("type", "==", "과제 제출")
+            .limit(1)
+            .stream()
+        )
+    )
+    if existing:
+        return {"success": False, "detail": "이미 제출한 과제입니다."}
+
+    mine = parse_answer_list(req.answers or [])
+    wrongs, correct = [], 0
+    for i, ans in enumerate(key):
+        got = mine[i] if i < len(mine) else ""
+        if got and got == ans:
+            correct += 1
+        else:
+            wrongs.append(i + 1)
+
+    total = len(key)
+    score = round(correct / total * 100) if total else 0
+    kind_label = HOMEWORK_KINDS.get(normalize_homework_kind(data.get("kind")), "수업 과제")
+    await asyncio.to_thread(
+        lambda: db.collection("reports").add({
+            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "student_name": name, "school": req.school, "grade": req.grade,
+            "task_name": req.title, "type": "과제 제출",
+            "homework_kind": data.get("kind", "class"),
+            "score": f"{correct}/{total}",
+            "percent": score, "wrongs": wrongs,
+        })
+    )
+    send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
+    return {"success": True, "correct": correct, "total": total, "score": score,
+            "wrongs": wrongs, "answers": key, "kind": data.get("kind", "class")}
 
 
 @app.delete("/api/admin/homework/{title}")
