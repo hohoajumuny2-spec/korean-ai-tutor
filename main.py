@@ -5275,6 +5275,7 @@ def build_counsel_view(student_name: str) -> dict:
         "record_text": data.get("record_text", ""),
         "record_eval": data.get("record_eval", ""),
         "record_eval_at": data.get("record_eval_at", ""),
+        "record_facts": data.get("record_facts") or None,
         "analysis": data.get("analysis"),
         "summary": data.get("summary"),
         "logs": logs,
@@ -5885,6 +5886,310 @@ async def eval_record(req: RecordEvalReq):
     return {"success": True, "record_eval": text, "at": at}
 
 
+# ── 학생부에서 출결·봉사·독서만 따로 뽑아내기 ─────────────
+#   학생부 양식은 학교마다·연도마다 표기가 조금씩 달라서 규칙으로 긁으면 꼭 어긋난다.
+#   그래서 AI에게 '원문에 적힌 것만' 뽑아 표로 정리하게 하고, 합계는 서버가 직접 센다.
+RECORD_FACTS_PROMPT = """아래는 한 학생의 학교생활기록부 원문입니다.
+여기서 '교과 성적(내신)', '출결상황', '봉사활동 시간', '독서활동(읽은 책)' 네 가지를 뽑아 JSON으로 정리해줘.
+
+[반드시 지킬 것]
+- 원문에 적힌 것만 옮겨라. 원문에 없는 숫자나 책 제목을 절대 지어내지 마라.
+- 찾지 못한 항목은 빈 배열로 두어라. 억지로 채우지 마라.
+- 숫자는 숫자로만 적어라(단위·글자 빼고). 모르면 null.
+- 학년은 "1", "2", "3" 처럼 숫자만. 학년 구분이 없으면 "".
+- 교과 성적(naesin)은 '교과학습발달상황' 표의 과목을 한 줄도 빠뜨리지 말고 모두 옮겨라.
+  · term: "학년-학기" 형태. 예) 1학년 1학기 → "1-1"
+  · unit: 단위수(이수단위). rank_grade: 석차등급(1~9 또는 1~5).
+  · rank: 석차(등수), total: 수강자수. '12/250' 처럼 적혀 있으면 rank=12, total=250.
+  · 석차등급이 없는 과목(진로선택 과목 등)은 rank_grade를 null로 두고 그대로 넣어라.
+- 다른 설명 없이 아래 형태의 JSON 객체 하나만 출력해라.
+
+{
+  "naesin": [
+    {"term":"1-1","subject":"국어","unit":4,"score":88,"subject_avg":72.3,
+     "rank_grade":2,"rank":25,"total":250,"achievement":"A"}
+  ],
+  "attendance": [
+    {"grade":"1","school_days":190,"absence_illness":0,"absence_unauth":0,"absence_etc":0,
+     "late":0,"leave_early":0,"result":0,"note":"특기사항 원문 그대로"}
+  ],
+  "volunteer": [
+    {"grade":"1","hours":15,"detail":"활동 내용 원문 그대로"}
+  ],
+  "books": [
+    {"grade":"1","subject":"국어","title":"책 제목","author":"지은이"}
+  ]
+}
+
+[학생부 원문]
+"""
+
+
+def build_naesin_rows(raw_rows: list) -> list:
+    """학생부에서 뽑아낸 교과 성적을 성적표에 그대로 넣을 수 있는 형태로 다듬는다.
+    석차와 수강자수가 함께 있으면 석차백분율까지 계산해 준다 — 백분율이 있어야
+    9등급제·5등급제 환산이 정확해지기 때문."""
+    out = []
+    for r in raw_rows[:200]:
+        subject = str(r.get("subject", "")).strip()
+        if not subject:
+            continue
+        term = str(r.get("term", "")).strip()
+        row = {"term": term, "subject": subject[:40]}
+        unit = _num(r.get("unit"))
+        if unit is not None:
+            row["unit"] = unit
+        grade = _num(r.get("rank_grade"))
+        if grade is not None:
+            row["grade"] = grade
+        rank, total = _num(r.get("rank")), _num(r.get("total"))
+        if rank is not None and total:
+            row["pct"] = round(rank / total * 100, 2)
+        out.append(row)
+    return out
+
+
+def _facts_num(v):
+    n = _num(v)
+    return n if n is not None else None
+
+
+def summarize_record_facts(facts: dict) -> dict:
+    """뽑아낸 표에서 합계를 서버가 직접 센다 (AI가 더한 숫자는 믿지 않는다)."""
+    att = facts.get("attendance") or []
+    vol = facts.get("volunteer") or []
+    books = facts.get("books") or []
+
+    def total(rows, key):
+        vals = [_facts_num(r.get(key)) for r in rows]
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals), 1) if vals else 0
+
+    unauth = total(att, "absence_unauth") + total(att, "late") + total(att, "leave_early") + total(att, "result")
+    naesin = facts.get("naesin") or []
+    return {
+        "naesin_count": len(naesin),
+        "naesin_terms": sorted({str(r.get("term", "")).strip() for r in naesin if str(r.get("term", "")).strip()}),
+        "attendance_total": {
+            "absence_illness": total(att, "absence_illness"),
+            "absence_unauth": total(att, "absence_unauth"),
+            "absence_etc": total(att, "absence_etc"),
+            "late": total(att, "late"),
+            "leave_early": total(att, "leave_early"),
+            "result": total(att, "result"),
+        },
+        "attendance_clean": unauth == 0,
+        "volunteer_total": total(vol, "hours"),
+        "book_count": len(books),
+        "book_subjects": sorted({str(b.get("subject", "")).strip() for b in books if str(b.get("subject", "")).strip()}),
+    }
+
+
+class RecordFactsReq(BaseModel):
+    student_name: str
+    record_text: str = ""
+
+
+@app.post("/api/admin/counsel/record_facts", dependencies=[Depends(verify_admin)])
+async def extract_record_facts(req: RecordFactsReq):
+    """학생부에서 출결·봉사시간·독서활동을 뽑아 표로 만든다."""
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    body = (req.record_text or "").strip()
+    if not body:
+        body = str((load_counsel(name) or {}).get("record_text", "")).strip()
+    if len(body) < 30:
+        return {"success": False, "detail": "학생부 내용을 먼저 붙여넣어 주세요."}
+
+    try:
+        res = await asyncio.to_thread(lambda: safe_generate(RECORD_FACTS_PROMPT + body[:20000]))
+        raw = (res.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 정리 실패: {e}"}
+
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[4:]
+    start, end = raw.find("{"), raw.rfind("}")
+    try:
+        facts = json.loads(raw[start:end + 1] if start >= 0 and end > start else raw)
+    except Exception:
+        # 💡 왜 실패했는지 그대로 보여준다 — 뭉뚱그린 안내는 원인 파악을 막는다
+        return {"success": False, "detail": f"AI가 표 형태로 답하지 않았습니다. 받은 내용 앞부분: {raw[:200]}"}
+
+    facts = {
+        "naesin": build_naesin_rows(list(facts.get("naesin") or [])),
+        "attendance": list(facts.get("attendance") or [])[:6],
+        "volunteer": list(facts.get("volunteer") or [])[:20],
+        "books": list(facts.get("books") or [])[:200],
+    }
+    summary = summarize_record_facts(facts)
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    payload = {**facts, "summary": summary, "at": at}
+    await asyncio.to_thread(lambda: counsel_ref(name).set({
+        "student_name": name, "record_text": body,
+        "record_facts": payload, "updated_at": at,
+    }, merge=True))
+    return {"success": True, "facts": payload}
+
+
+# ── 모의고사 성적표를 그대로 읽어 성적으로 만들기 ─────────
+#   성적표는 학교·기관마다 양식이 제각각이고, 대개 캡처 이미지나 PDF로 온다.
+#   규칙으로 긁지 않고 AI에게 그대로 보여주고 읽게 한다.
+MOCK_EXTRACT_PROMPT = """아래 자료는 한 학생의 모의고사(또는 수능) 성적표입니다.
+과목별 성적을 빠짐없이 뽑아 JSON으로 정리해줘.
+
+[반드시 지킬 것]
+- 성적표에 실제로 적힌 것만 옮겨라. 없는 숫자를 지어내지 마라.
+- date: 시행 시기를 "연도-월" 두 자리 월로. 예) 2026년 6월 시행 → "2026-06". 연도가 없으면 월만 "-06"이 아니라 "" 로 두어라.
+- subject: 성적표에 적힌 과목 이름 그대로(국어, 수학, 영어, 한국사, 생활과윤리 …).
+  선택과목이 따로 적혀 있으면 "국어(언어와매체)"처럼 괄호로 붙여라.
+- raw: 원점수, standard: 표준점수, percentile: 백분위, grade: 등급.
+- 영어·한국사·제2외국어는 절대평가라 백분위가 없다. 없으면 null로 두어라.
+- 한 성적표에 여러 회차가 함께 있으면 회차마다 모든 과목을 각각 넣어라.
+- 다른 설명 없이 아래 형태의 JSON 객체 하나만 출력해라.
+
+{"rows":[{"date":"2026-06","subject":"국어","raw":88,"standard":129,"percentile":92,"grade":2}]}
+"""
+
+
+def build_mock_rows(raw_rows: list) -> list:
+    """성적표에서 뽑아낸 줄을 모의고사 성적표에 그대로 넣을 수 있는 형태로 다듬는다."""
+    out = []
+    for r in raw_rows[:200]:
+        subject = str((r or {}).get("subject", "")).strip()
+        if not subject:
+            continue
+        row = {"subject": subject[:40], "date": str(r.get("date", "")).strip()[:10]}
+        for key, src in (("raw", "raw"), ("grade", "grade"), ("percentile", "percentile")):
+            v = _num(r.get(src))
+            if v is not None:
+                row[key] = v
+        # 영어·한국사처럼 절대평가 과목에 백분위가 잘못 들어오면 빼 준다
+        if is_absolute_subject(subject):
+            row.pop("percentile", None)
+        out.append(row)
+    return out
+
+
+def is_absolute_subject(name: str) -> bool:
+    """절대평가라 백분위가 없는 과목인지."""
+    n = str(name or "")
+    return any(k in n for k in ["영어", "한국사", "제2외국어", "한문", "아랍어", "일본어",
+                                 "중국어", "독일어", "프랑스어", "스페인어", "러시아어", "베트남어"])
+
+
+@app.post("/api/admin/counsel/mock_extract", dependencies=[Depends(verify_admin)])
+async def extract_mock_scores(student_name: str = Form(...), text: str = Form(""),
+                              files: Optional[List[UploadFile]] = File(None)):
+    """모의고사 성적표(사진·캡처·PDF·엑셀·붙여넣은 글)를 읽어 성적 줄로 만들어 준다."""
+    name = student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+
+    parts, extra_text = [], (text or "").strip()
+    for f in (files or []):
+        if not f.filename:
+            continue
+        raw = await f.read()
+        low = f.filename.lower()
+        if low.endswith(".pdf"):
+            try:
+                pdf_doc = fitz.open(stream=raw, filetype="pdf")
+                for page in pdf_doc[:10]:
+                    pix = page.get_pixmap(dpi=150)
+                    parts.append({"mime_type": "image/png", "data": pix.tobytes("png")})
+                pdf_doc.close()
+            except Exception as e:
+                return {"success": False, "detail": f"PDF를 읽지 못했습니다: {e}"}
+        elif low.endswith((".xlsx", ".csv")):
+            try:
+                rows = await asyncio.to_thread(_read_sheet, raw, f.filename, "", 300)
+            except Exception as e:
+                return {"success": False, "detail": f"파일을 읽지 못했습니다: {e}"}
+            table = "\n".join(" | ".join(str(c or "").strip() for c in r)
+                              for r in rows if any(str(c or "").strip() for c in r))
+            extra_text = (extra_text + "\n" + table).strip()
+        elif (f.content_type or "").startswith("image/"):
+            parts.append({"mime_type": f.content_type, "data": raw})
+        else:
+            return {"success": False, "detail": f"'{f.filename}' 은(는) 읽을 수 없는 형식입니다. 사진·캡처 이미지, PDF, 엑셀만 올려주세요."}
+
+    if not parts and not extra_text:
+        return {"success": False, "detail": "성적표 사진이나 파일을 올리거나, 성적표 내용을 붙여넣어 주세요."}
+
+    contents = [MOCK_EXTRACT_PROMPT + (f"\n\n[성적표 내용]\n{extra_text[:12000]}" if extra_text else "")] + parts
+    try:
+        resp = await asyncio.to_thread(lambda: safe_generate(contents))
+        raw_text = (resp.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"AI 읽기 실패: {e}"}
+
+    match = re.search(r"\{.*\}", raw_text, re.S)
+    if not match:
+        preview = re.sub(r"\s+", " ", raw_text)[:200]
+        return {"success": False,
+                "detail": "AI가 성적표 형식으로 답하지 않았습니다." + (f" 받은 내용: {preview}" if preview else " (빈 응답)")}
+    try:
+        parsed = json.loads(match.group(0))
+    except (ValueError, TypeError) as e:
+        return {"success": False, "detail": f"AI 응답을 해석하지 못했습니다: {e}"}
+
+    rows = build_mock_rows(parsed.get("rows") or [])
+    if not rows:
+        return {"success": False, "detail": "성적표에서 과목별 성적을 찾지 못했습니다. 과목·점수가 또렷하게 보이는 사진인지 확인해주세요."}
+    dates = sorted({r["date"] for r in rows if r.get("date")})
+    return {"success": True, "rows": rows, "count": len(rows), "dates": dates}
+
+
+class RecordSearchReq(BaseModel):
+    student_name: str
+    keyword: str
+    context: int = 140
+
+
+@app.post("/api/admin/counsel/record_search", dependencies=[Depends(verify_admin)])
+def search_record(req: RecordSearchReq):
+    """학생부 원문에서 원장님이 넣은 낱말을 찾아, 그 앞뒤 내용까지 함께 보여준다.
+    (AI를 거치지 않는다 — 원문 그대로여야 하고, 즉시 나와야 하므로)"""
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    body = str((load_counsel(name) or {}).get("record_text", ""))
+    if not body.strip():
+        return {"success": False, "detail": "저장된 학생부 내용이 없습니다. 먼저 학생부를 붙여넣고 저장해주세요."}
+
+    # 쉼표로 여러 낱말을 한 번에 찾을 수 있다
+    words = [w.strip() for w in re.split(r"[,\n]", req.keyword or "") if w.strip()]
+    if not words:
+        return {"success": False, "detail": "찾을 낱말을 입력해주세요."}
+
+    pad = max(20, min(400, int(req.context or 140)))
+    low = body.lower()
+    groups = []
+    for w in words[:10]:
+        needle = w.lower()
+        hits, pos = [], 0
+        while len(hits) < 30:
+            i = low.find(needle, pos)
+            if i < 0:
+                break
+            s, e = max(0, i - pad), min(len(body), i + len(w) + pad)
+            hits.append({
+                "before": ("…" if s > 0 else "") + body[s:i],
+                "match": body[i:i + len(w)],
+                "after": body[i + len(w):e] + ("…" if e < len(body) else ""),
+                "pos": i,
+            })
+            pos = i + len(w)
+        groups.append({"keyword": w, "count": len(hits), "hits": hits})
+
+    return {"success": True, "total": sum(g["count"] for g in groups),
+            "groups": groups, "length": len(body)}
+
+
 # ── 4) 학습 기록 누적 ───────────────────────────────────
 class CounselLogReq(BaseModel):
     student_name: str
@@ -6076,6 +6381,21 @@ async def make_summary(req: CounselNameReq):
 #   원장님이 이미 엑셀로 관리하시는 입결 자료를 그대로 올려 쓴다.
 #   파일마다 열 구성이 달라서, 먼저 열 이름을 읽어 보여주고
 #   "이 열이 대학, 이 열이 등급" 하고 짝지어 받은 뒤에 저장한다.
+# 💡 입결 자료는 전형 종류에 따라 견줄 성적이 다르다.
+#    수시(교과·종합)는 내신, 논술은 논술전형 입결, 정시는 수능 — 셋을 섞으면 판단이 어긋난다.
+UNIV_KINDS = ("susi", "nonsul", "jeongsi")
+UNIV_KIND_LABELS = {"susi": "수시", "nonsul": "논술", "jeongsi": "정시"}
+
+
+def normalize_univ_kind(value: str) -> str:
+    v = str(value or "").strip().lower()
+    if v.startswith("정") or v == "jeongsi":
+        return "jeongsi"
+    if v.startswith("논") or v in ("nonsul", "논술"):
+        return "nonsul"
+    return "susi"
+
+
 UNIV_CHUNK_SIZE = 700          # Firestore 문서 하나에 담을 행 수
 UNIV_MAX_ROWS = 30000
 
@@ -6180,6 +6500,144 @@ def _guess_header_row(rows) -> int:
     return best
 
 
+# ── 입결 자료 표준 양식 ──────────────────────────────────
+# 💡 쓰시던 엑셀을 그대로 올려 열을 하나하나 짝지어도 되지만, 매번 짝짓는 게 번거롭다.
+# 아래 표준 양식대로 채워 오면 열 짝짓기가 자동으로 끝난다 — 그 '기준이 되는 틀'.
+# (key, 열 이름, 필수 여부, 예시, 설명)
+UNIV_TEMPLATE_COLUMNS = [
+    ("univ", "대학", True, "중앙대학교",
+     "대학 이름. '중앙대', '중앙대학교' 어느 쪽이든 괜찮습니다. 캠퍼스가 다르면 '고려대학교(세종)'처럼 적어주세요."),
+    ("major", "학과", True, "미디어커뮤니케이션학부",
+     "모집단위·학과 이름."),
+    ("type", "전형", False, "학생부교과(지역균형)",
+     "전형 이름. 교과/종합/논술/정시 등 구분이 드러나면 좋습니다."),
+    ("track", "계열", False, "인문",
+     "인문 / 자연 / 예체능 등."),
+    ("region", "소재지", False, "서울 동작구",
+     "이 칸을 채우면 학생의 지원 가능 대학이 지도 위에 표시됩니다. '서울 동작구'처럼 시도와 시군구를 함께 적으면 가장 정확합니다."),
+    ("year", "연도", False, "2026",
+     "이 입결이 어느 학년도 자료인지."),
+    ("cut", "기준점수", True, "2.1",
+     "합격선으로 삼을 숫자 하나. 70%컷이든 평균이든, 그 학원에서 쓰는 기준 하나로 통일해 적어주세요."),
+    ("metric_col", "점수종류", False, "등급",
+     "위 기준점수가 무엇인지 — 등급 / 백분위 / 점수 중 하나. 비워두면 아래 '전체 점수 종류' 선택을 따릅니다."),
+    ("eng", "영어등급", False, "2",
+     "영어 최저등급 등 영어 기준이 있으면."),
+    ("note", "비고", False, "수능최저 3합 7",
+     "그 밖에 상담 때 같이 보고 싶은 내용."),
+]
+
+# 자동 짝짓기용 — 열 이름에 이 낱말이 들어 있으면 그 자리로 본다
+UNIV_HEADER_HINTS = {
+    "univ": ["대학명", "대학교", "대학", "학교명", "univ"],
+    "major": ["모집단위", "학과", "전공", "학부", "major"],
+    "type": ["전형명", "전형유형", "전형", "type"],
+    "track": ["계열", "모집계열", "track"],
+    "region": ["소재지", "지역", "위치", "캠퍼스소재", "region"],
+    "year": ["학년도", "연도", "년도", "year"],
+    "cut": ["기준점수", "합격선", "등급컷", "커트", "cut", "점수"],
+    "metric_col": ["점수종류", "점수구분", "기준구분", "metric"],
+    "eng": ["영어등급", "영어", "eng"],
+    "note": ["비고", "메모", "note"],
+}
+
+
+def guess_univ_mapping(columns: list) -> dict:
+    """열 이름을 보고 무엇이 무엇인지 스스로 짝지어 본다.
+    표준 양식대로 올렸으면 이것만으로 짝짓기가 끝난다."""
+    norm = [re.sub(r"[\s()·\-_/]", "", str(c or "")).lower() for c in columns]
+    out, used = {}, set()
+    for key, hints in UNIV_HEADER_HINTS.items():
+        for hint in hints:
+            h = hint.lower()
+            # 정확히 같은 이름을 먼저, 없으면 포함하는 이름
+            for exact in (True, False):
+                for i, c in enumerate(norm):
+                    if i in used or not c:
+                        continue
+                    if (c == h) if exact else (h in c):
+                        out[key] = i
+                        used.add(i)
+                        break
+                if key in out:
+                    break
+            if key in out:
+                break
+    return out
+
+
+def build_univ_template_xlsx() -> bytes:
+    """표준 양식 엑셀 파일을 만들어 돌려준다 (작성 안내 시트 포함)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "입결자료"
+
+    head_fill = PatternFill("solid", fgColor="1F3864")
+    req_fill = PatternFill("solid", fgColor="C00000")
+    white_bold = Font(color="FFFFFF", bold=True, size=11)
+
+    for i, (_key, label, required, example, _desc) in enumerate(UNIV_TEMPLATE_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=i, value=label + ("*" if required else ""))
+        cell.fill = req_fill if required else head_fill
+        cell.font = white_bold
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[cell.column_letter].width = max(12, min(28, len(label) * 2 + 8))
+        ws.cell(row=2, column=i, value=example)
+    ws.freeze_panes = "A2"
+
+    # 두 번째 예시 줄 — 정시(백분위) 자료도 같은 틀로 적을 수 있음을 보여준다
+    second = {"univ": "부산대학교", "major": "경영학과", "type": "수능위주(일반)", "track": "인문",
+              "region": "부산 금정구", "year": "2026", "cut": "88.5", "metric_col": "백분위",
+              "eng": "2", "note": "국수영탐 백분위 평균"}
+    for i, (key, *_rest) in enumerate(UNIV_TEMPLATE_COLUMNS, start=1):
+        ws.cell(row=3, column=i, value=second.get(key, ""))
+
+    guide = wb.create_sheet("작성안내")
+    guide.column_dimensions["A"].width = 16
+    guide.column_dimensions["B"].width = 10
+    guide.column_dimensions["C"].width = 22
+    guide.column_dimensions["D"].width = 86
+    for i, text in enumerate(["열 이름", "필수", "예시", "설명"], start=1):
+        c = guide.cell(row=1, column=i, value=text)
+        c.fill = head_fill
+        c.font = white_bold
+    for r, (_key, label, required, example, desc) in enumerate(UNIV_TEMPLATE_COLUMNS, start=2):
+        guide.cell(row=r, column=1, value=label)
+        guide.cell(row=r, column=2, value="필수" if required else "선택")
+        guide.cell(row=r, column=3, value=example)
+        guide.cell(row=r, column=4, value=desc)
+    tail = len(UNIV_TEMPLATE_COLUMNS) + 3
+    for r, line in enumerate([
+        "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
+        "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
+        "● 수시 자료와 정시 자료는 파일을 따로 만들어 올려주세요. 올릴 때 수시/정시를 고르게 되어 있습니다.",
+        "● 파일을 여러 개로 나눠 올려도 됩니다. 두 번째 파일부터는 '덧붙이기'가 자동으로 켜집니다.",
+        "● 소재지를 채우면 상담 화면에서 지원 가능 대학이 지도 위에 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
+    ], start=tail):
+        guide.cell(row=r, column=1, value=line)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.get("/api/admin/univ_table/template", dependencies=[Depends(verify_admin)])
+def download_univ_template():
+    try:
+        data = build_univ_template_xlsx()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"양식을 만들지 못했습니다: {e}")
+    fname = urllib.parse.quote("입결자료_표준양식.xlsx".encode("utf-8"))
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+    )
+
+
 @app.post("/api/admin/univ_table/preview", dependencies=[Depends(verify_admin)])
 async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form(""),
                              header_row: int = Form(-1), header_span: int = Form(1)):
@@ -6216,9 +6674,15 @@ async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form("")
     # 헤더를 고르기 쉽도록 앞 15줄을 그대로 보여준다
     head_preview = [[(r[i] if i < len(r) else "") for i in range(min(width or 12, 14))] for r in rows[:15]]
 
+    # 열 이름만 보고 자동으로 짝지어 본다 — 표준 양식이면 이것만으로 끝난다
+    auto = guess_univ_mapping(columns)
+    required = [k for k, _l, req, *_x in UNIV_TEMPLATE_COLUMNS if req]
+    is_template = all(k in auto for k in required)
+
     return {"success": True, "sheets": sheets, "sheet": sheet or (sheets[0] if sheets else ""),
             "header_row": hidx, "header_span": span, "columns": columns, "sample": sample,
-            "row_count": total, "filename": file.filename, "head_preview": head_preview}
+            "row_count": total, "filename": file.filename, "head_preview": head_preview,
+            "auto_mapping": auto, "is_template": is_template}
 
 
 @app.post("/api/admin/univ_table/import", dependencies=[Depends(verify_admin)])
@@ -6264,7 +6728,7 @@ async def import_univ_table(
     fixed_metric = str(m.get("metric", "grade"))
     if fixed_metric not in ("grade", "percentile", "score", "eng_grade"):
         fixed_metric = "grade"
-    kind = "jeongsi" if str(kind).strip().startswith("정") or str(kind).strip() == "jeongsi" else "susi"
+    kind = normalize_univ_kind(kind)
 
     def metric_of(r):
         # 점수 종류가 행마다 다른 파일(예: '점수구분' 열에 백분위/환산점수)을 위해
@@ -6335,6 +6799,7 @@ async def import_univ_table(
         "count": len(merged),
         "metric": fixed_metric,
         "susi_count": kinds.get("susi", 0),
+        "nonsul_count": kinds.get("nonsul", 0),
         "jeongsi_count": kinds.get("jeongsi", 0),
         "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
@@ -6386,6 +6851,294 @@ def clear_univ_table():
         d.reference.delete()
     db.collection("settings").document("univ_table_meta").delete()
     return {"success": True}
+
+
+# ─────────────────────────────────────────────────────────
+# 대학 소재지 — 지원 가능 대학을 지도에 뿌리기 위한 자료
+#   입결 엑셀에 '소재지' 열이 있으면 그것을 먼저 쓰고, 없으면 아래 표로 채운다.
+#   시군구 이름은 화면에서 쓰는 지도 데이터(korea-map.js, 통계청 2013 행정구역)와
+#   같은 표기를 써야 지도 위에서 짝이 맞는다. (예: 수원시는 '수원시영통구'처럼 구까지)
+# ─────────────────────────────────────────────────────────
+SIDO_CODES = {
+    "서울": "11", "부산": "21", "대구": "22", "인천": "23", "광주": "24", "대전": "25",
+    "울산": "26", "세종": "29", "경기": "31", "강원": "32", "충북": "33", "충남": "34",
+    "전북": "35", "전남": "36", "경북": "37", "경남": "38", "제주": "39",
+}
+SIDO_NAMES = {v: k for k, v in SIDO_CODES.items()}
+# 길게 적힌 시도 이름도 알아듣게
+SIDO_ALIASES = {
+    "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천",
+    "광주광역시": "광주", "대전광역시": "대전", "울산광역시": "울산",
+    "세종특별자치시": "세종", "세종시": "세종", "경기도": "경기",
+    "강원도": "강원", "강원특별자치도": "강원", "충청북도": "충북", "충청남도": "충남",
+    "전라북도": "전북", "전북특별자치도": "전북", "전라남도": "전남",
+    "경상북도": "경북", "경상남도": "경남", "제주특별자치도": "제주", "제주도": "제주",
+}
+
+UNIV_REGIONS = {
+    # ── 서울 ──
+    "서울대": ("11", "관악구"), "연세대": ("11", "서대문구"), "고려대": ("11", "성북구"),
+    "서강대": ("11", "마포구"), "성균관대": ("11", "종로구"), "한양대": ("11", "성동구"),
+    "중앙대": ("11", "동작구"), "경희대": ("11", "동대문구"), "한국외대": ("11", "동대문구"),
+    "서울시립대": ("11", "동대문구"), "건국대": ("11", "광진구"), "동국대": ("11", "중구"),
+    "홍익대": ("11", "마포구"), "숙명여대": ("11", "용산구"), "국민대": ("11", "성북구"),
+    "숭실대": ("11", "동작구"), "세종대": ("11", "광진구"), "광운대": ("11", "노원구"),
+    "명지대": ("11", "서대문구"), "상명대": ("11", "종로구"), "서울여대": ("11", "노원구"),
+    "성신여대": ("11", "성북구"), "덕성여대": ("11", "도봉구"), "동덕여대": ("11", "성북구"),
+    "이화여대": ("11", "서대문구"), "삼육대": ("11", "노원구"), "서경대": ("11", "성북구"),
+    "한성대": ("11", "성북구"), "서울과학기술대": ("11", "노원구"), "서울과기대": ("11", "노원구"),
+    "한국체육대": ("11", "송파구"), "서울교대": ("11", "서초구"), "서울교육대": ("11", "서초구"),
+    "총신대": ("11", "동작구"), "장로회신학대": ("11", "광진구"), "감리교신학대": ("11", "서대문구"),
+    "성공회대": ("11", "구로구"), "추계예술대": ("11", "서대문구"),
+    "한국예술종합": ("11", "성북구"), "한예종": ("11", "성북구"),
+    "서울기독대": ("11", "은평구"), "kc대": ("11", "강서구"),
+    "육군사관": ("11", "노원구"), "경기대(서울)": ("11", "서대문구"),
+    # ── 경기 ──
+    "아주대": ("31", "수원시영통구"), "경기대": ("31", "수원시영통구"),
+    "성균관대(자연)": ("31", "수원시장안구"), "성균관대(수원)": ("31", "수원시장안구"),
+    "경희대(국제)": ("31", "용인시기흥구"), "단국대": ("31", "용인시수지구"),
+    "명지대(자연)": ("31", "용인시처인구"), "한국외대(글로벌)": ("31", "용인시처인구"),
+    "강남대": ("31", "용인시기흥구"), "용인대": ("31", "용인시처인구"),
+    "루터대": ("31", "용인시기흥구"), "칼빈대": ("31", "용인시처인구"),
+    "한양대(erica)": ("31", "안산시상록구"), "한양대(안산)": ("31", "안산시상록구"),
+    "한신대": ("31", "오산시"), "대진대": ("31", "포천시"), "차의과학대": ("31", "포천시"),
+    "가천대": ("31", "성남시수정구"), "을지대": ("31", "성남시수정구"),
+    "신한대": ("31", "의정부시"), "한세대": ("31", "군포시"), "평택대": ("31", "평택시"),
+    "협성대": ("31", "화성시"), "수원대": ("31", "화성시"), "수원가톨릭대": ("31", "화성시"),
+    "가톨릭대": ("31", "부천시원미구"), "서울신학대": ("31", "부천시원미구"),
+    "안양대": ("31", "안양시만안구"), "성결대": ("31", "안양시만안구"),
+    "경동대(양주)": ("31", "양주시"), "서정대": ("31", "양주시"),
+    "동국대(바이오메디)": ("31", "고양시일산동구"), "동국대(일산)": ("31", "고양시일산동구"),
+    "한국항공대": ("31", "고양시덕양구"), "중앙대(안성)": ("31", "안성시"),
+    "한경대": ("31", "안성시"), "한경국립대": ("31", "안성시"),
+    # ── 인천 ──
+    "인하대": ("23", "남구"), "인천대": ("23", "연수구"), "경인교대": ("23", "계양구"),
+    "경인교육대": ("23", "계양구"), "인천가톨릭대": ("23", "강화군"),
+    "가천대(메디컬)": ("23", "남동구"),
+    # ── 부산 ──
+    "부산대": ("21", "금정구"), "동아대": ("21", "사하구"), "부경대": ("21", "남구"),
+    "한국해양대": ("21", "영도구"), "동의대": ("21", "부산진구"), "경성대": ("21", "남구"),
+    "신라대": ("21", "사상구"), "부산외대": ("21", "금정구"), "동서대": ("21", "사상구"),
+    "고신대": ("21", "영도구"), "동명대": ("21", "남구"), "부산가톨릭대": ("21", "금정구"),
+    "부산교대": ("21", "연제구"), "부산교육대": ("21", "연제구"),
+    # ── 대구 ──
+    "경북대": ("22", "북구"), "계명대": ("22", "달서구"), "대구교대": ("22", "남구"),
+    "대구교육대": ("22", "남구"), "대구보건대": ("22", "북구"),
+    # ── 인천·경기 외 광역시 ──
+    "전남대": ("24", "북구"), "조선대": ("24", "동구"), "지스트": ("24", "북구"),
+    "광주과학기술원": ("24", "북구"), "gist": ("24", "북구"), "호남대": ("24", "광산구"),
+    "광주대": ("24", "남구"), "광주여대": ("24", "광산구"), "남부대": ("24", "광산구"),
+    "송원대": ("24", "남구"), "광주교대": ("24", "북구"), "광주교육대": ("24", "북구"),
+    "충남대": ("25", "유성구"), "한남대": ("25", "대덕구"), "배재대": ("25", "서구"),
+    "목원대": ("25", "서구"), "대전대": ("25", "동구"), "우송대": ("25", "동구"),
+    "한밭대": ("25", "유성구"), "카이스트": ("25", "유성구"), "kaist": ("25", "유성구"),
+    "한국과학기술원": ("25", "유성구"), "을지대(대전)": ("25", "중구"),
+    "침례신학대": ("25", "유성구"), "대전교대": ("25", "서구"), "대전교육대": ("25", "서구"),
+    "울산대": ("26", "남구"), "유니스트": ("26", "울주군"), "unist": ("26", "울주군"),
+    "울산과학기술원": ("26", "울주군"), "울산과학대": ("26", "동구"),
+    "고려대(세종)": ("29", "세종시"), "홍익대(세종)": ("29", "세종시"),
+    "한국영상대": ("29", "세종시"),
+    # ── 강원 ──
+    "강원대": ("32", "춘천시"), "연세대(미래)": ("32", "원주시"), "연세대(원주)": ("32", "원주시"),
+    "한림대": ("32", "춘천시"), "강릉원주대": ("32", "강릉시"), "상지대": ("32", "원주시"),
+    "한라대": ("32", "원주시"), "가톨릭관동대": ("32", "강릉시"), "경동대": ("32", "고성군"),
+    "강원대(삼척)": ("32", "삼척시"), "춘천교대": ("32", "춘천시"), "춘천교육대": ("32", "춘천시"),
+    # ── 충북 ──
+    "충북대": ("33", "청주시흥덕구"), "한국교통대": ("33", "충주시"),
+    "청주대": ("33", "청주시상당구"), "서원대": ("33", "청주시흥덕구"),
+    "세명대": ("33", "제천시"), "건국대(글로컬)": ("33", "충주시"), "건국대(충주)": ("33", "충주시"),
+    "중원대": ("33", "괴산군"), "한국교원대": ("33", "청주시흥덕구"),
+    "청주교대": ("33", "청주시흥덕구"), "청주교육대": ("33", "청주시흥덕구"),
+    "유원대": ("33", "영동군"), "극동대": ("33", "음성군"),
+    # ── 충남 ──
+    "단국대(천안)": ("34", "천안시동남구"), "순천향대": ("34", "아산시"), "호서대": ("34", "아산시"),
+    "선문대": ("34", "아산시"), "남서울대": ("34", "천안시서북구"),
+    "상명대(천안)": ("34", "천안시동남구"), "백석대": ("34", "천안시동남구"),
+    "공주대": ("34", "공주시"), "한국기술교육대": ("34", "천안시동남구"),
+    "코리아텍": ("34", "천안시동남구"), "나사렛대": ("34", "천안시서북구"),
+    "건양대": ("34", "논산시"), "중부대": ("34", "금산군"), "청운대": ("34", "홍성군"),
+    "한서대": ("34", "서산시"), "공주교대": ("34", "공주시"), "공주교육대": ("34", "공주시"),
+    # ── 전북 ──
+    "전북대": ("35", "전주시덕진구"), "원광대": ("35", "익산시"), "전주대": ("35", "전주시완산구"),
+    "군산대": ("35", "군산시"), "우석대": ("35", "완주군"), "호원대": ("35", "군산시"),
+    "예수대": ("35", "전주시완산구"), "한일장신대": ("35", "완주군"),
+    "전주교대": ("35", "전주시완산구"), "전주교육대": ("35", "전주시완산구"),
+    # ── 전남 ──
+    "순천대": ("36", "순천시"), "목포대": ("36", "무안군"), "목포해양대": ("36", "목포시"),
+    "동신대": ("36", "나주시"), "초당대": ("36", "무안군"), "세한대": ("36", "영암군"),
+    "광주가톨릭대": ("36", "나주시"), "한국에너지공대": ("36", "나주시"), "켄텍": ("36", "나주시"),
+    "목포가톨릭대": ("36", "목포시"),
+    # ── 경북 ──
+    "포항공대": ("37", "포항시남구"), "포스텍": ("37", "포항시남구"), "postech": ("37", "포항시남구"),
+    "한동대": ("37", "포항시북구"), "영남대": ("37", "경산시"), "대구대": ("37", "경산시"),
+    "대구가톨릭대": ("37", "경산시"), "경일대": ("37", "경산시"), "대구한의대": ("37", "경산시"),
+    "금오공대": ("37", "구미시"), "안동대": ("37", "안동시"), "위덕대": ("37", "경주시"),
+    "동국대(경주)": ("37", "경주시"), "경주대": ("37", "경주시"), "김천대": ("37", "김천시"),
+    "경운대": ("37", "구미시"), "대구예술대": ("37", "칠곡군"),
+    # ── 경남 ──
+    "경상국립대": ("38", "진주시"), "경상대": ("38", "진주시"), "창원대": ("38", "창원시의창구"),
+    "인제대": ("38", "김해시"), "경남대": ("38", "창원시마산합포구"), "영산대": ("38", "양산시"),
+    "부산장신대": ("38", "김해시"), "가야대": ("38", "김해시"),
+    "진주교대": ("38", "진주시"), "진주교육대": ("38", "진주시"), "한국국제대": ("38", "진주시"),
+    # ── 제주 ──
+    "제주대": ("39", "제주시"), "제주국제대": ("39", "제주시"),
+}
+
+# 캠퍼스를 가리키는 말 — '고려대 세종캠퍼스'처럼 붙어 오면 캠퍼스별 소재지로 찾는다
+UNIV_CAMPUS_HINTS = ["세종", "글로벌", "국제", "erica", "안산", "미래", "원주", "천안", "경주",
+                     "자연", "수원", "안성", "충주", "글로컬", "삼척", "일산", "바이오메디",
+                     "메디컬", "대전", "서울", "양주"]
+
+
+def normalize_univ_name(name: str) -> str:
+    """'서울대학교' → '서울대' 처럼 견주기 좋은 형태로 다듬는다."""
+    s = re.sub(r"\s+", "", str(name or "")).lower()
+    s = s.replace("캠퍼스", "").replace("학교", "")
+    s = re.sub(r"[\[\]{}<>]", "", s)
+    return s
+
+
+def univ_lookup_keys(name: str) -> list:
+    """캠퍼스까지 맞춘 키를 먼저, 그다음 본교 키를 돌려준다."""
+    s = normalize_univ_name(name)
+    if not s:
+        return []
+    inner = re.findall(r"[(（]([^)）]*)[)）]", s)
+    base = re.sub(r"[(（][^)）]*[)）]", "", s).strip()
+    keys = []
+    campus_words = []
+    for token in inner:
+        for hint in UNIV_CAMPUS_HINTS:
+            if hint in token:
+                campus_words.append(hint)
+    # 괄호가 없더라도 '한양대erica'처럼 뒤에 붙어 오는 경우
+    if not campus_words:
+        for hint in UNIV_CAMPUS_HINTS:
+            if base.endswith(hint) and len(base) > len(hint) + 1:
+                campus_words.append(hint)
+                base = base[: -len(hint)]
+                break
+    for w in campus_words:
+        keys.append(f"{base}({w})")
+    keys.append(base)
+    return keys
+
+
+def resolve_univ_region(univ: str, region_text: str = "") -> dict:
+    """대학이 어느 시도·시군구에 있는지 정한다.
+    ① 엑셀 '소재지' 열 → ② 내장 소재지 표 → ③ 알 수 없음."""
+    txt = re.sub(r"\s+", " ", str(region_text or "")).strip()
+    if txt:
+        flat = txt.replace(" ", "")
+        for full, short in SIDO_ALIASES.items():
+            if flat.startswith(full):
+                rest = flat[len(full):]
+                return {"sido": short, "sido_code": SIDO_CODES[short], "sigungu": rest, "source": "file"}
+        for short, code in SIDO_CODES.items():
+            if flat.startswith(short):
+                return {"sido": short, "sido_code": code, "sigungu": flat[len(short):], "source": "file"}
+
+    for key in univ_lookup_keys(univ):
+        hit = UNIV_REGIONS.get(key)
+        if hit:
+            code, sigungu = hit
+            return {"sido": SIDO_NAMES[code], "sido_code": code, "sigungu": sigungu, "source": "table"}
+    return {"sido": "", "sido_code": "", "sigungu": "", "source": "unknown"}
+
+
+class UnivMapReq(BaseModel):
+    student_name: str
+    kind: str = "susi"
+    only_reachable: bool = True
+
+
+@app.post("/api/admin/counsel/univ_map", dependencies=[Depends(verify_admin)])
+def get_univ_map(req: UnivMapReq):
+    """학생의 지금 성적으로 지원 가능한 대학을 소재지와 함께 돌려준다.
+    화면에서는 이걸 전국 지도 → 시도 지도 → 대학 목록 순으로 파고들며 본다."""
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 먼저 선택해주세요."}
+    rows = load_univ_table()
+    if not rows:
+        return {"success": False, "detail": "입결 자료가 아직 올라오지 않았습니다. '입결 자료(엑셀) 관리'에서 먼저 올려주세요."}
+
+    view = build_counsel_view(name)
+    mine_all = student_scores(view)
+    kind = normalize_univ_kind(req.kind)
+
+    # 💡 견줄 성적이 아예 없으면 지도가 텅 비어 나온다 — 왜 비었는지 먼저 알려준다
+    if kind == "susi" and mine_all["grade"] is None:
+        return {"success": False, "detail": "내신 성적이 입력되어 있지 않아 수시 지원 가능 대학을 계산할 수 없습니다. '성적 · 진학 전략' 탭에서 내신을 먼저 입력하고 저장해주세요."}
+    if kind == "jeongsi" and mine_all["percentile"] is None and mine_all["score"] is None:
+        return {"success": False, "detail": "모의고사 백분위(또는 원점수)가 입력되어 있지 않아 정시 지원 가능 대학을 계산할 수 없습니다. 모의고사 성적을 먼저 입력해주세요."}
+    # 논술 입결은 자료마다 기준이 내신 등급일 수도, 논술·수능 점수일 수도 있어 둘 다 본다
+    if kind == "nonsul" and all(mine_all[k] is None for k in ("grade", "percentile", "score")):
+        return {"success": False, "detail": "견줄 성적이 없어 논술 지원 가능 대학을 계산할 수 없습니다. 내신이나 모의고사 성적을 먼저 입력해주세요."}
+
+    # 대학 하나로 묶는다 — 같은 대학의 여러 학과 중 가장 가까운(잘 닿는) 줄을 대표로
+    merged = {}
+    for r in rows:
+        if r.get("kind", "susi") != kind:
+            continue
+        item = compare_univ_row(r, mine_all)
+        if not item or item["gap"] is None:
+            continue
+        univ = item["univ"]
+        slot = merged.setdefault(univ, {
+            "univ": univ, "total": 0, "reachable": 0,
+            "best": None, "majors": [],
+        })
+        slot["total"] += 1
+        if item["reach"]:
+            slot["reachable"] += 1
+        if slot["best"] is None or item["gap"] < slot["best"]["gap"]:
+            slot["best"] = item
+        if len(slot["majors"]) < 40:
+            slot["majors"].append({
+                "major": item["major"], "type": item["type"], "cut": item["cut"],
+                "gap": item["gap"], "reach": item["reach"], "unit": item["unit"],
+            })
+        if not slot.get("region_text"):
+            slot["region_text"] = r.get("region", "")
+
+    out, unknown = [], []
+    for univ, slot in merged.items():
+        if req.only_reachable and not slot["reachable"]:
+            continue
+        reg = resolve_univ_region(univ, slot.get("region_text", ""))
+        best = slot["best"]
+        entry = {
+            "univ": univ,
+            "total": slot["total"], "reachable": slot["reachable"],
+            "gap": best["gap"], "cut": best["cut"], "unit": best["unit"],
+            "mine": best["mine"], "metric": best["metric"],
+            "majors": sorted(slot["majors"], key=lambda m: m["gap"])[:20],
+            **reg,
+        }
+        if entry["sido_code"]:
+            out.append(entry)
+        else:
+            unknown.append(entry)
+
+    out.sort(key=lambda e: (e["sido_code"], e["gap"]))
+    unknown.sort(key=lambda e: e["gap"])
+
+    by_sido = {}
+    for e in out:
+        s = by_sido.setdefault(e["sido_code"], {"sido": e["sido"], "univ_count": 0, "reachable": 0})
+        s["univ_count"] += 1
+        s["reachable"] += e["reachable"]
+
+    return {
+        "success": True, "kind": kind,
+        "student": name,
+        "mine": mine_all,
+        "univs": out[:400], "unknown": unknown[:100],
+        "by_sido": by_sido,
+        "only_reachable": req.only_reachable,
+        "note": "수시는 내신 등급, 정시는 백분위·점수를 기준으로 견줍니다." ,
+    }
 
 
 def match_univ_rows(rows: list, univ: str, major: str = "") -> list:
@@ -6461,14 +7214,14 @@ def build_target_gap(view: dict) -> dict:
                 "message": f"입결 자료에서 '{univ}{(' ' + major) if major else ''}'을(를) 찾지 못했습니다. 대학 이름이 자료와 같은지 확인해주세요."}
 
     mine_all = student_scores(view)
-    groups = {"susi": [], "jeongsi": []}
+    groups = {k: [] for k in UNIV_KINDS}
     for r in hits[:200]:
         item = compare_univ_row(r, mine_all)
         if item:
             groups[item["kind"] if item["kind"] in groups else "susi"].append(item)
 
     out = {"status": "ok", "univ": univ, "major": major}
-    for k in ("susi", "jeongsi"):
+    for k in UNIV_KINDS:
         items = groups[k]
         scored = sorted([i for i in items if i["gap"] is not None], key=lambda x: x["gap"])
         out[k] = {
@@ -6478,7 +7231,7 @@ def build_target_gap(view: dict) -> dict:
             "total": len(scored),
             "count": len(items),
         }
-    if not out["susi"]["count"] and not out["jeongsi"]["count"]:
+    if not any(out[k]["count"] for k in UNIV_KINDS):
         return {"status": "not_found", "univ": univ, "major": major,
                 "message": "찾은 줄에 기준 점수가 비어 있습니다."}
     return out
@@ -6511,7 +7264,7 @@ def get_univ_majors(req: UnivMajorsReq):
     view = build_counsel_view(req.student_name.strip()) if req.student_name.strip() else None
     mine_all = student_scores(view) if view else {"grade": None, "percentile": None, "score": None, "eng_grade": None}
 
-    groups = {"susi": [], "jeongsi": []}
+    groups = {k: [] for k in UNIV_KINDS}
     for r in hits[:600]:
         item = compare_univ_row(r, mine_all)
         if not item:
@@ -6524,7 +7277,7 @@ def get_univ_majors(req: UnivMajorsReq):
         groups[k].append(item)
 
     out = {"success": True, "univ": univ, "mine": mine_all}
-    for k in ("susi", "jeongsi"):
+    for k in UNIV_KINDS:
         items = groups[k]
         # 도달한 것을 먼저, 그 안에서는 기준이 높은(=좋은) 학과부터
         reached = sorted([i for i in items if i["reach"] is True],
