@@ -3391,6 +3391,37 @@ async def generate_stream(
             body, expl = body.split("[정답 및 해설]", 1)
         return body.strip(), expl.strip(), table.strip()
 
+    async def verify_and_refine(draft_text: str, source: dict, model) -> str:
+        """💡 정답이 실제 지문과 어긋나거나(오채점), 정답 선지만 유독 티가 나서 지문을
+        안 읽어도 맞힐 수 있는 문항을 한 번 더 걸러내기 위한 자체 검수 단계.
+        초안을 그대로 다시 넣고 AI 스스로 지문과 대조해 고치게 한 뒤, 고친 결과로 교체한다.
+        검수 중 오류가 나면(타임아웃 등) 검수 없이 초안을 그대로 쓴다 — 품질 저하보다
+        실패로 전체 출제가 끊기는 쪽이 더 나쁘기 때문."""
+        verify_prompt = f"""아래는 방금 만든 문제/정답 및 해설/정답표 세트입니다. 첨부된(또는 아래 제시된) 원본 지문과 문항 하나하나를 다시 대조해서 스스로 검수하고, 문제가 있으면 직접 고쳐 최종본을 만드세요.
+
+[검수 기준 - 문제가 있으면 반드시 고칠 것]
+1. 정답표·해설에 적힌 정답 번호가 실제 지문 내용과 정확히 일치하는지 다시 확인하세요. 어긋나 있으면(오채점) 정답 번호를 바로잡고, 해설과 정답표도 함께 고치세요.
+2. 정답 선지만 유독 길거나 자세하거나 서술 방식이 달라서 지문을 읽지 않고도 정답이 한눈에 티가 나는 문항이 있으면, 선지들의 길이와 문장 구조를 서로 비슷하게 다시 쓰세요. (선지의 참·거짓, 정답 여부 자체는 절대 바꾸지 마세요.)
+3. 오답 선지가 지문과 무관하거나 너무 뻔하게 틀려서 소거법만으로 쉽게 답이 나오는 문항이 있으면, 지문 내용을 살짝 비튼 더 그럴듯한 오답으로 다시 쓰세요.
+4. 문항들의 정답 번호가 규칙적인 패턴(오름차순·반복 등)을 이루고 있으면, 문항 내용과 정답 자체는 바꾸지 말고 선지 순서만 재배치해 패턴을 깨세요. 그에 맞춰 해설·정답표도 갱신하세요.
+5. 오탈자, 원문자(①②③④⑤) 형식 오류, 마크다운 기호(**, # 등) 사용 여부도 함께 점검해 고치세요.
+
+문제가 없는 부분은 그대로 두세요. 최종 결과는 초안과 동일한 순서([지문]이 포함돼 있었다면 지문 그대로 → 문항 → [정답 및 해설] → [정답표])로, 다른 설명이나 안내문 없이 그 형식 그대로만 출력하세요.
+
+[방금 만든 초안]
+{draft_text}"""
+        if not source["parts"]:
+            verify_prompt += f"""
+
+[원본 지문]
+{source["text"]}"""
+        try:
+            vresp = await asyncio.to_thread(model.generate_content, [verify_prompt] + source["parts"])
+            vtext = (vresp.text or "").strip()
+            return vtext if vtext else draft_text
+        except Exception:
+            return draft_text
+
     async def iter_batches():
         try:
             model = get_best_model(prefer_quality=True)
@@ -3426,6 +3457,7 @@ async def generate_stream(
                     yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다: {e}"
                     return
 
+                text = await verify_and_refine(text, source, model)
                 body, expl, table = split_sections(text)
                 if body:
                     yield body + "\n\n"
