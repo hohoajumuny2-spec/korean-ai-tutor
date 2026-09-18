@@ -12,6 +12,8 @@ import threading
 import mimetypes
 import urllib.parse
 import asyncio
+import subprocess
+import tempfile
 from collections import defaultdict
 from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form, WebSocket,
@@ -26,11 +28,14 @@ from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
 from datetime import datetime
 import fitz
+from PIL import Image, ImageDraw, ImageFont
+from gtts import gTTS
+import imageio_ffmpeg
 
 # ─────────────────────────────────────────────────────────
 # 디렉토리 생성
 # ─────────────────────────────────────────────────────────
-for folder in ["exams", "homeworks", "board", "chat", "profiles"]:
+for folder in ["exams", "homeworks", "board", "chat", "profiles", "explain_videos"]:
     os.makedirs(f"uploads/{folder}", exist_ok=True)
 
 app = FastAPI()
@@ -3559,6 +3564,211 @@ async def generate_explainer(
             yield f"❌ AI 생성 실패: {err_msg}"
 
         return StreamingResponse(err_response(), media_type="text/plain")
+
+
+# ─────────────────────────────────────────────────────────
+# 관리자 - 해설 영상 자동 생성 (텍스트 → 세로형 쇼츠 영상)
+#   해설 텍스트를 AI가 짧은 구어체 장면들로 나누면, 장면마다 자막 슬라이드 +
+#   TTS 음성을 입힌 짧은 영상 클립을 만들어 이어붙인다. 원장님이 직접
+#   촬영/편집하지 않아도, 방금 만든 해설 자료를 그대로 붙여넣기만 하면
+#   학생에게 바로 배포할 수 있는 영상이 나온다.
+# ─────────────────────────────────────────────────────────
+VIDEO_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "NotoSansKR.ttf")
+VIDEO_W, VIDEO_H = 1080, 1920
+VIDEO_MAX_SCENES = 25
+_video_font_cache = {}
+
+
+def _video_font(size: int, bold: bool = False):
+    key = (size, bold)
+    if key not in _video_font_cache:
+        f = ImageFont.truetype(VIDEO_FONT_PATH, size)
+        if bold:
+            try:
+                f.set_variation_by_axes([700])
+            except Exception:
+                pass
+        _video_font_cache[key] = f
+    return _video_font_cache[key]
+
+
+def _video_wrap_lines(draw, text: str, font, max_width: int) -> list:
+    """한글은 어절보다 글자 단위로 줄바꿈해야 슬라이드 폭에 안전하게 맞는다."""
+    lines = []
+    for para in text.split("\n"):
+        cur = ""
+        for ch in para:
+            test = cur + ch
+            if draw.textbbox((0, 0), test, font=font)[2] > max_width and cur:
+                lines.append(cur)
+                cur = ch
+            else:
+                cur = test
+        lines.append(cur)
+    return lines
+
+
+def _video_make_slide(text: str, out_path: str):
+    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
+    d = ImageDraw.Draw(img)
+    font = _video_font(64, bold=True)
+    lines = _video_wrap_lines(d, text, font, VIDEO_W - 160)
+    line_h = font.size + 26
+    total_h = line_h * len(lines)
+    y = (VIDEO_H - total_h) // 2
+    for line in lines:
+        bbox = d.textbbox((0, 0), line, font=font)
+        w = bbox[2] - bbox[0]
+        d.text(((VIDEO_W - w) / 2, y), line, font=font, fill=(255, 255, 255))
+        y += line_h
+    brand_font = _video_font(34)
+    brand = "로지에듀"
+    bbox = d.textbbox((0, 0), brand, font=brand_font)
+    d.text(((VIDEO_W - (bbox[2] - bbox[0])) / 2, VIDEO_H - 110), brand, font=brand_font, fill=(150, 155, 170))
+    img.save(out_path)
+
+
+def _video_run_ffmpeg(args: list):
+    r = subprocess.run(args, capture_output=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or "").strip()[-1500:] or "ffmpeg 처리 중 알 수 없는 오류")
+
+
+def _video_make_scene_clip(image_path: str, audio_path: str, out_path: str):
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    _video_run_ffmpeg([
+        ffmpeg, "-y", "-loop", "1", "-i", image_path, "-i", audio_path,
+        "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p", "-shortest", "-vf", f"scale={VIDEO_W}:{VIDEO_H}",
+        out_path,
+    ])
+
+
+def _video_concat_clips(clip_paths: list, out_path: str, workdir: str):
+    list_path = os.path.join(workdir, "concat_list.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for p in clip_paths:
+            f.write(f"file '{p}'\n")
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    _video_run_ffmpeg([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path])
+
+
+def render_explain_video(scenes: list) -> bytes:
+    """블로킹 작업(TTS 네트워크 호출 + ffmpeg 렌더링)이므로 asyncio.to_thread로 감싸서 호출한다."""
+    with tempfile.TemporaryDirectory(prefix="explain_video_") as workdir:
+        clip_paths = []
+        for i, scene_text in enumerate(scenes):
+            img_path = os.path.join(workdir, f"slide_{i}.png")
+            mp3_path = os.path.join(workdir, f"audio_{i}.mp3")
+            clip_path = os.path.join(workdir, f"clip_{i}.mp4")
+            _video_make_slide(scene_text, img_path)
+            gTTS(scene_text, lang="ko").save(mp3_path)
+            _video_make_scene_clip(img_path, mp3_path, clip_path)
+            clip_paths.append(clip_path)
+        final_path = os.path.join(workdir, "final.mp4")
+        _video_concat_clips(clip_paths, final_path, workdir)
+        with open(final_path, "rb") as f:
+            return f.read()
+
+
+def _fallback_split_scenes(text: str) -> list:
+    """AI 장면 분리가 실패했을 때 쓰는 안전망 — 문장 부호 기준으로 기계적으로 쪼갠다."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?。])\s+", text) if s.strip()]
+    scenes, cur = [], ""
+    for s in sentences:
+        if cur and len(cur) + len(s) > 70:
+            scenes.append(cur)
+            cur = s
+        else:
+            cur = (cur + " " + s).strip()
+    if cur:
+        scenes.append(cur)
+    return scenes[:VIDEO_MAX_SCENES] or [text[:200]]
+
+
+async def split_video_scenes(text: str) -> list:
+    """해설 텍스트를 AI가 짧은 구어체 장면들로 나눈다. 실패하면 기계적 분리로 대체한다."""
+    prompt = f"""아래 해설/설명 글을 학생들이 짧은 세로형 영상(쇼츠)으로 보기 좋게, 성우가 소리 내어 읽을 자연스러운 구어체 대사로 나눠줘.
+
+[규칙]
+- 원문의 내용과 의미를 절대 바꾸지 말고, 말하듯이 자연스러운 문장으로 다듬어서 전달해.
+- 한 장면은 대략 20~60자 정도로, 소리 내어 읽었을 때 4~8초 안팎이 되도록 짧게 끊어줘.
+- 전체 장면 수는 {VIDEO_MAX_SCENES}개를 넘기지 마세요.
+- 마크다운이나 *, #, <, > 같은 기호 없이 순수한 문장으로만 작성해.
+- 다른 설명 없이, 장면 순서대로 문자열만 담은 JSON 배열로만 출력해. 예: ["첫 번째 장면입니다.", "두 번째 장면입니다."]
+
+[원문]
+{text}"""
+    try:
+        model = get_best_model()
+        resp = await asyncio.to_thread(model.generate_content, prompt)
+        raw = (resp.text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:]
+        scenes = json.loads(raw.strip())
+        scenes = [str(s).strip() for s in scenes if str(s).strip()]
+        if scenes:
+            return scenes[:VIDEO_MAX_SCENES]
+    except Exception:
+        pass
+    return _fallback_split_scenes(text)
+
+
+@app.post("/api/admin/generate_video")
+async def generate_video(text: str = Form(...), title: str = Form(""), name: str = Depends(current_admin_name)):
+    # 💡 해설 영상 자동 생성은 서버 비용(AI 호출 + TTS + 렌더링)이 크게 드는 기능이라,
+    # 다른 관리자 계정이 아니라 원장님(is_owner)만 쓸 수 있도록 제한한다.
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다."}
+    source_text = text.strip()
+    if not source_text:
+        return {"success": False, "detail": "영상으로 만들 설명 내용을 입력해주세요."}
+
+    scenes = await split_video_scenes(source_text)
+    if not scenes:
+        return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
+
+    try:
+        video_bytes = await asyncio.to_thread(render_explain_video, scenes)
+    except Exception as e:
+        return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
+
+    safe_title = (title.strip() or "해설영상")[:60]
+    url = save_bytes(video_bytes, f"{safe_title}.mp4", "explain_videos", "video/mp4")
+
+    doc_id = uuid.uuid4().hex
+    if db is not None:
+        await asyncio.to_thread(lambda: db.collection("explain_videos").document(doc_id).set({
+            "title": safe_title, "url": url, "scene_count": len(scenes),
+            "source_text": source_text[:2000],
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }))
+    return {"success": True, "id": doc_id, "title": safe_title, "url": url, "scene_count": len(scenes)}
+
+
+@app.get("/api/admin/explain_videos")
+def get_explain_videos(name: str = Depends(current_admin_name)):
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다.", "videos": []}
+    if db is None:
+        return {"success": False, "videos": []}
+    docs = db.collection("explain_videos").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+    return {"success": True, "videos": [{"id": d.id, **d.to_dict()} for d in docs]}
+
+
+@app.delete("/api/admin/explain_video/{video_id}")
+async def delete_explain_video(video_id: str, name: str = Depends(current_admin_name)):
+    me = get_admin_doc(name)
+    if not me or not me.get("is_owner"):
+        return {"success": False, "detail": "이 기능은 원장님 계정만 사용할 수 있습니다."}
+    if db is None:
+        return {"success": False}
+    await asyncio.to_thread(lambda: db.collection("explain_videos").document(video_id).delete())
+    return {"success": True}
 
 
 # ─────────────────────────────────────────────────────────
