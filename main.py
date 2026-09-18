@@ -3628,6 +3628,243 @@ def _video_make_slide(text: str, out_path: str):
     img.save(out_path)
 
 
+def _video_make_intro_slide(out_path: str):
+    """모든 문항별 영상 맨 앞에 붙는 브랜드 인트로 카드."""
+    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (12, 14, 22))
+    d = ImageDraw.Draw(img)
+    brand_font = _video_font(96, bold=True)
+    sub_font = _video_font(54, bold=True)
+    brand, sub = "로지에듀", "최준용 국어"
+    bbox = d.textbbox((0, 0), brand, font=brand_font)
+    d.text(((VIDEO_W - (bbox[2] - bbox[0])) / 2, VIDEO_H / 2 - 130), brand, font=brand_font, fill=(255, 255, 255))
+    bbox2 = d.textbbox((0, 0), sub, font=sub_font)
+    d.text(((VIDEO_W - (bbox2[2] - bbox2[0])) / 2, VIDEO_H / 2 + 10), sub, font=sub_font, fill=(196, 176, 255))
+    img.save(out_path)
+
+
+def _video_make_passage_slide(excerpt: str, highlight_span, out_path: str):
+    """지문 발췌문을 보여주고, 정답의 근거가 되는 부분만 노란 형광펜처럼 강조한다."""
+    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
+    d = ImageDraw.Draw(img)
+    # 💡 이모지(📖 등)는 Noto Sans KR에 글리프가 없어 네모 깨짐(tofu)으로 나온다 —
+    # 직접 그린 네모 배지로 대신한다.
+    d.rectangle([80, 96, 108, 124], fill=(250, 204, 21))
+    d.text((124, 92), "지문 근거", font=_video_font(38, bold=True), fill=(250, 204, 21))
+
+    body_font = _video_font(46)
+    max_w = VIDEO_W - 160
+    lines, cur, cur_w = [], [], 0
+    for char_idx, ch in enumerate(excerpt):
+        if ch == "\n":
+            lines.append(cur); cur, cur_w = [], 0
+            continue
+        w = d.textlength(ch, font=body_font)
+        if cur_w + w > max_w and cur:
+            lines.append(cur); cur, cur_w = [], 0
+        is_hi = bool(highlight_span and highlight_span[0] <= char_idx < highlight_span[1])
+        cur.append((ch, is_hi)); cur_w += w
+    if cur:
+        lines.append(cur)
+
+    line_h = body_font.size + 24
+    total_h = line_h * len(lines)
+    y = max(260, (VIDEO_H - total_h) // 2)
+    for line in lines:
+        text = "".join(c for c, _ in line)
+        w = d.textbbox((0, 0), text, font=body_font)[2]
+        x = (VIDEO_W - w) / 2
+        cx = x
+        for ch, is_hi in line:
+            cw = d.textlength(ch, font=body_font)
+            if is_hi:
+                d.rectangle([cx - 2, y - 4, cx + cw + 2, y + body_font.size + 10], fill=(122, 95, 8))
+            cx += cw
+        cx = x
+        for ch, is_hi in line:
+            cw = d.textlength(ch, font=body_font)
+            d.text((cx, y), ch, font=body_font, fill=(255, 241, 191) if is_hi else (220, 222, 230))
+            cx += cw
+        y += line_h
+    img.save(out_path)
+
+
+def _video_make_options_slide(stem: str, options: list, correct_idx: int, wrong_reasons: dict, out_path: str):
+    """5개 선택지를 그대로 보여주면서, 정답은 초록 체크로, 오답은 빨간 X와 함께
+    왜 틀렸는지 짧은 이유를 바로 아래에 덧붙여 보여준다."""
+    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
+    d = ImageDraw.Draw(img)
+    d.rectangle([80, 86, 108, 114], fill=(250, 204, 21))
+    d.text((124, 82), "선택지 분석", font=_video_font(38, bold=True), fill=(250, 204, 21))
+
+    y = 180
+    if stem:
+        stem_font = _video_font(38)
+        for line in _video_wrap_lines(d, stem, stem_font, VIDEO_W - 160):
+            d.text((80, y), line, font=stem_font, fill=(180, 184, 200))
+            y += stem_font.size + 14
+        y += 24
+
+    opt_font = _video_font(42, bold=True)
+    reason_font = _video_font(30)
+    for i, opt_text in enumerate(options, start=1):
+        is_correct = (i == correct_idx)
+        color = (110, 231, 150) if is_correct else (248, 113, 113)
+        # 💡 체크/엑스 표시는 폰트 글리프(✔✘ 등)에 기대지 않고 직접 그린다 —
+        # Noto Sans KR에 이 기호들의 글리프가 없어 네모 깨짐으로 나왔었다.
+        r = opt_font.size * 0.34
+        cx, cy = 80 + r, y + opt_font.size * 0.5
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=4)
+        if is_correct:
+            d.line([cx - r * 0.5, cy, cx - r * 0.1, cy + r * 0.45], fill=color, width=5)
+            d.line([cx - r * 0.1, cy + r * 0.45, cx + r * 0.55, cy - r * 0.4], fill=color, width=5)
+        else:
+            d.line([cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy + r * 0.5], fill=color, width=5)
+            d.line([cx - r * 0.5, cy + r * 0.5, cx + r * 0.5, cy - r * 0.5], fill=color, width=5)
+        lines = _video_wrap_lines(d, opt_text, opt_font, VIDEO_W - 220)
+        for line in lines:
+            d.text((140, y), line, font=opt_font, fill=(255, 255, 255) if is_correct else (215, 217, 225))
+            y += opt_font.size + 12
+        reason = wrong_reasons.get(str(i))
+        if not is_correct and reason:
+            for rline in _video_wrap_lines(d, f"→ {reason}", reason_font, VIDEO_W - 260):
+                d.text((160, y), rline, font=reason_font, fill=(252, 165, 165))
+                y += reason_font.size + 8
+        y += 28
+    img.save(out_path)
+
+
+_OPTION_MARKERS = ["①", "②", "③", "④", "⑤"]
+
+
+def _split_question_options(problem_text: str):
+    """문항 텍스트에서 발문(stem)과 ①~⑤ 선지 5개를 분리한다. 형식이 원문자 5개를
+    순서대로 갖추지 못했으면(서술형 등) 선지 없이 (전체 텍스트, [])를 돌려준다."""
+    positions = []
+    for mk in _OPTION_MARKERS:
+        idx = problem_text.find(mk)
+        if idx == -1:
+            return problem_text.strip(), []
+        positions.append(idx)
+    if positions != sorted(positions):
+        return problem_text.strip(), []
+    stem = problem_text[:positions[0]].strip()
+    stem = PROBLEM_NUM_RE.sub("", stem, count=1)
+    options = []
+    for i in range(5):
+        start = positions[i]
+        end = positions[i + 1] if i + 1 < 5 else len(problem_text)
+        options.append(problem_text[start:end].strip())
+    return stem, options
+
+
+def _extract_option_number(answer_text: str) -> int:
+    """정답표의 '③' 또는 '3번' 같은 표기에서 1~5 사이 정답 번호를 뽑는다."""
+    for i, ch in enumerate(_OPTION_MARKERS):
+        if ch in (answer_text or ""):
+            return i + 1
+    m = re.search(r"[1-5]", answer_text or "")
+    return int(m.group(0)) if m else 0
+
+
+def _evidence_excerpt(passage: str, quote: str, radius: int = 60):
+    """근거 문장이 지문 안에서 실제로 발견되면 그 앞뒤 맥락을 살짝 포함한 짧은 발췌문과,
+    그 발췌문 안에서 근거 문장이 시작·끝나는 글자 위치를 돌려준다. 못 찾으면(AI가 지문에
+    없는 문장을 만들어낸 경우 등) 지문 앞부분만 강조 없이 보여준다."""
+    quote = (quote or "").strip()
+    idx = passage.find(quote) if quote else -1
+    if idx == -1:
+        return passage[:200].strip(), None
+    start = max(0, idx - radius)
+    end = min(len(passage), idx + len(quote) + radius)
+    excerpt = passage[start:end].strip()
+    rel_idx = excerpt.find(quote)
+    return excerpt, (rel_idx, rel_idx + len(quote)) if rel_idx != -1 else None
+
+
+async def analyze_question_for_video(preamble: str, problem_text: str, explanation_text: str) -> dict:
+    """문항 하나를 영상으로 만들기 위해, AI에게 (1) 지문에서 그대로 가져온 근거 문장,
+    (2) 오답 선지별 짧은 이유, (3) 구어체 내레이션 대본을 뽑아달라고 요청한다.
+    실패하면 빈 값을 돌려주고, 호출부에서 안전하게 대체한다."""
+    prompt = f"""아래는 지문형 문제 하나와 그 해설입니다. 이 문제를 설명하는 영상 자료를 만들기 위한 정보를 추출해줘.
+
+[규칙]
+- evidence_quote: 정답의 근거가 되는 부분을 아래 [지문]에서 한 글자도 바꾸지 말고 문장부호까지 정확히 그대로 옮겨줘. 통째로 길게 옮기지 말고, 핵심 문장 하나(또는 이어지는 두 문장) 정도로 짧게.
+- wrong_reasons: 정답이 아닌 선택지 번호(1~5 중 정답 제외)마다, 왜 틀렸는지 12자 안팎으로 아주 짧게. 정답 선택지 번호는 넣지 마세요.
+- narration: 학생에게 소리 내어 설명하듯 자연스러운 구어체 문장 4~6개로, 지문 근거 설명 → 정답인 이유 → 오답인 이유 순서로 짧게짧게 나눠줘. 한 문장은 20~50자 정도로.
+- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력해: {{"evidence_quote": "...", "wrong_reasons": {{"1": "...", "2": "..."}}, "narration": ["...", "..."]}}
+
+[지문]
+{preamble}
+
+[문제와 선택지]
+{problem_text}
+
+[해설]
+{explanation_text}"""
+    try:
+        model = get_best_model()
+        resp = await asyncio.to_thread(model.generate_content, prompt)
+        raw = (resp.text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:]
+        data = json.loads(raw.strip())
+        return {
+            "evidence_quote": str(data.get("evidence_quote", "")).strip(),
+            "wrong_reasons": {str(k): str(v).strip() for k, v in (data.get("wrong_reasons") or {}).items()},
+            "narration": [str(s).strip() for s in (data.get("narration") or []) if str(s).strip()],
+        }
+    except Exception:
+        return {"evidence_quote": "", "wrong_reasons": {}, "narration": []}
+
+
+def render_question_video(question_no: int, preamble: str, problem_text: str,
+                           explanation_text: str, answer_text: str, analysis: dict) -> bytes:
+    """블로킹 작업이므로 asyncio.to_thread로 감싸서 호출한다.
+    인트로 → 문항 안내 → 지문 근거(하이라이트) → 선택지 분석, 4개 장면으로 구성된다."""
+    stem, options = _split_question_options(problem_text)
+    correct_idx = _extract_option_number(answer_text)
+    excerpt, span = _evidence_excerpt(preamble, analysis.get("evidence_quote", ""))
+    narration = analysis.get("narration") or _fallback_split_scenes(explanation_text or problem_text)
+    wrong_reasons = analysis.get("wrong_reasons", {})
+    half = max(1, len(narration) // 2) if narration else 0
+    passage_narr = " ".join(narration[:half]) or "지문에서 근거를 먼저 확인해봅시다."
+    options_narr = " ".join(narration[half:]) or "선택지를 하나씩 살펴보겠습니다."
+
+    with tempfile.TemporaryDirectory(prefix="explain_video_") as workdir:
+        clip_paths = []
+
+        def add_clip(narr_text: str, slide_path: str):
+            i = len(clip_paths)
+            mp3_path = os.path.join(workdir, f"audio_{i}.mp3")
+            clip_path = os.path.join(workdir, f"clip_{i}.mp4")
+            gTTS(narr_text, lang="ko").save(mp3_path)
+            _video_make_scene_clip(slide_path, mp3_path, clip_path)
+            clip_paths.append(clip_path)
+
+        intro_path = os.path.join(workdir, "intro.png")
+        _video_make_intro_slide(intro_path)
+        add_clip("안녕하세요. 로지에듀 최준용 국어입니다.", intro_path)
+
+        title_path = os.path.join(workdir, "title.png")
+        _video_make_slide(f"{question_no}번 문항 해설", title_path)
+        add_clip(f"{question_no}번 문항 해설입니다.", title_path)
+
+        passage_path = os.path.join(workdir, "passage.png")
+        _video_make_passage_slide(excerpt, span, passage_path)
+        add_clip(passage_narr, passage_path)
+
+        options_path = os.path.join(workdir, "options.png")
+        _video_make_options_slide(stem, options, correct_idx, wrong_reasons, options_path)
+        add_clip(options_narr, options_path)
+
+        final_path = os.path.join(workdir, "final.mp4")
+        _video_concat_clips(clip_paths, final_path, workdir)
+        with open(final_path, "rb") as f:
+            return f.read()
+
+
 def _video_run_ffmpeg(args: list):
     r = subprocess.run(args, capture_output=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
@@ -3717,7 +3954,8 @@ async def split_video_scenes(text: str) -> list:
 
 
 @app.post("/api/admin/generate_video")
-async def generate_video(text: str = Form(...), title: str = Form(""), name: str = Depends(current_admin_name)):
+async def generate_video(text: str = Form(...), title: str = Form(""), question_no: int = Form(0),
+                          name: str = Depends(current_admin_name)):
     # 💡 해설 영상 자동 생성은 서버 비용(AI 호출 + TTS + 렌더링)이 크게 드는 기능이라,
     # 다른 관리자 계정이 아니라 원장님(is_owner)만 쓸 수 있도록 제한한다.
     me = get_admin_doc(name)
@@ -3727,26 +3965,46 @@ async def generate_video(text: str = Form(...), title: str = Form(""), name: str
     if not source_text:
         return {"success": False, "detail": "영상으로 만들 설명 내용을 입력해주세요."}
 
-    scenes = await split_video_scenes(source_text)
-    if not scenes:
-        return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
+    if question_no > 0:
+        # 💡 문항별 모드: 단순 자막이 아니라, 지문에서 근거가 되는 부분을 실제로
+        # 강조해서 보여주고 선택지별로 정답/오답 이유까지 화면에 함께 띄운다.
+        parsed = parse_question_bank_content(source_text)
+        problem_text = parsed["problems"].get(question_no)
+        if not problem_text:
+            return {"success": False, "detail": f"{question_no}번 문항을 찾지 못했습니다. 문항 번호와 내용을 확인해주세요."}
+        preamble = parsed["preamble"]
+        explanation_text = parsed["explanations"].get(question_no, "")
+        answer_text = parsed["answers"].get(question_no, "")
+        analysis = await analyze_question_for_video(preamble, problem_text, explanation_text)
+        try:
+            video_bytes = await asyncio.to_thread(
+                render_question_video, question_no, preamble, problem_text, explanation_text, answer_text, analysis,
+            )
+        except Exception as e:
+            return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
+        scene_count = 4
+        safe_title = (title.strip() or f"{question_no}번 문항 해설영상")[:60]
+    else:
+        scenes = await split_video_scenes(source_text)
+        if not scenes:
+            return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
+        try:
+            video_bytes = await asyncio.to_thread(render_explain_video, scenes)
+        except Exception as e:
+            return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
+        scene_count = len(scenes)
+        safe_title = (title.strip() or "해설영상")[:60]
 
-    try:
-        video_bytes = await asyncio.to_thread(render_explain_video, scenes)
-    except Exception as e:
-        return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
-
-    safe_title = (title.strip() or "해설영상")[:60]
     url = save_bytes(video_bytes, f"{safe_title}.mp4", "explain_videos", "video/mp4")
 
     doc_id = uuid.uuid4().hex
     if db is not None:
         await asyncio.to_thread(lambda: db.collection("explain_videos").document(doc_id).set({
-            "title": safe_title, "url": url, "scene_count": len(scenes),
+            "title": safe_title, "url": url, "scene_count": scene_count, "question_no": question_no,
             "source_text": source_text[:2000],
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }))
-    return {"success": True, "id": doc_id, "title": safe_title, "url": url, "scene_count": len(scenes)}
+    return {"success": True, "id": doc_id, "title": safe_title, "url": url, "scene_count": scene_count}
 
 
 @app.get("/api/admin/explain_videos")
@@ -4085,7 +4343,11 @@ def parse_question_bank_content(content: str) -> dict:
 
     answers = {}
     for line in table_text.splitlines():
-        am = re.match(r"\s*(\d{1,2})[.\)]\s*(.+)", line)
+        # 💡 실제 출제 프롬프트가 정답표에 요구하는 형식은 "1번 ⑤"인데(문제 출제
+        # 예시 블록 참고), 이 정규식은 "1." / "1)" 형식만 받아들이고 있었다.
+        # 그래서 이 앱이 직접 만든 정답표는 한 번도 여기 안 걸리고 늘 비어 있었다
+        # — 재조합 기능의 정답표와 (아래) 문항별 영상의 정답 표시가 조용히 비던 원인.
+        am = re.match(r"\s*(\d{1,2})\s*(?:번|[.\)])\s*(.+)", line)
         if am:
             answers[int(am.group(1))] = am.group(2).strip()
 
