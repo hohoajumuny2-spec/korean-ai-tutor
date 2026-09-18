@@ -2657,6 +2657,25 @@ def normalize_vocab_difficulty(d) -> str:
     return d if d in VOCAB_DIFFICULTIES else "mid"
 
 
+def vocab_difficulty_from_text(value) -> str:
+    """'상'/'중'/'하' 또는 high/mid/low 로 적힌 난이도를 내부 키로 바꾼다.
+    적혀 있지 않거나 알아볼 수 없으면 빈 문자열 — 그래야 '적히지 않음'과
+    '중으로 적힘'을 구분할 수 있다."""
+    t = str(value or "").strip().lower()
+    if not t:
+        return ""
+    for key, label in VOCAB_DIFFICULTIES.items():
+        if t == key or t == label or label in t:
+            return key
+    if t in ("high", "상급", "어려움", "hard"):
+        return "high"
+    if t in ("low", "초급", "쉬움", "easy"):
+        return "low"
+    if t in ("mid", "middle", "중급", "보통", "normal"):
+        return "mid"
+    return ""
+
+
 VOCAB_EXTRACT_PROMPT = """첨부된 자료는 영어 단어장(단어 또는 구절과 그 뜻이 나열된 자료)입니다.
 표 형식이든 사진이든 줄글이든 상관없이, 여기 실린 모든 단어(또는 숙어·구절)와 뜻을
 정확하게, 빠짐없이 읽어내세요. 열 순서나 번호가 섞여 있어도 어느 것이 영어 단어이고
@@ -2664,11 +2683,94 @@ VOCAB_EXTRACT_PROMPT = """첨부된 자료는 영어 단어장(단어 또는 구
 
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
-- 형식: {"words":[{"word":"영어 단어 또는 구절","meaning":"뜻(한글)"}]}
+- 형식: {"words":[{"word":"영어 단어 또는 구절","meaning":"뜻(한글)","difficulty":"상"}]}
 - 단어의 철자를 정확히 옮기세요. 흐릿하거나 확실하지 않은 글자는 가장 가능성 높은 철자로
   적되, 절대 지어내지 마세요.
 - 뜻은 자료에 적힌 그대로 옮기세요(여러 뜻이 있으면 '/'로 이어 붙이세요).
+- 자료에 난이도(상/중/하)가 적혀 있으면 difficulty에 그대로 옮기세요.
+  적혀 있지 않으면 difficulty 자체를 넣지 마세요(임의로 판단하지 마세요).
 - 번호, 페이지 번호, 챕터/단원 제목처럼 단어장 내용이 아닌 것은 포함하지 마세요."""
+
+
+# ── 영어 단어 입력용 표준 양식 ────────────────────────────
+# 💡 사진·PDF·아무 엑셀이나 올려도 AI가 읽지만, 처음부터 이 틀에 맞춰 적으면
+#    난이도까지 한 파일에 담을 수 있고 읽기도 가장 정확하다.
+VOCAB_TEMPLATE_COLUMNS = [
+    ("단어", "ubiquitous", "영어 단어 또는 숙어·구절. 예: give up, look forward to"),
+    ("뜻", "어디에나 있는", "한글 뜻. 여러 뜻이면 '/'로 이어 적으세요. 예: 포기하다/그만두다"),
+    ("난이도", "상", "상 · 중 · 하 중 하나. 비워두면 올릴 때 고른 난이도로 들어갑니다."),
+]
+
+
+def build_vocab_template_xlsx() -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "영어단어"
+    head_fill = PatternFill("solid", fgColor="1F3864")
+    req_fill = PatternFill("solid", fgColor="C00000")
+    white_bold = Font(color="FFFFFF", bold=True, size=11)
+
+    samples = [
+        ["ubiquitous", "어디에나 있는", "상"],
+        ["give up", "포기하다/그만두다", "중"],
+        ["apple", "사과", "하"],
+        ["look forward to", "~을 고대하다", ""],
+    ]
+    widths = [26, 34, 12]
+    for i, (label, _ex, _desc) in enumerate(VOCAB_TEMPLATE_COLUMNS, start=1):
+        required = label != "난이도"
+        c = ws.cell(row=1, column=i, value=label + ("*" if required else ""))
+        c.fill = req_fill if required else head_fill
+        c.font = white_bold
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[c.column_letter].width = widths[i - 1]
+    for r, row in enumerate(samples, start=2):
+        for i, v in enumerate(row, start=1):
+            ws.cell(row=r, column=i, value=v)
+    ws.freeze_panes = "A2"
+
+    guide = wb.create_sheet("작성안내")
+    guide.column_dimensions["A"].width = 14
+    guide.column_dimensions["B"].width = 22
+    guide.column_dimensions["C"].width = 86
+    for i, text in enumerate(["열 이름", "예시", "설명"], start=1):
+        c = guide.cell(row=1, column=i, value=text)
+        c.fill = head_fill
+        c.font = white_bold
+    for r, (label, example, desc) in enumerate(VOCAB_TEMPLATE_COLUMNS, start=2):
+        guide.cell(row=r, column=1, value=label)
+        guide.cell(row=r, column=2, value=example)
+        guide.cell(row=r, column=3, value=desc)
+    for r, line in enumerate([
+        "● 첫 줄(열 이름)은 지우지 마세요. 2번째 줄부터 단어를 적으시면 됩니다.",
+        "● 예시로 넣어둔 네 줄은 지우고 쓰시면 됩니다.",
+        "● 난이도 칸을 비워두면, 파일을 올릴 때 고른 난이도(상·중·하)로 모두 들어갑니다.",
+        "● 난이도를 칸마다 다르게 적으면 한 파일로 상·중·하를 한꺼번에 등록할 수 있습니다.",
+        "● 띄어쓰기가 들어간 구절(give up 등)은 '구절 해석' 유형 문제로도 출제됩니다.",
+        "● 이 양식이 아니어도 괜찮습니다. 쓰시던 엑셀·사진·PDF를 그대로 올리면 AI가 읽습니다.",
+    ], start=len(VOCAB_TEMPLATE_COLUMNS) + 3):
+        guide.cell(row=r, column=1, value=line)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.get("/api/admin/vocab/template", dependencies=[Depends(verify_admin)])
+def download_vocab_template():
+    try:
+        data = build_vocab_template_xlsx()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"양식을 만들지 못했습니다: {e}")
+    fname = urllib.parse.quote("영어단어_입력양식.xlsx".encode("utf-8"))
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+    )
 
 VOCAB_TABLE_ROWS_PER_BATCH = 200  # 표가 아주 크면 한 번에 다 넣지 않고 나눠서 시킨다
 
@@ -2696,7 +2798,12 @@ async def extract_vocab_words_via_ai(contents: list) -> tuple:
         word = str((item or {}).get("word", "")).strip()
         meaning = str((item or {}).get("meaning", "")).strip()
         if word and meaning:
-            out.append({"word": word, "meaning": meaning, "is_phrase": " " in word})
+            row = {"word": word, "meaning": meaning, "is_phrase": " " in word}
+            # 자료에 난이도가 적혀 있던 단어만 그 난이도를 따로 들고 간다
+            diff = vocab_difficulty_from_text((item or {}).get("difficulty"))
+            if diff:
+                row["difficulty"] = diff
+            out.append(row)
     if not out:
         return [], "AI가 이 자료에서 단어·뜻 쌍을 찾지 못했습니다. 단어와 뜻이 함께 뚜렷하게 보이는 자료인지 확인해주세요."
     return out, ""
@@ -2750,21 +2857,33 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
     if not words:
         return {"success": False, "detail": last_error or "읽을 수 있는 단어를 찾지 못했습니다. 자료에 단어와 뜻이 함께 있는지 확인해주세요."}
 
+    # 💡 표준 양식의 '난이도' 칸처럼 단어마다 난이도가 적혀 있으면 그것을 따르고,
+    #    비어 있는 단어는 올릴 때 고른 난이도로 넣는다. 한 파일로 상·중·하를 한꺼번에.
+    by_diff = {}
+    for w in words:
+        d = w.pop("difficulty", "") or diff
+        by_diff.setdefault(normalize_vocab_difficulty(d), []).append(w)
+
     file_id = uuid.uuid4().hex[:12]
+    counts = {k: len(v) for k, v in by_diff.items()}
     await asyncio.to_thread(
         lambda: db.collection("vocab_files").document(file_id).set({
             "label": file.filename, "difficulty": diff, "count": len(words),
+            "counts": counts,
             "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
     )
-    chunks = [words[i:i + VOCAB_CHUNK_SIZE] for i in range(0, len(words), VOCAB_CHUNK_SIZE)] or [[]]
-    for i, chunk in enumerate(chunks):
-        await asyncio.to_thread(
-            lambda i=i, chunk=chunk: db.collection("vocab_words").document(f"{file_id}_{i:03d}").set({
-                "file_id": file_id, "difficulty": diff, "words": chunk,
-            })
-        )
-    return {"success": True, "file_id": file_id, "count": len(words)}
+    seq = 0
+    for d_key, group in by_diff.items():
+        chunks = [group[i:i + VOCAB_CHUNK_SIZE] for i in range(0, len(group), VOCAB_CHUNK_SIZE)] or [[]]
+        for chunk in chunks:
+            await asyncio.to_thread(
+                lambda seq=seq, chunk=chunk, d_key=d_key: db.collection("vocab_words").document(f"{file_id}_{seq:03d}").set({
+                    "file_id": file_id, "difficulty": d_key, "words": chunk,
+                })
+            )
+            seq += 1
+    return {"success": True, "file_id": file_id, "count": len(words), "counts": counts}
 
 
 @app.get("/api/admin/vocab/files", dependencies=[Depends(verify_admin)])
@@ -2775,7 +2894,13 @@ def list_vocab_files():
     rows.sort(key=lambda r: str(r.get("uploaded_at", "")), reverse=True)
     counts = {"high": 0, "mid": 0, "low": 0}
     for r in rows:
-        counts[normalize_vocab_difficulty(r.get("difficulty"))] += int(r.get("count", 0) or 0)
+        # 한 파일 안에 난이도가 섞여 있으면 그 내역대로, 없으면 파일 난이도로 센다
+        per_file = r.get("counts") or {}
+        if per_file:
+            for k, v in per_file.items():
+                counts[normalize_vocab_difficulty(k)] += int(v or 0)
+        else:
+            counts[normalize_vocab_difficulty(r.get("difficulty"))] += int(r.get("count", 0) or 0)
     return {"success": True, "files": rows, "counts": counts}
 
 
@@ -4677,9 +4802,45 @@ TENDENCY_SETS = {
 
 DEFAULT_TENDENCY_SET = "korean"
 
+# 💡 기존 4종(과목별 성향)은 '공통'으로 두고, 원장님이 주신 학교급·영역별 진단
+#    설문지 16종(초등·중등·고등·재수N수 × 국어·수학·영어·학습태도, 각 27문항)을 함께 싣는다.
+#    학년이 다르면 물어볼 것도 달라서, 화면에서는 학교급으로 묶어 고르게 한다.
+for _k, _s in TENDENCY_SETS.items():
+    _s.setdefault("stage", "common")
+    _s.setdefault("stage_name", "공통")
+    _s.setdefault("subject", _k)
+
+try:
+    from diagnostic_sets import DIAGNOSTIC_SETS
+    TENDENCY_SETS.update(DIAGNOSTIC_SETS)
+except Exception as _e:   # 진단 설문지 파일이 없어도 나머지 기능은 그대로 돌아가야 한다
+    print("진단 설문지를 불러오지 못했습니다:", _e)
+
+STAGE_ORDER = ["common", "elem", "mid", "high", "repeat"]
+
 
 def get_tendency_set(key: str) -> dict:
     return TENDENCY_SETS.get(str(key or "").strip(), TENDENCY_SETS[DEFAULT_TENDENCY_SET])
+
+
+def tendency_weak_items(set_key: str, answers: dict, limit: int = 6) -> list:
+    """가장 낮게 답한 문항들 — 축 점수만으로는 안 보이는 '무엇이 약한지'를 짚어준다."""
+    tset = get_tendency_set(set_key)
+    axis_names = {a["key"]: a["name"] for a in tset["axes"]}
+    rows = []
+    for q in tset["questions"]:
+        raw = (answers or {}).get(str(q["id"]), (answers or {}).get(q["id"]))
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            continue
+        v = max(1, min(5, v))
+        if q.get("reverse"):
+            v = 6 - v
+        rows.append({"id": q["id"], "text": q["text"], "score": v,
+                     "axis": q["axis"], "axis_name": axis_names.get(q["axis"], "")})
+    rows.sort(key=lambda r: (r["score"], r["id"]))
+    return [r for r in rows if r["score"] <= 3][:limit]
 
 
 # 예전 코드가 쓰던 이름 — 국어 검사지를 가리킨다
@@ -5348,6 +5509,10 @@ def fmt_tendency_block(view: dict) -> str:
         name = t.get("set_name") or get_tendency_set(key)["name"]
         out.append(f"[{name}] ({t.get('submitted_at', '')})")
         out += [f"  - {a['name']}: {a['score']}점 / 100 ({a['desc']})" for a in axes]
+        weak = t.get("weak_items") or []
+        if weak:
+            out.append("  낮게 답한 문항:")
+            out += [f"    · ({w.get('axis_name', '')}) {w.get('text', '')}" for w in weak[:6]]
         if t.get("analysis"):
             out.append(f"  해석: {t['analysis'][:600]}")
     return "\n".join(out) if out else "- 학습 성향 검사 미실시"
@@ -5370,11 +5535,19 @@ def fmt_log_block(view: dict) -> str:
 @app.get("/api/counsel/tendency_sets")
 def get_tendency_sets():
     """어떤 검사지가 있는지 목록만 (문항은 빼고)."""
-    return {"success": True, "sets": [
+    sets = [
         {"key": s["key"], "name": s["name"], "icon": s["icon"], "desc": s["desc"],
+         "stage": s.get("stage", "common"), "stage_name": s.get("stage_name", "공통"),
+         "subject": s.get("subject", ""),
          "count": len(s["questions"]), "axes": [a["name"] for a in s["axes"]]}
         for s in TENDENCY_SETS.values()
-    ]}
+    ]
+    sets.sort(key=lambda s: (STAGE_ORDER.index(s["stage"]) if s["stage"] in STAGE_ORDER else 9, s["key"]))
+    stages = []
+    for s in sets:
+        if not any(g["key"] == s["stage"] for g in stages):
+            stages.append({"key": s["stage"], "name": s["stage_name"]})
+    return {"success": True, "sets": sets, "stages": stages}
 
 
 @app.get("/api/counsel/tendency_questions")
@@ -5442,6 +5615,8 @@ async def submit_tendency(req: TendencySubmitReq):
         "set": tset["key"], "set_name": tset["name"],
         "answers": {str(k): v for k, v in (req.answers or {}).items()},
         "axes": axes,
+        # 축 점수만으로는 '무엇이' 약한지 안 보여서, 낮게 답한 문항도 함께 남긴다
+        "weak_items": tendency_weak_items(tset["key"], req.answers or {}),
         "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "analysis": "",
     }
