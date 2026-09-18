@@ -6678,29 +6678,79 @@ def _guess_header_row(rows) -> int:
 # ── 입결 자료 표준 양식 ──────────────────────────────────
 # 💡 쓰시던 엑셀을 그대로 올려 열을 하나하나 짝지어도 되지만, 매번 짝짓는 게 번거롭다.
 # 아래 표준 양식대로 채워 오면 열 짝짓기가 자동으로 끝난다 — 그 '기준이 되는 틀'.
+# 수시와 정시는 보는 숫자가 달라서(수시: 인원·수능최저·경쟁률 / 정시: 영어등급) 양식을 나눴다.
 # (key, 열 이름, 필수 여부, 예시, 설명)
-UNIV_TEMPLATE_COLUMNS = [
-    ("univ", "대학", True, "중앙대학교",
-     "대학 이름. '중앙대', '중앙대학교' 어느 쪽이든 괜찮습니다. 캠퍼스가 다르면 '고려대학교(세종)'처럼 적어주세요."),
-    ("major", "학과", True, "미디어커뮤니케이션학부",
-     "모집단위·학과 이름."),
-    ("type", "전형", False, "학생부교과(지역균형)",
-     "전형 이름. 교과/종합/논술/정시 등 구분이 드러나면 좋습니다."),
-    ("track", "계열", False, "인문",
-     "인문 / 자연 / 예체능 등."),
-    ("region", "소재지", False, "서울 동작구",
-     "이 칸을 채우면 학생의 지원 가능 대학이 지도 위에 표시됩니다. '서울 동작구'처럼 시도와 시군구를 함께 적으면 가장 정확합니다."),
-    ("year", "연도", False, "2026",
-     "이 입결이 어느 학년도 자료인지."),
-    ("cut", "기준점수", True, "2.1",
-     "합격선으로 삼을 숫자 하나. 70%컷이든 평균이든, 그 학원에서 쓰는 기준 하나로 통일해 적어주세요."),
-    ("metric_col", "점수종류", False, "등급",
-     "위 기준점수가 무엇인지 — 등급 / 백분위 / 점수 중 하나. 비워두면 아래 '전체 점수 종류' 선택을 따릅니다."),
-    ("eng", "영어등급", False, "2",
-     "영어 최저등급 등 영어 기준이 있으면."),
-    ("note", "비고", False, "수능최저 3합 7",
-     "그 밖에 상담 때 같이 보고 싶은 내용."),
-]
+_COL_UNIV = ("univ", "대학", True, "중앙대학교",
+             "대학 이름. '중앙대', '중앙대학교' 어느 쪽이든 괜찮습니다. 캠퍼스가 다르면 '고려대학교(세종)'처럼 적어주세요.")
+_COL_REGION = ("region", "소재지", False, "서울 동작구",
+               "이 칸을 채우면 학생의 지원 가능 대학이 지도 위에 표시됩니다. '서울 동작구'처럼 시도와 시군구를 함께 적으면 가장 정확합니다.")
+_COL_MAJOR = ("major", "학과", True, "미디어커뮤니케이션학부", "모집단위·학과 이름.")
+_COL_YEAR = ("year", "연도", False, "2026", "이 입결이 어느 학년도 자료인지.")
+_COL_NOTE = ("note", "비고", False, "", "그 밖에 상담 때 같이 보고 싶은 내용.")
+
+UNIV_TEMPLATES = {
+    "susi": {
+        "label": "수시",
+        "filename": "입결자료_수시양식.xlsx",
+        "columns": [
+            _COL_UNIV, _COL_REGION, _COL_MAJOR,
+            ("type", "전형", False, "학생부교과(지역균형)", "전형 이름. 교과 / 종합 / 논술 등."),
+            ("quota", "인원", False, "12", "모집 인원."),
+            ("cut50", "50%컷", False, "1.9", "합격자 50%컷(중간) 등급."),
+            ("cut70", "70%컷", True, "2.1", "합격자 70%컷 등급. 합격선 판단의 기준으로 씁니다."),
+            ("min_suneung", "수능최저", False, "국수영탐 3합 7",
+             "수능 최저학력기준. 적어두면 상담 때 학과마다 함께 보여줍니다."),
+            ("rate", "경쟁률", False, "12.4", "경쟁률. 숫자만 적어주세요(예: 12.4)."),
+            _COL_YEAR, _COL_NOTE,
+        ],
+        "samples": [
+            {"univ": "중앙대학교", "region": "서울 동작구", "major": "미디어커뮤니케이션학부",
+             "type": "학생부교과(지역균형)", "quota": "12", "cut50": "1.9", "cut70": "2.1",
+             "min_suneung": "국수영탐 3합 7", "rate": "12.4", "year": "2026", "note": ""},
+            {"univ": "아주대학교", "region": "경기 수원시 영통구", "major": "경영학과",
+             "type": "학생부종합(ACE)", "quota": "20", "cut50": "2.4", "cut70": "2.7",
+             "min_suneung": "없음", "rate": "9.8", "year": "2026", "note": ""},
+        ],
+        "tips": [
+            "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
+            "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
+            "● 합격선은 70%컷을 기준으로 판단합니다. 70%컷이 없으면 50%컷으로 대신합니다.",
+            "● 수시 자료는 학생의 내신 등급과 견줍니다. 등급이 아닌 점수로 적으실 거면 올릴 때 '점수 종류'를 바꿔주세요.",
+            "● 소재지를 채우면 상담 화면 지도에 지원 가능 대학이 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
+            "● 논술 자료는 올릴 때 '논술'을 골라주세요. 같은 양식을 그대로 쓰시면 됩니다.",
+        ],
+    },
+    "jeongsi": {
+        "label": "정시",
+        "filename": "입결자료_정시양식.xlsx",
+        "columns": [
+            _COL_UNIV, _COL_REGION, _COL_MAJOR,
+            ("type", "전형", False, "수능위주(일반전형)", "전형 이름."),
+            ("cut50", "50%컷", False, "89.5", "합격자 50%컷(중간)."),
+            ("cut70", "70%컷", True, "88.0", "합격자 70%컷. 합격선 판단의 기준으로 씁니다."),
+            ("eng", "영어등급", False, "2", "영어 반영·최저 등급."),
+            _COL_YEAR, _COL_NOTE,
+        ],
+        "samples": [
+            {"univ": "부산대학교", "region": "부산 금정구", "major": "경영학과",
+             "type": "수능위주(일반전형)", "cut50": "89.5", "cut70": "88.0", "eng": "2",
+             "year": "2026", "note": "국수영탐 백분위 평균"},
+            {"univ": "충남대학교", "region": "대전 유성구", "major": "행정학부",
+             "type": "수능위주(일반전형)", "cut50": "85.0", "cut70": "83.5", "eng": "3",
+             "year": "2026", "note": ""},
+        ],
+        "tips": [
+            "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
+            "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
+            "● 합격선은 70%컷을 기준으로 판단합니다. 70%컷이 없으면 50%컷으로 대신합니다.",
+            "● 정시 자료는 학생의 수능 백분위(또는 원점수)와 견줍니다. 올릴 때 '점수 종류'를 백분위/점수 중 맞는 것으로 골라주세요.",
+            "● 소재지를 채우면 상담 화면 지도에 지원 가능 대학이 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
+        ],
+    },
+}
+
+# 예전 이름 — 수시 양식을 가리킨다
+UNIV_TEMPLATE_COLUMNS = UNIV_TEMPLATES["susi"]["columns"]
 
 # 자동 짝짓기용 — 열 이름에 이 낱말이 들어 있으면 그 자리로 본다
 UNIV_HEADER_HINTS = {
@@ -6710,6 +6760,11 @@ UNIV_HEADER_HINTS = {
     "track": ["계열", "모집계열", "track"],
     "region": ["소재지", "지역", "위치", "캠퍼스소재", "region"],
     "year": ["학년도", "연도", "년도", "year"],
+    "quota": ["모집인원", "인원", "선발인원", "quota"],
+    "cut70": ["70%컷", "70퍼컷", "70컷", "70%", "70cut"],
+    "cut50": ["50%컷", "50퍼컷", "50컷", "50%", "50cut", "평균등급", "중간값"],
+    "min_suneung": ["수능최저", "최저학력", "최저기준", "수능최저학력기준", "최저"],
+    "rate": ["경쟁률", "경쟁율", "지원율", "rate"],
     "cut": ["기준점수", "합격선", "등급컷", "커트", "cut", "점수"],
     "metric_col": ["점수종류", "점수구분", "기준구분", "metric"],
     "eng": ["영어등급", "영어", "eng"],
@@ -6741,57 +6796,48 @@ def guess_univ_mapping(columns: list) -> dict:
     return out
 
 
-def build_univ_template_xlsx() -> bytes:
-    """표준 양식 엑셀 파일을 만들어 돌려준다 (작성 안내 시트 포함)."""
+def build_univ_template_xlsx(kind: str = "susi") -> bytes:
+    """수시/정시 표준 양식 엑셀 파일을 만들어 돌려준다 (작성 안내 시트 포함)."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
+    spec = UNIV_TEMPLATES.get(kind) or UNIV_TEMPLATES["susi"]
+    columns = spec["columns"]
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "입결자료"
+    ws.title = f"{spec['label']}입결"
 
     head_fill = PatternFill("solid", fgColor="1F3864")
     req_fill = PatternFill("solid", fgColor="C00000")
     white_bold = Font(color="FFFFFF", bold=True, size=11)
 
-    for i, (_key, label, required, example, _desc) in enumerate(UNIV_TEMPLATE_COLUMNS, start=1):
+    for i, (_key, label, required, _example, _desc) in enumerate(columns, start=1):
         cell = ws.cell(row=1, column=i, value=label + ("*" if required else ""))
         cell.fill = req_fill if required else head_fill
         cell.font = white_bold
         cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.column_dimensions[cell.column_letter].width = max(12, min(28, len(label) * 2 + 8))
-        ws.cell(row=2, column=i, value=example)
+        ws.column_dimensions[cell.column_letter].width = max(12, min(30, len(label) * 2 + 9))
+    for r, sample in enumerate(spec["samples"], start=2):
+        for i, (key, *_rest) in enumerate(columns, start=1):
+            ws.cell(row=r, column=i, value=sample.get(key, ""))
     ws.freeze_panes = "A2"
-
-    # 두 번째 예시 줄 — 정시(백분위) 자료도 같은 틀로 적을 수 있음을 보여준다
-    second = {"univ": "부산대학교", "major": "경영학과", "type": "수능위주(일반)", "track": "인문",
-              "region": "부산 금정구", "year": "2026", "cut": "88.5", "metric_col": "백분위",
-              "eng": "2", "note": "국수영탐 백분위 평균"}
-    for i, (key, *_rest) in enumerate(UNIV_TEMPLATE_COLUMNS, start=1):
-        ws.cell(row=3, column=i, value=second.get(key, ""))
 
     guide = wb.create_sheet("작성안내")
     guide.column_dimensions["A"].width = 16
     guide.column_dimensions["B"].width = 10
-    guide.column_dimensions["C"].width = 22
+    guide.column_dimensions["C"].width = 24
     guide.column_dimensions["D"].width = 86
     for i, text in enumerate(["열 이름", "필수", "예시", "설명"], start=1):
         c = guide.cell(row=1, column=i, value=text)
         c.fill = head_fill
         c.font = white_bold
-    for r, (_key, label, required, example, desc) in enumerate(UNIV_TEMPLATE_COLUMNS, start=2):
+    for r, (_key, label, required, example, desc) in enumerate(columns, start=2):
         guide.cell(row=r, column=1, value=label)
         guide.cell(row=r, column=2, value="필수" if required else "선택")
         guide.cell(row=r, column=3, value=example)
         guide.cell(row=r, column=4, value=desc)
-    tail = len(UNIV_TEMPLATE_COLUMNS) + 3
-    for r, line in enumerate([
-        "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
-        "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
-        "● 수시 자료와 정시 자료는 파일을 따로 만들어 올려주세요. 올릴 때 수시/정시를 고르게 되어 있습니다.",
-        "● 파일을 여러 개로 나눠 올려도 됩니다. 두 번째 파일부터는 '덧붙이기'가 자동으로 켜집니다.",
-        "● 소재지를 채우면 상담 화면에서 지원 가능 대학이 지도 위에 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
-    ], start=tail):
+    for r, line in enumerate(spec["tips"], start=len(columns) + 3):
         guide.cell(row=r, column=1, value=line)
 
     buf = io.BytesIO()
@@ -6800,12 +6846,13 @@ def build_univ_template_xlsx() -> bytes:
 
 
 @app.get("/api/admin/univ_table/template", dependencies=[Depends(verify_admin)])
-def download_univ_template():
+def download_univ_template(kind: str = "susi"):
+    key = "jeongsi" if normalize_univ_kind(kind) == "jeongsi" else "susi"
     try:
-        data = build_univ_template_xlsx()
+        data = build_univ_template_xlsx(key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"양식을 만들지 못했습니다: {e}")
-    fname = urllib.parse.quote("입결자료_표준양식.xlsx".encode("utf-8"))
+    fname = urllib.parse.quote(UNIV_TEMPLATES[key]["filename"].encode("utf-8"))
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -6851,13 +6898,17 @@ async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form("")
 
     # 열 이름만 보고 자동으로 짝지어 본다 — 표준 양식이면 이것만으로 끝난다
     auto = guess_univ_mapping(columns)
-    required = [k for k, _l, req, *_x in UNIV_TEMPLATE_COLUMNS if req]
-    is_template = all(k in auto for k in required)
+    is_template, template_kind = False, ""
+    for key, spec in UNIV_TEMPLATES.items():
+        required = [k for k, _l, req, *_x in spec["columns"] if req]
+        if all(k in auto for k in required):
+            is_template, template_kind = True, key
+            break
 
     return {"success": True, "sheets": sheets, "sheet": sheet or (sheets[0] if sheets else ""),
             "header_row": hidx, "header_span": span, "columns": columns, "sample": sample,
             "row_count": total, "filename": file.filename, "head_preview": head_preview,
-            "auto_mapping": auto, "is_template": is_template}
+            "auto_mapping": auto, "is_template": is_template, "template_kind": template_kind}
 
 
 @app.post("/api/admin/univ_table/import", dependencies=[Depends(verify_admin)])
@@ -6922,7 +6973,11 @@ async def import_univ_table(
     entries, skipped = [], 0
     for r in body:
         univ = cell(r, "univ")
-        cut = _num(cell(r, "cut"))
+        # 💡 표준 양식은 50%컷·70%컷을 따로 받는다. 합격선 판단은 70%컷을 쓰고,
+        #    70%컷이 비어 있으면 50%컷으로, 그것도 없으면 예전 '기준점수' 열로 대신한다.
+        cut70 = _num(cell(r, "cut70"))
+        cut50 = _num(cell(r, "cut50"))
+        cut = cut70 if cut70 is not None else (cut50 if cut50 is not None else _num(cell(r, "cut")))
         if not univ or cut is None:
             skipped += 1
             continue
@@ -6936,6 +6991,19 @@ async def import_univ_table(
             "kind": kind,
             "note": cell(r, "note")[:120],
         }
+        if cut70 is not None:
+            e["cut70"] = round(cut70, 3)
+        if cut50 is not None:
+            e["cut50"] = round(cut50, 3)
+        quota = _num(cell(r, "quota"))
+        if quota is not None:
+            e["quota"] = int(quota)
+        rate = _num(cell(r, "rate"))
+        if rate is not None:
+            e["rate"] = round(rate, 2)
+        min_suneung = cell(r, "min_suneung")
+        if min_suneung:
+            e["min_suneung"] = min_suneung[:60]
         year = cell(r, "year")
         if year:
             e["year"] = year[:10]
@@ -7040,6 +7108,8 @@ SIDO_CODES = {
     "전북": "35", "전남": "36", "경북": "37", "경남": "38", "제주": "39",
 }
 SIDO_NAMES = {v: k for k, v in SIDO_CODES.items()}
+# 특별시·광역시·특별자치시 — 이 안의 시군구는 구/군이라 이름이 '시'로 시작하지 않는다
+METRO_SIDO = {"서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종"}
 # 길게 적힌 시도 이름도 알아듣게
 SIDO_ALIASES = {
     "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천",
@@ -7205,13 +7275,34 @@ def resolve_univ_region(univ: str, region_text: str = "") -> dict:
     txt = re.sub(r"\s+", " ", str(region_text or "")).strip()
     if txt:
         flat = txt.replace(" ", "")
-        for full, short in SIDO_ALIASES.items():
+        # 긴 이름('서울특별시')을 먼저 맞춰 보고, 그다음 짧은 이름('서울')을 본다
+        hit = None
+        for full, short in sorted(SIDO_ALIASES.items(), key=lambda kv: -len(kv[0])):
             if flat.startswith(full):
-                rest = flat[len(full):]
-                return {"sido": short, "sido_code": SIDO_CODES[short], "sigungu": rest, "source": "file"}
-        for short, code in SIDO_CODES.items():
-            if flat.startswith(short):
-                return {"sido": short, "sido_code": code, "sigungu": flat[len(short):], "source": "file"}
+                hit = (short, flat[len(full):])
+                break
+        if hit is None:
+            for short, code in SIDO_CODES.items():
+                if flat.startswith(short):
+                    rest = flat[len(short):]
+                    # 💡 '서울시 동작구'처럼 짧은 이름 뒤에 시/도가 더 붙어 오면 그것까지 떼야
+                    #    '동작구'가 남는다. 안 떼면 '시동작구'가 되어 지도에서 짝을 못 찾는다.
+                    #    다만 도(道)에서는 '경기 시흥시'처럼 시군구 이름이 '시'로 시작할 수 있어
+                    #    '도'만 떼고 '시'는 건드리지 않는다.
+                    tails = ("특별자치시", "광역시", "특별시", "시") if short in METRO_SIDO \
+                        else ("특별자치도", "도")
+                    for tail in tails:
+                        if rest.startswith(tail):
+                            rest = rest[len(tail):]
+                            break
+                    hit = (short, rest)
+                    break
+        if hit:
+            short, rest = hit
+            # 세종은 시 전체가 하나의 시군구다 — 소재지를 '세종시'라고만 적어도 지도에 얹힌다
+            if short == "세종" and not rest:
+                rest = "세종시"
+            return {"sido": short, "sido_code": SIDO_CODES[short], "sigungu": rest, "source": "file"}
 
     for key in univ_lookup_keys(univ):
         hit = UNIV_REGIONS.get(key)
@@ -7240,7 +7331,10 @@ def get_univ_map(req: UnivMapReq):
 
     view = build_counsel_view(name)
     mine_all = student_scores(view)
-    kind = normalize_univ_kind(req.kind)
+    # 💡 '전체'로 보면 수시·논술·정시를 한 지도 위에 서로 다른 색으로 함께 본다
+    want_all = str(req.kind).strip().lower() in ("all", "전체", "함께")
+    kind = "all" if want_all else normalize_univ_kind(req.kind)
+    kinds = list(UNIV_KINDS) if want_all else [kind]
 
     # 💡 견줄 성적이 아예 없으면 지도가 텅 비어 나온다 — 왜 비었는지 먼저 알려준다
     if kind == "susi" and mine_all["grade"] is None:
@@ -7248,21 +7342,23 @@ def get_univ_map(req: UnivMapReq):
     if kind == "jeongsi" and mine_all["percentile"] is None and mine_all["score"] is None:
         return {"success": False, "detail": "모의고사 백분위(또는 원점수)가 입력되어 있지 않아 정시 지원 가능 대학을 계산할 수 없습니다. 모의고사 성적을 먼저 입력해주세요."}
     # 논술 입결은 자료마다 기준이 내신 등급일 수도, 논술·수능 점수일 수도 있어 둘 다 본다
-    if kind == "nonsul" and all(mine_all[k] is None for k in ("grade", "percentile", "score")):
-        return {"success": False, "detail": "견줄 성적이 없어 논술 지원 가능 대학을 계산할 수 없습니다. 내신이나 모의고사 성적을 먼저 입력해주세요."}
+    if kind in ("nonsul", "all") and all(mine_all[k] is None for k in ("grade", "percentile", "score")):
+        return {"success": False, "detail": "견줄 성적이 없어 지원 가능 대학을 계산할 수 없습니다. 내신이나 모의고사 성적을 먼저 입력해주세요."}
 
-    # 대학 하나로 묶는다 — 같은 대학의 여러 학과 중 가장 가까운(잘 닿는) 줄을 대표로
+    # 대학 하나로 묶는다 — 같은 대학의 여러 학과 중 가장 가까운(잘 닿는) 줄을 대표로.
+    # 한 대학이 수시에도 정시에도 있을 수 있어 전형 갈래까지 함께 열쇠로 삼는다.
     merged = {}
     for r in rows:
-        if r.get("kind", "susi") != kind:
+        r_kind = normalize_univ_kind(r.get("kind", "susi"))
+        if r_kind not in kinds:
             continue
         item = compare_univ_row(r, mine_all)
         if not item or item["gap"] is None:
             continue
         univ = item["univ"]
-        slot = merged.setdefault(univ, {
-            "univ": univ, "total": 0, "reachable": 0,
-            "best": None, "majors": [],
+        slot = merged.setdefault((univ, r_kind), {
+            "univ": univ, "kind": r_kind, "total": 0, "reachable": 0,
+            "best": None, "majors": [], "region_text": "",
         })
         slot["total"] += 1
         if item["reach"]:
@@ -7273,18 +7369,23 @@ def get_univ_map(req: UnivMapReq):
             slot["majors"].append({
                 "major": item["major"], "type": item["type"], "cut": item["cut"],
                 "gap": item["gap"], "reach": item["reach"], "unit": item["unit"],
+                "cut50": item["cut50"], "cut70": item["cut70"],
+                "quota": item["quota"], "rate": item["rate"],
+                "min_suneung": item["min_suneung"], "eng_cut": item["eng_cut"],
             })
-        if not slot.get("region_text"):
+        if not slot["region_text"]:
             slot["region_text"] = r.get("region", "")
 
     out, unknown = [], []
-    for univ, slot in merged.items():
+    region_sources = {"file": 0, "table": 0, "unknown": 0}
+    for (univ, r_kind), slot in merged.items():
         if req.only_reachable and not slot["reachable"]:
             continue
         reg = resolve_univ_region(univ, slot.get("region_text", ""))
+        region_sources[reg["source"]] = region_sources.get(reg["source"], 0) + 1
         best = slot["best"]
         entry = {
-            "univ": univ,
+            "univ": univ, "kind": r_kind, "kind_name": UNIV_KIND_LABELS.get(r_kind, r_kind),
             "total": slot["total"], "reachable": slot["reachable"],
             "gap": best["gap"], "cut": best["cut"], "unit": best["unit"],
             "mine": best["mine"], "metric": best["metric"],
@@ -7301,18 +7402,22 @@ def get_univ_map(req: UnivMapReq):
 
     by_sido = {}
     for e in out:
-        s = by_sido.setdefault(e["sido_code"], {"sido": e["sido"], "univ_count": 0, "reachable": 0})
+        s = by_sido.setdefault(e["sido_code"], {"sido": e["sido"], "univ_count": 0, "reachable": 0,
+                                                "kinds": {}})
         s["univ_count"] += 1
         s["reachable"] += e["reachable"]
+        s["kinds"][e["kind"]] = s["kinds"].get(e["kind"], 0) + 1
 
     return {
         "success": True, "kind": kind,
+        "kinds": kinds,
         "student": name,
         "mine": mine_all,
-        "univs": out[:400], "unknown": unknown[:100],
+        "univs": out[:600], "unknown": unknown[:100],
         "by_sido": by_sido,
+        "region_sources": region_sources,
         "only_reachable": req.only_reachable,
-        "note": "수시는 내신 등급, 정시는 백분위·점수를 기준으로 견줍니다." ,
+        "note": "수시·논술은 내신 등급, 정시는 백분위·점수를 기준으로 견줍니다.",
     }
 
 
@@ -7364,6 +7469,9 @@ def compare_univ_row(r: dict, mine_all: dict):
         "track": r.get("track", ""), "type": r.get("type", ""),
         "year": r.get("year", ""), "kind": r.get("kind", "susi"),
         "cut": cut, "metric": metric, "unit": unit,
+        "cut50": r.get("cut50"), "cut70": r.get("cut70"),
+        "quota": r.get("quota"), "rate": r.get("rate"),
+        "min_suneung": r.get("min_suneung", ""),
         "mine": mine, "gap": gap,
         "reach": None if gap is None else gap <= 0,
         "eng_cut": r.get("eng"), "note": r.get("note", ""),
