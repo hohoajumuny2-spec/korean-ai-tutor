@@ -717,6 +717,37 @@ def safe_generate(contents, stream=False, prefer_quality=False):
     return model.generate_content(contents, stream=stream)
 
 
+def friendly_ai_error(err) -> str:
+    """구글 AI가 돌려주는 영어 오류를 무슨 일인지 바로 알 수 있는 말로 바꾼다.
+    💡 '429 Your prepayment credits are depleted...' 같은 문구가 그대로 화면에 떠서
+       결제 문제인지 프로그램 문제인지 구분할 수 없던 적이 있다. 원문도 함께 남겨
+       원인 추적은 그대로 되게 한다."""
+    raw = str(err or "").strip()
+    low = raw.lower()
+
+    if "prepayment credits are depleted" in low or "billing" in low and "credit" in low:
+        head = ("AI 사용 크레딧이 모두 떨어졌습니다. 프로그램 문제가 아니라 결제 문제입니다.\n"
+                "Google AI Studio(https://ai.studio/projects)에서 크레딧을 충전하시거나 결제 수단을 연결해주세요.\n"
+                "충전되면 출제·해설 영상·채점 등 AI 기능이 곧바로 다시 동작합니다.")
+    elif "quota" in low or "resource_exhausted" in low or "rate limit" in low or low.startswith("429"):
+        head = ("지금 AI 요청이 한도를 넘었습니다(하루 사용량 또는 분당 횟수 초과).\n"
+                "잠시 뒤 다시 시도하시거나, Google AI Studio에서 사용 한도를 올려주세요.")
+    elif "api key" in low or "permission" in low or "unauthenticated" in low or low.startswith("401") or low.startswith("403"):
+        head = ("AI 열쇠(API 키)가 없거나 권한이 없습니다. 서버 설정의 GOOGLE_API_KEY를 확인해주세요.")
+    elif "no longer available" in low or "not found" in low and "model" in low:
+        head = ("쓰던 AI 모델이 더 이상 제공되지 않습니다. 잠시 뒤 다시 시도해주세요.\n"
+                "계속 같은 오류가 나면 모델 목록을 손봐야 합니다.")
+    elif "safety" in low or "blocked" in low:
+        head = ("AI가 안전 정책을 이유로 이 자료에 대한 답을 막았습니다.\n"
+                "자료의 표현을 조금 바꾸거나 일부를 덜어내고 다시 시도해주세요.")
+    elif "deadline" in low or "timeout" in low or "timed out" in low:
+        head = ("AI 응답이 제한 시간을 넘겼습니다. 자료를 조금 줄여서 다시 시도해주세요.")
+    else:
+        return raw
+
+    return f"{head}\n\n(원래 오류: {raw[:300]})"
+
+
 # ─────────────────────────────────────────────────────────
 # 간단한 요청 속도 제한 (AI 호출은 비용이 들기 때문에, 로그인 없이도 호출
 # 가능한 /api/chat, /api/essay/grade를 무제한으로 외부에서 두들기지 못하게 막는 용도)
@@ -1715,7 +1746,7 @@ async def chat_with_ai(
     except Exception as e:
         # 💡 예전엔 무슨 오류든 "AI 응답 지연"으로만 뭉뚱그려서 원인 파악이 불가능했음.
         # 실제 예외 메시지(모델 단종, 레이트리밋 등)를 그대로 보여주도록 수정.
-        return {"success": False, "reply": f"AI 응답 실패: {e}"}
+        return {"success": False, "reply": f"AI 응답 실패\n{friendly_ai_error(e)}"}
 
 
 @app.post("/api/essay/grade")
@@ -2886,7 +2917,7 @@ async def extract_vocab_words_via_ai(contents: list) -> tuple:
         resp = await asyncio.to_thread(lambda: safe_generate(contents))
         text = (resp.text or "").strip()
     except Exception as e:
-        return [], f"AI 호출 실패: {e}"
+        return [], f"AI 호출 실패\n{friendly_ai_error(e)}"
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
         preview = re.sub(r"\s+", " ", text)[:200]
@@ -3488,7 +3519,7 @@ async def run_question_job(job_id: str, params: dict):
                    question_id=saved_id,
                    done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
-        update_job(job_id, status="error", detail=f"{e}", progress="실패")
+        update_job(job_id, status="error", detail=friendly_ai_error(e)[:900], progress="실패")
 
 
 async def run_video_job(job_id: str, params: dict):
@@ -3503,7 +3534,7 @@ async def run_video_job(job_id: str, params: dict):
                    result=res.get("url", ""), meta={"title": res.get("title", ""), "video_id": res.get("id", "")},
                    done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
-        update_job(job_id, status="error", detail=f"{e}", progress="실패")
+        update_job(job_id, status="error", detail=friendly_ai_error(e)[:900], progress="실패")
 
 
 @app.post("/api/admin/jobs/questions")
@@ -3886,7 +3917,7 @@ async def generate_stream(
         try:
             model = get_best_model(prefer_quality=True)
         except Exception as e:
-            yield f"❌ AI 생성 실패: {e}"
+            yield f"❌ AI 생성 실패\n{friendly_ai_error(e)}"
             return
 
         explanations, answer_tables = [], []
@@ -3914,7 +3945,7 @@ async def generate_stream(
                     resp = await asyncio.to_thread(model.generate_content, [prompt] + source["parts"])
                     text = resp.text
                 except Exception as e:
-                    yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다: {e}"
+                    yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다.\n{friendly_ai_error(e)}"
                     return
 
                 text = await verify_and_refine(text, source, model)
@@ -4007,7 +4038,7 @@ async def generate_explainer(
                         yield chunk.text
             except Exception as stream_err:
                 # 💡 스트리밍 도중(레이트리밋, 세이프티 차단 등) 실패도 화면에 실제 사유가 보이게 함
-                yield f"\n\n❌ AI 생성 중 오류가 발생했습니다: {stream_err}"
+                yield f"\n\n❌ AI 생성 중 오류가 발생했습니다.\n{friendly_ai_error(stream_err)}"
 
         return StreamingResponse(iter_response(), media_type="text/plain")
     except Exception as e:
@@ -4016,7 +4047,7 @@ async def generate_explainer(
         err_msg = str(e)
 
         def err_response():
-            yield f"❌ AI 생성 실패: {err_msg}"
+            yield f"❌ AI 생성 실패\n{friendly_ai_error(err_msg)}"
 
         return StreamingResponse(err_response(), media_type="text/plain")
 
@@ -6536,7 +6567,7 @@ async def eval_record(req: RecordEvalReq):
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
         text = (res.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 평가 실패: {str(e)}"}
+        return {"success": False, "detail": f"AI 평가 실패\n{friendly_ai_error(e)}"}
 
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     counsel_ref(name).set({
@@ -6666,7 +6697,7 @@ async def extract_record_facts(req: RecordFactsReq):
         res = await asyncio.to_thread(lambda: safe_generate(RECORD_FACTS_PROMPT + body[:20000]))
         raw = (res.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 정리 실패: {e}"}
+        return {"success": False, "detail": f"AI 정리 실패\n{friendly_ai_error(e)}"}
 
     if raw.startswith("```"):
         raw = raw.strip("`")
@@ -6785,7 +6816,7 @@ async def extract_mock_scores(student_name: str = Form(...), text: str = Form(""
         resp = await asyncio.to_thread(lambda: safe_generate(contents))
         raw_text = (resp.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 읽기 실패: {e}"}
+        return {"success": False, "detail": f"AI 읽기 실패\n{friendly_ai_error(e)}"}
 
     match = re.search(r"\{.*\}", raw_text, re.S)
     if not match:
@@ -7347,7 +7378,7 @@ def download_univ_template(kind: str = "susi"):
 
 @app.post("/api/admin/univ_table/preview", dependencies=[Depends(verify_admin)])
 async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form(""),
-                             header_row: int = Form(-1), header_span: int = Form(1)):
+                             header_row: int = Form(-1), header_span: int = Form(0)):
     """올린 파일의 시트 목록·열 이름·앞부분 몇 줄을 돌려준다 (짝짓기 화면용)."""
     raw = await file.read()
     if not raw:
@@ -7403,7 +7434,7 @@ async def import_univ_table(
     label: str = Form(""),
     sheet: str = Form(""),
     header_row: int = Form(-1),
-    header_span: int = Form(1),
+    header_span: int = Form(0),
     append: bool = Form(False),
     kind: str = Form("susi"),
 ):
