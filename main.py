@@ -3551,6 +3551,7 @@ async def start_question_job(
     q_principle: str = Form(""),
     start_num: int = Form(1),
     source_counts: str = Form(""),
+    verify: bool = Form(True),
     title: str = Form(""),
     subject: str = Form("korean"),
     files: Optional[List[UploadFile]] = File(None),
@@ -3575,6 +3576,7 @@ async def start_question_job(
         "cnt_mid": cnt_mid, "cnt_low": cnt_low,
         "q_text": q_text, "q_texts": q_texts, "q_principle": q_principle,
         "start_num": start_num, "source_counts": source_counts,
+        "verify": verify, "subject": subject,
         "files": mem_files or None, "_": True,
     }
     job_title = title or "제목 없는 출제"
@@ -3666,15 +3668,22 @@ async def generate_stream(
     q_principle: str = Form(""),
     start_num: int = Form(1),
     source_counts: str = Form(""),
+    verify: bool = Form(True),
+    subject: str = Form("korean"),
     files: Optional[List[UploadFile]] = File(None),
     _: bool = Depends(verify_admin),
 ):
     total = cnt_killer + cnt_semi + cnt_high + cnt_mid + cnt_low
     start_num = max(1, start_num)
+    subj_key = normalize_subject(subject)
 
     # 💡 한 번에 너무 많은 문항을 요청하면 응답이 길어져 품질이 떨어지고 실패/비용 부담도 커져서,
     # 20문항씩 나눠 여러 번 요청한 뒤 결과를 합친다.
     QUESTIONS_PER_BATCH = 20
+    # 💡 글자로 된 PDF는 텍스트만 뽑아 보내면 원본을 통째로 올릴 때보다 AI에 보내는
+    #    양이 크게 줄어 사용료가 절약된다. 이 글자 수에 못 미치면 스캔본(그림)으로
+    #    보고 원본을 그대로 보여준다.
+    PDF_TEXT_MIN_CHARS = 200
 
     # 난이도를 미리 섞어둔다 — 자료마다 난이도가 골고루 섞이고,
     # 문항이 난이도 순서대로 줄 서는 것도 자연히 방지된다.
@@ -3839,11 +3848,25 @@ async def generate_stream(
         for f in files:
             if f.filename:
                 file_bytes = await f.read()
-                sources.append({
-                    "label": f.filename,
-                    "text": "",
-                    "parts": [{"mime_type": f.content_type or "application/octet-stream", "data": file_bytes}],
-                })
+                # 💡 글자 PDF는 텍스트만 뽑아 보낸다 (사용료 절약). 다만 수학은 도형·그래프가
+                #    문제의 일부라 글자만 뽑으면 문제가 어긋나므로 원본을 그대로 보여준다.
+                extracted = ""
+                if subj_key != "math" and f.filename.lower().endswith(".pdf"):
+                    try:
+                        doc = fitz.open(stream=file_bytes, filetype="pdf")
+                        extracted = "".join(page.get_text() for page in doc)
+                        doc.close()
+                    except Exception:
+                        extracted = ""
+                if len(extracted.strip()) >= PDF_TEXT_MIN_CHARS:
+                    sources.append({"label": f.filename, "text": extracted.strip(), "parts": []})
+                else:
+                    # 스캔본이거나 이미지 파일이면 원본을 그대로 보여줘야 한다
+                    sources.append({
+                        "label": f.filename,
+                        "text": "",
+                        "parts": [{"mime_type": f.content_type or "application/octet-stream", "data": file_bytes}],
+                    })
     if not sources:
         sources = [{"label": "", "text": q_text, "parts": []}]
     # 지문 하나 + 파일 없음 = 예전과 똑같은 상황이므로 자료 구분 문구를 붙이지 않는다
@@ -3920,6 +3943,16 @@ async def generate_stream(
             yield f"❌ AI 생성 실패\n{friendly_ai_error(e)}"
             return
 
+        # 💡 검수는 '초안을 지문과 대조해 고치는' 확인 작업이라 빠른 모델로도 충분하다.
+        #    출제와 같은 고급 모델로 검수까지 하면 사용료가 그대로 두 배가 되므로,
+        #    검수만 빠른 모델로 돌려 품질은 지키면서 비용을 크게 줄인다.
+        verify_model = model
+        if verify:
+            try:
+                verify_model = get_best_model(prefer_quality=False)
+            except Exception:
+                verify_model = model
+
         explanations, answer_tables = [], []
         cursor = start_num
         tier_cursor = 0
@@ -3948,7 +3981,8 @@ async def generate_stream(
                     yield f"\n\n❌ {cursor}번부터 출제하는 중 오류가 발생했습니다.\n{friendly_ai_error(e)}"
                     return
 
-                text = await verify_and_refine(text, source, model)
+                if verify:
+                    text = await verify_and_refine(text, source, verify_model)
                 body, expl, table = split_sections(text)
                 if body:
                     yield body + "\n\n"
