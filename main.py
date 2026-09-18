@@ -3459,7 +3459,7 @@ async def run_question_job(job_id: str, params: dict):
 
     buf, last_saved = [], time.time()
     try:
-        resp = await generate_stream(**params)
+        resp = await generate_stream(**{k: v for k, v in params.items() if k != "_job_meta"})
         async for chunk in resp.body_iterator:
             buf.append(chunk)
             # 💡 끝날 때만 저장하면 "지금 뭐가 만들어지고 있는지" 볼 방법이 없다.
@@ -3475,7 +3475,17 @@ async def run_question_job(job_id: str, params: dict):
             update_job(job_id, status="error", detail=text.strip()[:500], progress="실패")
             return
         n = count_questions(text)
+        # 💡 여러 개를 동시에 맡기면 화면은 하나밖에 못 따라간다. 화면이 보고 있든 아니든
+        #    서버가 끝나는 즉시 보관함에 넣어, 어느 것도 잃어버리지 않게 한다.
+        saved_id = ""
+        try:
+            meta = params.get("_job_meta") or {}
+            saved_id = await asyncio.to_thread(
+                store_question_bank, meta.get("title", ""), text, meta.get("subject", "korean"))
+        except Exception as e:
+            print("출제 결과 보관함 저장 실패:", e)
         update_job(job_id, status="done", result=text, partial="", progress=f"{n}문항 완성",
+                   question_id=saved_id,
                    done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
         update_job(job_id, status="error", detail=f"{e}", progress="실패")
@@ -3511,6 +3521,7 @@ async def start_question_job(
     start_num: int = Form(1),
     source_counts: str = Form(""),
     title: str = Form(""),
+    subject: str = Form("korean"),
     files: Optional[List[UploadFile]] = File(None),
     name: str = Depends(current_admin_name),
 ):
@@ -3535,10 +3546,14 @@ async def start_question_job(
         "start_num": start_num, "source_counts": source_counts,
         "files": mem_files or None, "_": True,
     }
+    job_title = title or "제목 없는 출제"
+    subj = normalize_subject(subject)
     job_id = await asyncio.to_thread(
-        create_job, "questions", title or "제목 없는 출제", name,
-        {"total": total, "start_num": start_num},
+        create_job, "questions", job_title, name,
+        {"total": total, "start_num": start_num, "subject": subj},
     )
+    # generate_stream 에 넘길 인자와 섞이지 않게, 작업용 정보는 따로 담아 둔다
+    params["_job_meta"] = {"title": job_title, "subject": subj}
     asyncio.create_task(run_question_job(job_id, params))
     return {"success": True, "job_id": job_id}
 
@@ -4957,11 +4972,20 @@ def save_question_admin(req: QuestionSaveReq):
             sync_knowledge_from_source(f"qbank_{req.id.strip()}", f"[출제] {title}", req.content, subject, "question_bank")
             return {"success": True, "id": req.id.strip(), "updated": True}
 
+    return {"success": True, "id": store_question_bank(title, req.content, subject), "updated": False}
+
+
+def store_question_bank(title: str, content: str, subject: str) -> str:
+    """출제본을 문제 보관함에 새로 넣고, AI 학습 자료에도 반영한다.
+    화면에서 저장할 때와 작업(백그라운드 출제)이 끝났을 때 같은 길을 쓴다."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subject = normalize_subject(subject)
+    title = (title or "").strip() or "제목 없음"
     _, ref = db.collection("questions").add(
-        {"title": title, "content": req.content, "subject": subject, "created_at": now}
+        {"title": title, "content": content, "subject": subject, "created_at": now}
     )
-    sync_knowledge_from_source(f"qbank_{ref.id}", f"[출제] {title}", req.content, subject, "question_bank")
-    return {"success": True, "id": ref.id, "updated": False}
+    sync_knowledge_from_source(f"qbank_{ref.id}", f"[출제] {title}", content, subject, "question_bank")
+    return ref.id
 
 @app.get("/api/admin/questions", dependencies=[Depends(verify_admin)])
 def get_questions_admin(subject: str = ""):
