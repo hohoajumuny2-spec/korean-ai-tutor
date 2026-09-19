@@ -1134,14 +1134,16 @@ def get_wrong_questions(student_name: str, limit: int = 30):
     for r in rows:
         wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
         unsure = {int(u) for u in (r.get("unsure") or []) if _num(u) is not None}
-        if not wrongs:
-            continue
         kind = r.get("type", "")
         title = r.get("task_name", "")
-        qs = source_questions(kind, title)
         # 💡 번호만 알려주면 왜 틀렸는지 알 수 없다. 저장해둔 문항별 해설을 같이 붙여
         #    학생이 눌러서 바로 확인할 수 있게 한다.
         expl = explanations_for(kind, title)
+        # 💡 전부 맞힌 시험도 해설이 있으면 남겨 둔다 — 찍어서 맞힌 걸 되짚어 보려면
+        #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
+        if not wrongs and not expl:
+            continue
+        qs = source_questions(kind, title)
         def make_item(no):
             q = qs[no - 1] if 0 < no <= len(qs) else {}
             return {"no": no, "text": q.get("text", ""),
