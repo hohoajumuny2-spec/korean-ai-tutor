@@ -2802,7 +2802,9 @@ async def submit_quiz(req: QuizSubmitReq):
             correct_ans = str(q.get("answer", "")).strip()
             point = int(q.get("score", 0) or 0)
             total_possible += point
-            is_ok = bool(my_ans) and my_ans == correct_ans
+            # 💡 '모름'은 오답으로 채점하되 따로 표시해, 찍어서 맞힌 것과 구분한다
+            is_unsure = my_ans == UNSURE_MARK
+            is_ok = bool(my_ans) and not is_unsure and my_ans == correct_ans
             if is_ok:
                 actual_score += point
             options = [str(o) for o in (q.get("options") or [])]
@@ -2827,7 +2829,10 @@ async def submit_quiz(req: QuizSubmitReq):
                 "ans_text": pick(correct_ans),
                 "score": point,
                 "ok": is_ok,
-                "blank": not my_ans,
+                "unsure": is_unsure,
+                # 문항에 적어둔 해설 — 학생이 결과에서 바로 읽을 수 있게 함께 보낸다
+                "explanation": str(q.get("explanation", "") or "").strip()[:EXPLANATION_MAX_CHARS],
+                "blank": not my_ans and not is_unsure,
             })
 
     await asyncio.to_thread(
@@ -2844,6 +2849,7 @@ async def submit_quiz(req: QuizSubmitReq):
                 "question_count": len(details),
                 "correct_count": sum(1 for d in details if d["ok"]),
                 "wrongs": [d["no"] for d in details if not d["ok"]],
+                "unsure": [d["no"] for d in details if d.get("unsure")],
             }
         )
     )
@@ -2867,6 +2873,7 @@ async def submit_quiz(req: QuizSubmitReq):
         "correct_count": sum(1 for d in details if d["ok"]),
         "question_count": len(details),
         "wrongs": [d["no"] for d in details if not d["ok"]],
+        "unsure": [d["no"] for d in details if d.get("unsure")],
         "rank": rank,
         "question_stats": (await asyncio.to_thread(
             lambda: compute_question_stats(req.title, "타임어택 퀴즈")))["questions"],
