@@ -861,15 +861,9 @@ async def authenticate(req: AuthRequest):
     if doc.exists:
         data = doc.to_dict()
         if str(data.get("school", "")).strip() == school and normalize_grade(str(data.get("grade", ""))) == normalize_grade(grade):
-            today = datetime.now().strftime("%Y-%m-%d")
-            lvl_up = None
-            if data.get("last_login", "") != today:
-                lvl_up = level_up_info(data.get("xp", 0), XP_REWARD_LOGIN)
-                await asyncio.to_thread(
-                    lambda: db.collection("students").document(student_name).set(
-                        {"last_login": today, "xp": firestore.Increment(XP_REWARD_LOGIN)}, merge=True
-                    )
-                )
+            # 출석 점수는 한 곳에서만 계산한다 (자동 로그인 때도 같은 함수를 쓴다)
+            att = await asyncio.to_thread(grant_daily_attendance, student_name, data)
+            lvl_up = att["level_up"]
             # 💡 로그인 자체는 reports 컬렉션에 전혀 기록되지 않아, 관리자 화면의
             # "로그인 이력"이 항상 비어있던 버그 수정 — 매 로그인마다 기록을 남김
             await asyncio.to_thread(
@@ -1078,6 +1072,62 @@ def explanations_for(kind: str, title: str) -> dict:
     except Exception as e:
         print("해설 불러오기 실패:", kind, title, e)
     return {}
+
+
+def grant_daily_attendance(student_name: str, data: dict) -> dict:
+    """하루에 한 번 출석 점수를 준다. 이미 오늘 받았으면 아무것도 하지 않는다.
+
+    💡 예전에는 로그인 처리 안에만 있었다. 그런데 앱을 다시 열면 저장해둔 세션으로
+       자동 로그인되어 로그인 요청을 아예 보내지 않는다 — 그래서 매일 들어와도
+       출석 점수가 오르지 않았다. 따로 부를 수 있게 떼어냈다."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if str(data.get("last_login", "")) == today:
+        return {"granted": False, "level_up": None, "xp_gain": 0}
+    lvl_up = level_up_info(data.get("xp", 0), XP_REWARD_LOGIN)
+    db.collection("students").document(student_name).set(
+        {"last_login": today, "xp": firestore.Increment(XP_REWARD_LOGIN)}, merge=True)
+    return {"granted": True, "level_up": lvl_up, "xp_gain": XP_REWARD_LOGIN}
+
+
+class CheckinReq(BaseModel):
+    student_name: str
+    school: str = ""
+    grade: str = ""
+
+
+@app.post("/api/student/checkin")
+async def student_checkin(req: CheckinReq):
+    """저장된 세션으로 들어왔을 때도 출석 점수를 받을 수 있게 한다."""
+    if db is None:
+        return {"success": False, "granted": False}
+    name = (req.student_name or "").strip()
+    if not name:
+        return {"success": False, "granted": False}
+
+    doc = await asyncio.to_thread(lambda: db.collection("students").document(name).get())
+    if not doc.exists:
+        return {"success": False, "granted": False, "detail": "명단에 없는 학생입니다."}
+    data = doc.to_dict() or {}
+
+    # 이름을 바꿔 남의 점수를 올리지 못하도록 학교·학년이 맞는지 확인한다
+    if req.school and str(data.get("school", "")).strip() != req.school.strip():
+        return {"success": False, "granted": False, "detail": "학생 정보가 맞지 않습니다."}
+    if req.grade and normalize_grade(str(data.get("grade", ""))) != normalize_grade(req.grade):
+        return {"success": False, "granted": False, "detail": "학생 정보가 맞지 않습니다."}
+
+    res = await asyncio.to_thread(grant_daily_attendance, name, data)
+    if res["granted"]:
+        # 출석 기록도 하루에 한 번만 남긴다 (예전에는 열 때마다 쌓여 기록이 넘쳤다)
+        await asyncio.to_thread(lambda: db.collection("reports").add({
+            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "student_name": name,
+            "school": data.get("school", ""),
+            "grade": data.get("grade", ""),
+            "task_name": "출석",
+            "type": "로그인",
+            "score": "",
+        }))
+    return {"success": True, **res}
 
 
 # 점수가 매겨지는 기록만 — '로그인'·'룰렛' 같은 기록은 복습 대상이 아니다
