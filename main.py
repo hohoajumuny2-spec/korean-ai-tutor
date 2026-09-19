@@ -4859,6 +4859,90 @@ class GradeForStudentReq(BaseModel):
     overwrite: bool = True     # 이미 낸 기록이 있으면 지우고 다시 채점
 
 
+@app.get("/api/admin/task_results", dependencies=[Depends(verify_admin)])
+def task_results(title: str, kind: str = "모의고사"):
+    """한 시험(또는 과제·퀴즈)을 치른 학생들의 점수와 틀린 문항을 모아 준다.
+
+    💡 지금까지는 학생이 자기 결과만 볼 수 있었다. 시험을 보고 나면 원장님이
+       '누가 몇 점인지, 어느 문항을 누가 틀렸는지'를 한 화면에서 봐야 한다.
+    """
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    task = urllib.parse.unquote(title or "").strip()
+    if not task:
+        return {"success": False, "detail": "시험을 고르지 못했습니다."}
+
+    try:
+        docs = list(db.collection("reports")
+                    .where("task_name", "==", task)
+                    .where("type", "==", kind)
+                    .stream())
+    except Exception as e:
+        print("성적 모아보기 실패:", e)
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+
+    # 한 학생이 여러 번 냈으면 가장 나중 것만 본다 (문항별 통계와 같은 기준)
+    latest = {}
+    for d in docs:
+        r = d.to_dict() or {}
+        who = str(r.get("student_name", "")).strip()
+        if not who:
+            continue
+        when = str(r.get("submitted_at", ""))
+        if who not in latest or when >= latest[who][0]:
+            latest[who] = (when, r)
+
+    expl = explanations_for(kind, task)
+
+    rows = []
+    for who, (when, r) in latest.items():
+        wrongs = sorted(int(w) for w in (r.get("wrongs") or []) if _num(w) is not None)
+        unsure = sorted(int(u) for u in (r.get("unsure") or []) if _num(u) is not None)
+        got = _num(r.get("score"))
+        total = _num(r.get("total_score"))
+        percent = _num(r.get("percent"))
+        if percent is None and got is not None and total:
+            percent = round(float(got) / float(total) * 100)
+        rows.append({
+            "student_name": who,
+            "school": r.get("school", ""),
+            "grade": r.get("grade", ""),
+            "submitted_at": when,
+            "score": r.get("score", ""),
+            "total_score": r.get("total_score", ""),
+            "percent": percent,
+            "correct_count": r.get("correct_count", ""),
+            "question_count": r.get("question_count", ""),
+            "wrongs": wrongs,
+            "unsure": unsure,
+        })
+
+    # 점수 높은 순 — 점수를 못 읽는 예전 기록은 뒤로 보낸다
+    def sort_key(x):
+        p = x["percent"]
+        return (0 if p is None else 1, p if p is not None else 0)
+    rows.sort(key=sort_key, reverse=True)
+
+    scored = [x["percent"] for x in rows if x["percent"] is not None]
+    summary = {
+        "count": len(rows),
+        "avg": round(sum(scored) / len(scored), 1) if scored else None,
+        "highest": max(scored) if scored else None,
+        "lowest": min(scored) if scored else None,
+        "unsure_total": sum(len(x["unsure"]) for x in rows),
+    }
+
+    stats = compute_question_stats(task, kind, with_names=True)
+    for q in stats.get("questions", []):
+        q["explanation"] = expl.get(str(q["no"]), "")
+
+    return {"success": True, "title": task, "kind": kind,
+            "students": rows, "summary": summary,
+            "questions": stats.get("questions", []),
+            "submitted": stats.get("submitted", 0)}
+
+
 @app.post("/api/admin/grade_for_student", dependencies=[Depends(verify_admin)])
 async def grade_for_student(req: GradeForStudentReq):
     if db is None:
