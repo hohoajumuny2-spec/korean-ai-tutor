@@ -1004,6 +1004,73 @@ def get_student_profile(student_name: str):
     return {"success": True, "profile": profile, "reports": reports, "level_info": compute_level_info(profile.get("xp"))}
 
 
+EXPLANATION_MAX_CHARS = 1200      # 문항 하나당 해설 길이 상한
+
+
+def parse_explanation_map(raw) -> dict:
+    """문항 번호 -> 해설 글 묶음을 안전하게 정리한다.
+    문자열(JSON), 딕셔너리, 목록 어느 형태로 와도 {"1": "...", "2": "..."} 로 맞춘다."""
+    if not raw:
+        return {}
+    data = raw
+    if isinstance(raw, str):
+        txt = raw.strip()
+        if not txt:
+            return {}
+        try:
+            data = json.loads(txt)
+        except Exception:
+            return {}
+    out = {}
+    if isinstance(data, dict):
+        pairs = data.items()
+    elif isinstance(data, list):
+        # [{"no":1,"text":"..."}] 또는 ["1번 해설", ...] 두 형태를 모두 받는다
+        pairs = []
+        for i, item in enumerate(data):
+            if isinstance(item, dict):
+                pairs.append((item.get("no", i + 1), item.get("text", item.get("explanation", ""))))
+            else:
+                pairs.append((i + 1, item))
+    else:
+        return {}
+    for k, v in pairs:
+        num = _num(k)
+        text = str(v or "").strip()
+        if num is None or not text:
+            continue
+        n = int(num)
+        if n >= 1:
+            out[str(n)] = text[:EXPLANATION_MAX_CHARS]
+    return out
+
+
+def explanations_for(kind: str, title: str) -> dict:
+    """그 과제·시험·퀴즈에 저장해둔 문항별 해설을 꺼낸다. 없으면 빈 묶음."""
+    if db is None or not title:
+        return {}
+    try:
+        if kind in ("과제 제출", "homework"):
+            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+            return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
+        if kind in ("모의고사", "exam"):
+            d = db.collection("exams").document(sanitize_doc_id(title)).get()
+            return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
+        if kind in ("타임어택 퀴즈", "quiz"):
+            d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+            if not d.exists:
+                return {}
+            out = {}
+            for i, q in enumerate((d.to_dict() or {}).get("questions") or []):
+                txt = str(q.get("explanation", "") or "").strip()
+                if txt:
+                    out[str(i + 1)] = txt[:EXPLANATION_MAX_CHARS]
+            return out
+    except Exception as e:
+        print("해설 불러오기 실패:", kind, title, e)
+    return {}
+
+
 @app.get("/api/student/wrong_questions/{student_name}")
 def get_wrong_questions(student_name: str, limit: int = 30):
     """학생이 그동안 틀린 문항을 한자리에 모아 준다.
@@ -1057,24 +1124,40 @@ def get_wrong_questions(student_name: str, limit: int = 30):
     tasks, total_wrong = [], 0
     for r in rows:
         wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
+        unsure = {int(u) for u in (r.get("unsure") or []) if _num(u) is not None}
         if not wrongs:
             continue
         kind = r.get("type", "")
         title = r.get("task_name", "")
         qs = source_questions(kind, title)
-        items = []
-        for no in sorted(wrongs):
+        # 💡 번호만 알려주면 왜 틀렸는지 알 수 없다. 저장해둔 문항별 해설을 같이 붙여
+        #    학생이 눌러서 바로 확인할 수 있게 한다.
+        expl = explanations_for(kind, title)
+        def make_item(no):
             q = qs[no - 1] if 0 < no <= len(qs) else {}
-            items.append({"no": no, "text": q.get("text", ""),
-                          "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
-                          "options": q.get("options", [])})
+            return {"no": no, "text": q.get("text", ""),
+                    "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
+                    "options": q.get("options", []),
+                    "explanation": expl.get(str(no), ""),
+                    "is_wrong": no in wrongs,
+                    "is_unsure": no in unsure}
+
+        items = [make_item(no) for no in sorted(wrongs)]
+        # 💡 맞힌 문제도 해설을 보고 싶다는 요청이 있었다. 찍어서 맞힌 것도 있으니
+        #    전체 문항을 함께 내려주고, 화면에서 '틀린 것만/전체'로 골라 보게 한다.
+        total_q = max(len(qs), max(wrongs) if wrongs else 0,
+                      len(expl) and max(int(k) for k in expl))
+        all_items = [make_item(no) for no in range(1, total_q + 1)]
         total_wrong += len(items)
         tasks.append({
             "title": title, "type": kind,
+            "has_explanation": any(i["explanation"] for i in items),
+            "unsure_count": len(unsure),
             "submitted_at": r.get("submitted_at", ""),
             "score": r.get("score", ""),
             "subject": r.get("subject", ""),
             "wrong_count": len(items), "items": items,
+            "all_items": all_items, "question_count": len(all_items),
         })
         if len(tasks) >= max(1, min(100, limit)):
             break
@@ -1810,6 +1893,7 @@ async def create_exam(
     exam_data: str = Form(...),
     video_url: str = Form(""),
     explanation_text: str = Form(""),
+    explanations: str = Form(""),
     subject: str = Form("korean"),
     target_class: str = Form(""),
     file: Optional[UploadFile] = File(None),
@@ -2016,16 +2100,20 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
     if not parts:
         return {"success": False, "detail": "이미지를 찾지 못했습니다."}
 
-    prompt = """첨부된 이미지는 시험의 정답표(또는 해설지의 정답 부분)입니다.
-문항 번호와 그 문항의 정답을 모두 읽어내세요.
+    # 💡 해설도 '이 한 번의 호출'에서 같이 받아온다. 따로 부르면 사용료가 두 배가 된다.
+    prompt = """첨부된 이미지는 시험의 정답표 또는 해설지입니다.
+문항 번호와 그 문항의 정답을 모두 읽어내고, 해설이 적혀 있으면 해설도 함께 읽어내세요.
 
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
-- 형식: {"answers": {"1": 3, "2": 5, "3": 1}}
-- 키는 문항 번호를 큰따옴표로 감싼 문자열, 값은 1~5 사이의 정수입니다.
+- 형식: {"answers": {"1": 3, "2": 5}, "explanations": {"1": "...", "2": "..."}}
+- answers 의 키는 문항 번호를 큰따옴표로 감싼 문자열, 값은 1~5 사이의 정수입니다.
 - ①②③④⑤ 같은 원문자는 1,2,3,4,5로 바꿔서 적으세요.
 - 이미지에 보이지 않는 문항은 아예 넣지 마세요. 추측해서 채우지 마세요.
-- 주관식이거나 번호로 읽을 수 없는 문항은 건너뛰세요.
+- 주관식이거나 번호로 읽을 수 없는 문항은 answers 에서 건너뛰세요.
+- explanations 에는 이미지에 실제로 적혀 있는 해설 문장을 그대로 옮겨 적으세요.
+  해설이 없는 문항은 넣지 마세요. 없는 해설을 지어내지 마세요.
+- 해설은 문항당 400자를 넘기지 말고, 넘치면 핵심만 간추리세요.
 - 이미지가 여러 장이면 모두 합쳐서 하나의 JSON으로 만드세요."""
 
     try:
@@ -2054,6 +2142,8 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
             continue
         if num >= 1 and 1 <= val <= 5:
             answers[str(num)] = val
+
+    explanations = parse_explanation_map(parsed.get("explanations"))
 
     if not answers:
         return {"success": False, "detail": "이미지에서 문항 번호와 정답을 찾지 못했습니다."}
@@ -2089,6 +2179,7 @@ async def submit_exam(req: ExamSubmitRequest):
 
     actual_score = 0
     wrongs = []
+    unsures = []
 
     details = []
     total_possible = 0
@@ -2099,11 +2190,14 @@ async def submit_exam(req: ExamSubmitRequest):
             correct_ans = str(q.get("ans", "")).strip()
             point = int(q.get("score", 0) or 0)
             total_possible += point
-            is_ok = bool(student_ans) and student_ans == correct_ans
+            is_unsure = student_ans == UNSURE_MARK
+            is_ok = bool(student_ans) and not is_unsure and student_ans == correct_ans
             if is_ok:
                 actual_score += point
             else:
                 wrongs.append(i + 1)
+                if is_unsure:
+                    unsures.append(i + 1)
             # 💡 학생이 제출 직후 "몇 점인지, 무엇을 틀렸는지"를 바로 보려면
             #    문항별 내 답/정답/배점이 필요해서 함께 돌려준다.
             details.append({
@@ -4685,6 +4779,41 @@ def normalize_homework_kind(v) -> str:
     return "class"
 
 
+UNSURE_MARK = "?"      # 학생이 '모름'을 고른 문항
+
+
+def parse_answer_slots(raw) -> list:
+    """학생이 낸 답안을 '문항 순서 그대로' 읽는다.
+
+    💡 정답표를 읽는 parse_answer_list 는 빈 칸을 버린다("1,,3" -> ["1","3"]).
+       정답표에는 그게 맞지만 학생 답안에 쓰면 큰일 난다 — 한 문항만 비워도
+       그 뒤 답이 전부 한 칸씩 밀려 엉뚱하게 채점된다. 그래서 자리를 지키는
+       해석기를 따로 둔다. 빈 칸은 빈 칸으로, '모름'은 '?'로 남긴다."""
+    if isinstance(raw, list):
+        items = list(raw)
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            items = parsed if isinstance(parsed, list) else re.split(r"[\n,]", text)
+        except (ValueError, TypeError):
+            items = re.split(r"[\n,]", text)
+
+    circled = "①②③④⑤"
+    out = []
+    for it in items:
+        v = str(it if it is not None else "").strip()
+        if v in ("?", "모름", "몰라요", "잘 모르겠음", "잘모르겠음"):
+            out.append(UNSURE_MARK)
+            continue
+        for i, ch in enumerate(circled):      # ③ -> 3
+            v = v.replace(ch, str(i + 1))
+        out.append(v[:20])                    # 빈 칸은 빈 칸 그대로 둔다
+    return out
+
+
 def parse_answer_list(raw) -> list:
     """정답표를 목록으로 만든다. '①②③' / '1,2,3' / 줄바꿈 — 어떻게 적어도 받는다."""
     if isinstance(raw, list):
@@ -4729,6 +4858,44 @@ def parse_answer_list(raw) -> list:
     return out
 
 
+@app.post("/api/admin/extract_from_bank")
+async def extract_from_bank(content: str = Form(...), _: bool = Depends(verify_admin)):
+    """출제 탭에서 만든 문제 자료에서 문항별 정답과 해설을 그대로 꺼낸다.
+
+    💡 출제본에는 이미 [정답 및 해설]과 [정답표]가 들어 있다. AI를 다시 부를 이유가
+       없으므로 글을 읽어 가르기만 한다 — 사용료 0원."""
+    text = (content or "").strip()
+    if not text:
+        return {"success": False, "detail": "문제 내용을 넣어주세요."}
+
+    parsed = parse_question_bank_content(text)
+    nums = sorted(set(list(parsed["problems"].keys()) + list(parsed["answers"].keys())))
+    if not nums:
+        return {"success": False, "detail": "문항을 찾지 못했습니다. 출제 탭에서 만든 자료인지 확인해주세요."}
+
+    answers, explanations = {}, {}
+    for n in nums:
+        a = _extract_option_number(parsed["answers"].get(n, ""))
+        if a:
+            answers[str(n)] = int(a)
+        expl = str(parsed["explanations"].get(n, "") or "").strip()
+        if expl:
+            explanations[str(n)] = expl[:EXPLANATION_MAX_CHARS]
+
+    # OMR 채점에 쓰는 순서대로 늘어놓은 목록도 함께 준다 (빈 칸은 그대로 비워 둠)
+    last = max(nums)
+    answer_list = [answers.get(str(i), "") for i in range(1, last + 1)]
+
+    return {
+        "success": True,
+        "question_count": len(nums),
+        "answers": answers,
+        "answer_list": answer_list,
+        "explanations": explanations,
+        "explanation_count": len(explanations),
+    }
+
+
 @app.post("/api/admin/homework")
 async def create_homework(
     title: str = Form(...),
@@ -4736,6 +4903,7 @@ async def create_homework(
     answer_text: str = Form(""),
     kind: str = Form("class"),
     answers: str = Form(""),
+    explanations: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -4757,12 +4925,15 @@ async def create_homework(
                 "answer_file": ans_url,
                 # 정답을 넣어두면 학생이 OMR로 답만 마킹해도 그 자리에서 채점된다
                 "answers": answer_list,
+                # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
+                "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
     )
-    return {"success": True, "question_count": len(answer_list)}
+    return {"success": True, "question_count": len(answer_list),
+            "explanation_count": len(parse_explanation_map(explanations))}
 
 
 class HomeworkFileDeleteReq(BaseModel):
@@ -4822,11 +4993,17 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     if existing:
         return {"success": False, "detail": "이미 제출한 과제입니다."}
 
-    mine = parse_answer_list(req.answers or [])
-    wrongs, correct = [], 0
+    # 💡 학생 답안은 자리(문항 번호)가 생명이라 parse_answer_slots 로 읽는다.
+    #    예전에는 parse_answer_list 를 써서, 한 문항만 비워도 그 뒤가 전부 밀려
+    #    엉뚱하게 채점됐다.
+    mine = parse_answer_slots(req.answers or [])
+    wrongs, unsure, correct = [], [], 0
     for i, ans in enumerate(key):
         got = mine[i] if i < len(mine) else ""
-        if got and got == ans:
+        if got == UNSURE_MARK:
+            unsure.append(i + 1)
+            wrongs.append(i + 1)
+        elif got and got == ans:
             correct += 1
         else:
             wrongs.append(i + 1)
@@ -4842,11 +5019,16 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "homework_kind": data.get("kind", "class"),
             "score": f"{correct}/{total}",
             "percent": score, "wrongs": wrongs,
+            # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
+            "unsure": unsure,
         })
     )
     send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
+    # 💡 채점 직후가 가장 잘 기억나는 때다. 번호를 눌러 바로 해설을 볼 수 있게 함께 보낸다.
     return {"success": True, "correct": correct, "total": total, "score": score,
-            "wrongs": wrongs, "answers": key, "kind": data.get("kind", "class")}
+            "wrongs": wrongs, "unsure": unsure, "mine": mine,
+            "answers": key, "kind": data.get("kind", "class"),
+            "explanations": parse_explanation_map(data.get("explanations"))}
 
 
 @app.delete("/api/admin/homework/{title}")
