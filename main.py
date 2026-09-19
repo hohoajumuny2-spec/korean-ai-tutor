@@ -4859,6 +4859,131 @@ class GradeForStudentReq(BaseModel):
     overwrite: bool = True     # 이미 낸 기록이 있으면 지우고 다시 채점
 
 
+ACTIVITY_KINDS = {
+    "homework": ["과제 제출"],
+    "exam": ["모의고사"],
+    "quiz": ["타임어택 퀴즈"],
+    "vocab": ["영어 단어 시험"],
+    "bank": ["출제 문제"],
+    "essay": ["논술 첨삭"],
+    "all": ["과제 제출", "모의고사", "타임어택 퀴즈", "영어 단어 시험", "출제 문제", "논술 첨삭"],
+}
+
+
+def activity_percent(r: dict):
+    """기록마다 점수를 적는 방식이 달라서(2/4 · 90점 · percent) 한 가지로 맞춘다."""
+    p = _num(r.get("percent"))
+    if p is not None:
+        return round(float(p))
+    got, total = _num(r.get("score")), _num(r.get("total_score"))
+    if got is not None and total:
+        return round(float(got) / float(total) * 100)
+    correct, qn = _num(r.get("correct_count")), _num(r.get("question_count"))
+    if correct is not None and qn:
+        return round(float(correct) / float(qn) * 100)
+    # '2/4' 처럼 적힌 경우
+    raw = str(r.get("score", ""))
+    if "/" in raw:
+        a, _, b = raw.partition("/")
+        a, b = _num(a), _num(b)
+        if a is not None and b:
+            return round(float(a) / float(b) * 100)
+    return None
+
+
+@app.get("/api/admin/activity", dependencies=[Depends(verify_admin)])
+def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", title: str = ""):
+    """누가 무엇을 하고 몇 점을 받았는지 최근 순으로 모아 준다.
+
+    💡 탭마다 '내가 만든 것'만 보이고 '학생들이 그걸 해서 몇 점을 받았는지'는
+       따로 찾아다녀야 했다. 한 화면에서 바로 보이게 한다.
+    """
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    want = (kind or "all").strip()
+
+    # ── 상담은 제출 기록이 아니라 학생별 상담 자료다 ──────
+    if want == "counsel":
+        rows = []
+        try:
+            for d in db.collection("counsel").stream():
+                c = d.to_dict() or {}
+                who = str(c.get("student_name", "") or d.id).strip()
+                if student_name and who != student_name.strip():
+                    continue
+                prof = c.get("profile") or {}
+                bits = []
+                if prof.get("target_univ"):
+                    bits.append(str(prof.get("target_univ")))
+                if prof.get("target_major"):
+                    bits.append(str(prof.get("target_major")))
+                rows.append({
+                    "student_name": who,
+                    "title": " ".join(bits) or "상담 자료",
+                    "type": "상담",
+                    "score": "",
+                    "percent": None,
+                    "submitted_at": str(c.get("updated_at", "") or ""),
+                })
+        except Exception as e:
+            print("상담 현황 실패:", e)
+            return {"success": False, "detail": "상담 기록을 불러오지 못했습니다."}
+        rows.sort(key=lambda x: x["submitted_at"], reverse=True)
+        return {"success": True, "kind": want, "rows": rows[:max(1, min(500, limit))],
+                "count": len(rows)}
+
+    types_wanted = ACTIVITY_KINDS.get(want)
+    if types_wanted is None:
+        return {"success": False, "detail": "알 수 없는 종류입니다."}
+
+    try:
+        docs = list(db.collection("reports")
+                    .order_by("submitted_at", direction=firestore.Query.DESCENDING)
+                    .limit(600).stream())
+    except Exception as e:
+        print("현황 불러오기 실패:", e)
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+
+    rows = []
+    for d in docs:
+        r = d.to_dict() or {}
+        t = str(r.get("type", ""))
+        if t not in types_wanted:
+            continue
+        who = str(r.get("student_name", "")).strip()
+        if student_name and who != student_name.strip():
+            continue
+        task = str(r.get("task_name", ""))
+        if title and task != title.strip():
+            continue
+        wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
+        unsure = [int(u) for u in (r.get("unsure") or []) if _num(u) is not None]
+        rows.append({
+            "student_name": who,
+            "title": task,
+            "type": t,
+            "score": str(r.get("score", "")),
+            "total_score": str(r.get("total_score", "")),
+            "percent": activity_percent(r),
+            "submitted_at": str(r.get("submitted_at", "")),
+            "wrong_count": len(wrongs),
+            "unsure_count": len(unsure),
+        })
+        if len(rows) >= max(1, min(500, limit)):
+            break
+
+    scored = [x["percent"] for x in rows if x["percent"] is not None]
+    return {
+        "success": True, "kind": want, "rows": rows, "count": len(rows),
+        "summary": {
+            "count": len(rows),
+            "students": len({x["student_name"] for x in rows}),
+            "avg": round(sum(scored) / len(scored), 1) if scored else None,
+        },
+    }
+
+
 @app.get("/api/admin/task_results", dependencies=[Depends(verify_admin)])
 def task_results(title: str, kind: str = "모의고사"):
     """한 시험(또는 과제·퀴즈)을 치른 학생들의 점수와 틀린 문항을 모아 준다.
