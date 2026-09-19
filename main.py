@@ -4750,6 +4750,104 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
             "scene_count": scene_count, "used_ai": used_ai}
 
 
+UNSURE_REPORT_MAX_ROWS = 400      # 한 번에 훑어볼 제출 기록 수
+
+
+@app.get("/api/admin/unsure_report", dependencies=[Depends(verify_admin)])
+def unsure_report(student_name: str = "", subject: str = "", limit: int = 60):
+    """학생들이 '모르겠다'고 눌러둔 문항을 모아 준다.
+
+    💡 찍어서 맞힌 문항은 점수에 묻혀 보이지 않는다. 학생이 스스로 모른다고 표시한
+       것만 따로 모으면, 무엇을 다시 가르쳐야 할지가 그대로 드러난다.
+       · 학생 이름을 주면 그 학생이 모른다고 한 문항을 과제·시험별로 묶어 준다.
+       · 이름을 주지 않으면 여러 학생이 함께 모른 문항(다시 다뤄야 할 것)을 추려 준다.
+    """
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    name = (student_name or "").strip()
+    want_subject = normalize_subject(subject) if subject else ""
+
+    try:
+        rows = [r.to_dict() for r in db.collection("reports")
+                .order_by("submitted_at", direction=firestore.Query.DESCENDING)
+                .limit(UNSURE_REPORT_MAX_ROWS).stream()]
+    except Exception as e:
+        print("모름 모아보기 실패:", e)
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+
+    expl_cache = {}
+
+    def expl_of(kind, title):
+        key = (kind, title)
+        if key not in expl_cache:
+            expl_cache[key] = explanations_for(kind, title)
+        return expl_cache[key]
+
+    # ── 한 학생만 보는 경우 ──────────────────────────────
+    if name:
+        tasks, total = [], 0
+        for r in rows:
+            if str(r.get("student_name", "")).strip() != name:
+                continue
+            unsure = [int(u) for u in (r.get("unsure") or []) if _num(u) is not None]
+            if not unsure:
+                continue
+            kind = r.get("type", "")
+            title = r.get("task_name", "")
+            expl = expl_of(kind, title)
+            items = [{"no": no, "explanation": expl.get(str(no), "")} for no in sorted(unsure)]
+            total += len(items)
+            tasks.append({
+                "title": title, "type": kind,
+                "submitted_at": r.get("submitted_at", ""),
+                "score": r.get("score", ""),
+                "count": len(items), "items": items,
+            })
+            if len(tasks) >= max(1, min(100, limit)):
+                break
+        return {"success": True, "mode": "student", "student": name,
+                "tasks": tasks, "task_count": len(tasks), "total": total}
+
+    # ── 전체를 보는 경우: 누가 몇 개인지 + 함께 모른 문항 ──
+    per_student, spots = {}, {}
+    for r in rows:
+        unsure = [int(u) for u in (r.get("unsure") or []) if _num(u) is not None]
+        if not unsure:
+            continue
+        who = str(r.get("student_name", "")).strip() or "(이름 없음)"
+        kind = r.get("type", "")
+        title = r.get("task_name", "")
+        if want_subject and normalize_subject(r.get("subject", "korean")) != want_subject:
+            continue
+        per_student[who] = per_student.get(who, 0) + len(unsure)
+        for no in unsure:
+            key = (kind, title, no)
+            spot = spots.setdefault(key, {"type": kind, "title": title, "no": no, "students": []})
+            if who not in spot["students"]:
+                spot["students"].append(who)
+
+    students = [{"name": k, "count": v} for k, v in per_student.items()]
+    students.sort(key=lambda x: (-x["count"], x["name"]))
+
+    hot = []
+    for (kind, title, no), spot in spots.items():
+        if len(spot["students"]) < 2:      # 여러 학생이 함께 모른 것만 추린다
+            continue
+        hot.append({
+            "type": kind, "title": title, "no": no,
+            "count": len(spot["students"]),
+            "students": sorted(spot["students"])[:12],
+            "explanation": expl_of(kind, title).get(str(no), ""),
+        })
+    hot.sort(key=lambda x: (-x["count"], x["title"], x["no"]))
+
+    return {"success": True, "mode": "all",
+            "students": students[:max(1, min(200, limit))],
+            "hotspots": hot[:40],
+            "student_count": len(students), "hotspot_count": len(hot)}
+
+
 @app.get("/api/admin/explain_videos")
 def get_explain_videos(name: str = Depends(current_admin_name)):
     me = get_admin_doc(name)
