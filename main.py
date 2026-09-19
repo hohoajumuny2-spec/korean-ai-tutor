@@ -984,14 +984,18 @@ def get_student_profile(student_name: str):
     doc = db.collection("students").document(student_name).get()
     if not doc.exists:
         return {"success": False}
-    reports = [
-        r.to_dict()
-        for r in db.collection("reports")
-        .where("student_name", "==", student_name)
-        .order_by("submitted_at", direction=firestore.Query.DESCENDING)
-        .limit(100)
-        .stream()
-    ]
+    # 💡 '이름으로 거르기 + 날짜순 정렬'을 한꺼번에 시키면 Firestore 묶음 색인이
+    #    필요하다. 색인이 없으면 기록이 있는 학생에서만 터져서(빈 학생은 멀쩡해서)
+    #    원인을 찾기 어려웠다. 정렬은 여기서 직접 한다.
+    try:
+        reports = [r.to_dict() for r in db.collection("reports")
+                   .where("student_name", "==", student_name)
+                   .limit(1200).stream()]
+        reports.sort(key=lambda r: str(r.get("submitted_at", "")), reverse=True)
+        reports = reports[:100]
+    except Exception as e:
+        print("학생 기록 조회 실패:", student_name, repr(e))
+        reports = []
     profile = doc.to_dict()
     if not profile.get("subjects"):
         profile["subjects"] = ["korean"]   # 과목 등록 전 예전 학생은 국어만 듣던 학생들이었다
