@@ -1056,6 +1056,15 @@ def explanations_for(kind: str, title: str) -> dict:
         if kind in ("모의고사", "exam"):
             d = db.collection("exams").document(sanitize_doc_id(title)).get()
             return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
+        if kind in ("출제 문제", "bank"):
+            for d in db.collection("questions").stream():
+                row = d.to_dict() or {}
+                if str(row.get("title", "")).strip() != str(title).strip():
+                    continue
+                parsed = parse_question_bank_content(row.get("content", ""))
+                return {str(n): str(t).strip()[:EXPLANATION_MAX_CHARS]
+                        for n, t in parsed["explanations"].items() if str(t).strip()}
+            return {}
         if kind in ("타임어택 퀴즈", "quiz"):
             d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
             if not d.exists:
@@ -4751,6 +4760,152 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
 
 
 UNSURE_REPORT_MAX_ROWS = 400      # 한 번에 훑어볼 제출 기록 수
+
+
+# ─────────────────────────────────────────────────────────
+# 원장님이 학생 대신 채점하기
+#   💡 학생이 직접 낸 것과 기록이 똑같아야 한다. 그래서 채점 로직을 새로 짜지 않고
+#      학생용 제출 함수를 그대로 부른다. 점수·오답·모름·경험치·알림까지 전부 같은 길.
+# ─────────────────────────────────────────────────────────
+GRADE_KINDS = {
+    "homework": ("과제 제출", "과제"),
+    "exam": ("모의고사", "모의고사"),
+    "quiz": ("타임어택 퀴즈", "타임어택 퀴즈"),
+    "vocab": ("영어 단어 시험", "영어 단어 시험"),
+    "bank": ("출제 문제", "출제한 문제"),
+}
+
+
+def student_profile_for_grading(name: str) -> dict:
+    """학생 명단에서 학교·학년을 가져온다. 제출 기록에 그대로 들어가는 값이라
+    화면에서 입력받지 않고 명단을 그대로 따른다."""
+    if db is None:
+        return {}
+    doc = db.collection("students").document(sanitize_doc_id(name)).get()
+    if not doc.exists:
+        doc = db.collection("students").document(name).get()
+    return doc.to_dict() or {} if doc.exists else {}
+
+
+def drop_previous_report(name: str, title: str, kind_label: str) -> int:
+    """다시 채점할 수 있도록 예전 제출 기록을 지운다. 지운 개수를 돌려준다."""
+    if db is None:
+        return 0
+    rows = list(db.collection("reports")
+                .where("student_name", "==", name)
+                .where("task_name", "==", title)
+                .where("type", "==", kind_label)
+                .limit(20).stream())
+    for r in rows:
+        db.collection("reports").document(r.id).delete()
+    return len(rows)
+
+
+def grade_question_bank(name: str, profile: dict, title: str, content: str, answers: list) -> dict:
+    """출제한 문제(보관함)를 채점한다. 학생용 제출 경로가 따로 없는 유일한 종류라
+    여기서 채점하되, 남기는 기록의 모양은 과제·시험과 똑같이 맞춘다."""
+    parsed = parse_question_bank_content(content or "")
+    nums = sorted(parsed["answers"].keys())
+    if not nums:
+        return {"success": False, "detail": "이 자료에서 정답표를 찾지 못했습니다."}
+
+    key = []
+    for i in range(1, max(nums) + 1):
+        a = _extract_option_number(parsed["answers"].get(i, ""))
+        key.append(str(a) if a else "")
+
+    mine = parse_answer_slots(answers or [])
+    wrongs, unsure, correct, scored = [], [], 0, 0
+    for i, ans in enumerate(key):
+        if not ans:                      # 정답을 못 읽은 문항은 채점에서 뺀다
+            continue
+        scored += 1
+        got = mine[i] if i < len(mine) else ""
+        if got == UNSURE_MARK:
+            unsure.append(i + 1)
+            wrongs.append(i + 1)
+        elif got and got == ans:
+            correct += 1
+        else:
+            wrongs.append(i + 1)
+
+    percent = round(correct / scored * 100) if scored else 0
+    db.collection("reports").add({
+        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "student_name": name,
+        "school": profile.get("school", ""),
+        "grade": profile.get("grade", ""),
+        "task_name": title,
+        "type": "출제 문제",
+        "score": f"{correct}/{scored}",
+        "percent": percent,
+        "wrongs": wrongs,
+        "unsure": unsure,
+        "question_count": scored,
+        "correct_count": correct,
+    })
+    return {"success": True, "correct": correct, "total": scored, "score": percent,
+            "wrongs": wrongs, "unsure": unsure, "answers": key}
+
+
+class GradeForStudentReq(BaseModel):
+    kind: str                  # homework | exam | quiz | vocab | bank
+    title: str
+    student_name: str
+    answers: list = []
+    content: str = ""          # kind=bank 일 때 문제 자료 본문
+    overwrite: bool = True     # 이미 낸 기록이 있으면 지우고 다시 채점
+
+
+@app.post("/api/admin/grade_for_student", dependencies=[Depends(verify_admin)])
+async def grade_for_student(req: GradeForStudentReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+
+    kind = (req.kind or "").strip()
+    if kind not in GRADE_KINDS:
+        return {"success": False, "detail": "채점할 종류를 고르지 못했습니다."}
+    name = (req.student_name or "").strip()
+    title = (req.title or "").strip()
+    if not name or not title:
+        return {"success": False, "detail": "학생과 채점할 항목을 골라주세요."}
+
+    profile = await asyncio.to_thread(student_profile_for_grading, name)
+    if not profile:
+        return {"success": False, "detail": f"'{name}' 학생을 명단에서 찾지 못했습니다."}
+
+    kind_label = GRADE_KINDS[kind][0]
+    replaced = 0
+    if req.overwrite:
+        replaced = await asyncio.to_thread(drop_previous_report, name, title, kind_label)
+
+    payload = {
+        "school": profile.get("school", ""),
+        "grade": profile.get("grade", ""),
+        "student_name": name,
+        "title": title,
+        "answers": list(req.answers or []),
+    }
+
+    # 💡 학생용 제출 함수를 그대로 부른다 — 기록·경험치·알림이 전부 같은 길로 간다.
+    if kind == "homework":
+        res = await submit_homework_omr(HomeworkOmrReq(**payload))
+    elif kind == "exam":
+        res = await submit_exam(ExamSubmitRequest(**payload))
+    elif kind == "quiz":
+        res = await submit_quiz(QuizSubmitReq(**payload))
+    elif kind == "vocab":
+        res = await submit_vocab_test(VocabTestSubmitReq(**payload))
+    else:
+        res = await asyncio.to_thread(
+            grade_question_bank, name, profile, title, req.content, list(req.answers or []))
+
+    if isinstance(res, dict):
+        res = dict(res)
+        res["graded_by_admin"] = True
+        res["replaced"] = replaced
+        res["kind_label"] = kind_label
+    return res
 
 
 @app.get("/api/admin/unsure_report", dependencies=[Depends(verify_admin)])
