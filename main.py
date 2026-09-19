@@ -1930,6 +1930,8 @@ async def create_exam(
                 "ans_pdf_url": ans_pdf_url,
                 "video_url": video_url,
                 "explanation_text": explanation_text,
+                # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
+                "explanations": parse_explanation_map(explanations),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
@@ -2206,7 +2208,8 @@ async def submit_exam(req: ExamSubmitRequest):
                 "ans": correct_ans,
                 "score": point,
                 "ok": is_ok,
-                "blank": not student_ans,
+                "unsure": is_unsure,
+                "blank": not student_ans and not is_unsure,
                 "tier": str(q.get("tier", "") or ""),
             })
 
@@ -2221,6 +2224,7 @@ async def submit_exam(req: ExamSubmitRequest):
                 "type": "모의고사",
                 "score": actual_score,
                 "wrongs": wrongs,
+                "unsure": unsures,
                 "total_score": total_possible,
                 "question_count": len(details),
                 "correct_count": sum(1 for d in details if d["ok"]),
@@ -2240,6 +2244,9 @@ async def submit_exam(req: ExamSubmitRequest):
         "score": actual_score,
         "total_score": total_possible,
         "wrongs": wrongs,
+        "unsure": unsures,
+        # 💡 제출 직후가 가장 잘 기억나는 때다. 문항을 눌러 바로 해설을 볼 수 있게 함께 보낸다.
+        "explanations": parse_explanation_map(data.get("explanations")),
         "details": details,
         "correct_count": sum(1 for d in details if d["ok"]),
         "question_count": len(details),
