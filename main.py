@@ -1164,6 +1164,9 @@ def get_wrong_questions(student_name: str, limit: int = 30):
             "title": title, "type": kind,
             "has_explanation": any(i["explanation"] for i in items),
             "unsure_count": len(unsure),
+            # 다시 풀어 고친 문항은 표시해 준다 (원래 점수는 그대로 둔다)
+            "retry": r.get("retry") or {},
+            "can_retry": kind in RETRY_KINDS,
             "submitted_at": r.get("submitted_at", ""),
             "score": r.get("score", ""),
             "subject": r.get("subject", ""),
@@ -4889,6 +4892,199 @@ def activity_percent(r: dict):
         if a is not None and b:
             return round(float(a) / float(b) * 100)
     return None
+
+
+# ─────────────────────────────────────────────────────────
+# 오답 다시 풀기
+#   💡 이미 본 시험을 다시 열어 틀린 문항만 고쳐 풀고 다시 채점한다.
+#      원래 점수 기록은 그대로 두고 다시 푼 결과는 따로 쌓는다 —
+#      원장님이 보는 성적 자료가 재도전으로 바뀌면 안 되기 때문.
+# ─────────────────────────────────────────────────────────
+RETRY_KINDS = {
+    "과제 제출": "homeworks",
+    "모의고사": "exams",
+    "타임어택 퀴즈": "quizzes",
+    "출제 문제": "questions",
+}
+
+
+def answer_key_for(kind: str, title: str) -> list:
+    """그 과제·시험의 정답을 문항 순서대로 꺼낸다. 못 찾으면 빈 목록."""
+    if db is None or not title:
+        return []
+    try:
+        if kind == "과제 제출":
+            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+            return parse_answer_list((d.to_dict() or {}).get("answers") or []) if d.exists else []
+        if kind == "모의고사":
+            d = db.collection("exams").document(sanitize_doc_id(title)).get()
+            if not d.exists:
+                return []
+            data = json.loads((d.to_dict() or {}).get("exam_data") or "{}")
+            return [str(q.get("ans", "")).strip() for q in (data.get("questions") or [])]
+        if kind == "타임어택 퀴즈":
+            d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+            if not d.exists:
+                return []
+            return [str(q.get("answer", "")).strip() for q in ((d.to_dict() or {}).get("questions") or [])]
+        if kind == "출제 문제":
+            for doc in db.collection("questions").stream():
+                row = doc.to_dict() or {}
+                if str(row.get("title", "")).strip() != str(title).strip():
+                    continue
+                parsed = parse_question_bank_content(row.get("content", ""))
+                nums = sorted(parsed["answers"].keys())
+                if not nums:
+                    return []
+                out = []
+                for i in range(1, max(nums) + 1):
+                    a = _extract_option_number(parsed["answers"].get(i, ""))
+                    out.append(str(a) if a else "")
+                return out
+    except Exception as e:
+        print("정답표 불러오기 실패:", kind, title, e)
+    return []
+
+
+def find_report(student_name: str, title: str, kind: str):
+    """그 학생의 그 시험 기록(가장 나중 것) 하나를 문서 id와 함께 찾는다."""
+    if db is None:
+        return None, {}
+    try:
+        rows = list(db.collection("reports")
+                    .where("student_name", "==", student_name)
+                    .where("task_name", "==", title)
+                    .where("type", "==", kind)
+                    .limit(20).stream())
+    except Exception as e:
+        print("기록 찾기 실패:", e)
+        return None, {}
+    best_id, best = None, {}
+    for r in rows:
+        d = r.to_dict() or {}
+        if best_id is None or str(d.get("submitted_at", "")) >= str(best.get("submitted_at", "")):
+            best_id, best = r.id, d
+    return best_id, best
+
+
+class RetryInfoReq(BaseModel):
+    student_name: str
+    title: str
+    kind: str = "과제 제출"
+
+
+@app.post("/api/student/retry_info")
+async def retry_info(req: RetryInfoReq):
+    """다시 풀 문항이 무엇인지 알려준다 (학생 화면에서 씀)."""
+    name = (req.student_name or "").strip()
+    title = (req.title or "").strip()
+    kind = (req.kind or "").strip()
+    if kind not in RETRY_KINDS:
+        return {"success": False, "detail": "이 종류는 아직 다시 풀 수 없습니다."}
+
+    rid, rep = await asyncio.to_thread(find_report, name, title, kind)
+    if not rid:
+        return {"success": False, "detail": "이 시험을 본 기록이 없습니다."}
+
+    key = await asyncio.to_thread(answer_key_for, kind, title)
+    if not key:
+        return {"success": False, "detail": "정답표가 등록되어 있지 않아 다시 채점할 수 없습니다."}
+
+    wrongs = sorted(int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None)
+    retry = rep.get("retry") or {}
+    expl = await asyncio.to_thread(explanations_for, kind, title)
+
+    return {
+        "success": True,
+        "title": title, "kind": kind,
+        "question_count": len(key),
+        "wrongs": wrongs,
+        "score": rep.get("score", ""),
+        "submitted_at": rep.get("submitted_at", ""),
+        "retry_count": int(retry.get("count", 0) or 0),
+        "still_wrong": sorted(int(w) for w in (retry.get("wrongs") or []) if _num(w) is not None),
+        "fixed": sorted(int(w) for w in (retry.get("fixed") or []) if _num(w) is not None),
+        "explanations": {str(n): expl.get(str(n), "") for n in wrongs},
+    }
+
+
+class RetrySubmitReq(BaseModel):
+    student_name: str
+    title: str
+    kind: str = "과제 제출"
+    answers: dict = {}        # {"3": "2", "7": "?"} — 문항 번호 -> 고친 답
+
+
+@app.post("/api/student/retry_submit")
+async def retry_submit(req: RetrySubmitReq):
+    """다시 푼 답을 채점한다. 원래 점수 기록은 그대로 두고 재도전 결과만 쌓는다."""
+    name = (req.student_name or "").strip()
+    title = (req.title or "").strip()
+    kind = (req.kind or "").strip()
+    if kind not in RETRY_KINDS:
+        return {"success": False, "detail": "이 종류는 아직 다시 풀 수 없습니다."}
+
+    rid, rep = await asyncio.to_thread(find_report, name, title, kind)
+    if not rid:
+        return {"success": False, "detail": "이 시험을 본 기록이 없습니다."}
+
+    key = await asyncio.to_thread(answer_key_for, kind, title)
+    if not key:
+        return {"success": False, "detail": "정답표가 등록되어 있지 않아 다시 채점할 수 없습니다."}
+
+    was_wrong = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
+    prev = rep.get("retry") or {}
+    # 💡 아직 못 맞힌 문항은 지난 재도전 결과를 이어받는다.
+    #    빈 목록([])도 '다 고쳤다'는 뜻이라, or 로 기본값을 주면
+    #    다 고친 뒤 다시 풀 때 오답이 처음으로 되돌아간다 — 그래서 명시적으로 나눈다.
+    if prev:
+        still = {int(w) for w in (prev.get("wrongs") or []) if _num(w) is not None}
+        fixed = {int(w) for w in (prev.get("fixed") or []) if _num(w) is not None}
+    else:
+        still = set(was_wrong)
+        fixed = set()
+
+    graded, unsure = [], []
+    for raw_no, raw_val in (req.answers or {}).items():
+        no = _num(raw_no)
+        if no is None:
+            continue
+        no = int(no)
+        if no not in was_wrong or not (1 <= no <= len(key)):
+            continue          # 원래 틀렸던 문항만 다시 풀 수 있다
+        want = str(key[no - 1]).strip()
+        got = str(raw_val or "").strip()
+        for i, ch in enumerate("①②③④⑤"):
+            got = got.replace(ch, str(i + 1))
+        if got == UNSURE_MARK:
+            unsure.append(no)
+            still.add(no); fixed.discard(no)
+        elif got and want and got == want:
+            graded.append(no)
+            fixed.add(no); still.discard(no)
+        elif got:
+            still.add(no); fixed.discard(no)
+
+    retry_doc = {
+        "count": int(prev.get("count", 0) or 0) + 1,
+        "last_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "wrongs": sorted(still),
+        "fixed": sorted(fixed),
+        "unsure": sorted(set(unsure)),
+    }
+    await asyncio.to_thread(
+        lambda: db.collection("reports").document(rid).set({"retry": retry_doc}, merge=True))
+
+    return {
+        "success": True,
+        "checked": sorted(int(_num(k)) for k in (req.answers or {}) if _num(k) is not None),
+        "newly_fixed": sorted(graded),
+        "still_wrong": sorted(still),
+        "fixed_total": len(fixed),
+        "wrong_total": len(was_wrong),
+        "retry_count": retry_doc["count"],
+        "answers": {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
+    }
 
 
 @app.get("/api/admin/activity", dependencies=[Depends(verify_admin)])
