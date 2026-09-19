@@ -1080,6 +1080,10 @@ def explanations_for(kind: str, title: str) -> dict:
     return {}
 
 
+# 점수가 매겨지는 기록만 — '로그인'·'룰렛' 같은 기록은 복습 대상이 아니다
+SCORED_TYPES = {"과제 제출", "모의고사", "타임어택 퀴즈", "영어 단어 시험", "출제 문제"}
+
+
 @app.get("/api/student/wrong_questions/{student_name}")
 def get_wrong_questions(student_name: str, limit: int = 30):
     """학생이 그동안 틀린 문항을 한자리에 모아 준다.
@@ -1091,10 +1095,22 @@ def get_wrong_questions(student_name: str, limit: int = 30):
     if not name:
         return {"success": False, "tasks": []}
 
-    rows = [r.to_dict() for r in db.collection("reports")
-            .where("student_name", "==", name)
-            .order_by("submitted_at", direction=firestore.Query.DESCENDING)
-            .limit(200).stream()]
+    # 💡 로그인할 때마다 reports 에 '로그인' 기록이 한 줄씩 쌓인다. 최근 몇 건만
+    #    보면 자주 접속한 학생은 그게 전부 로그인 기록이라 틀린 문제가 하나도
+    #    안 나온다. 그래서 채점 기록(SCORED_TYPES)만 골라 본다.
+    #    정렬도 파이썬에서 한다 — 묶음 색인(student_name+submitted_at)에 기대지 않기 위해.
+    try:
+        raw_rows = [r.to_dict() for r in db.collection("reports")
+                    .where("student_name", "==", name)
+                    .limit(1200).stream()]
+    except Exception as e:
+        print("틀린 문제 조회 실패:", name, repr(e))
+        return {"success": False, "tasks": [], "total_wrong": 0, "task_count": 0,
+                "detail": f"기록을 불러오지 못했습니다: {type(e).__name__}"}
+
+    rows = [r for r in raw_rows if str(r.get("type", "")) in SCORED_TYPES]
+    rows.sort(key=lambda r: str(r.get("submitted_at", "")), reverse=True)
+    rows = rows[:300]
 
     cache = {}
 
@@ -1178,6 +1194,30 @@ def get_wrong_questions(student_name: str, limit: int = 30):
 
     return {"success": True, "student": name, "tasks": tasks,
             "total_wrong": total_wrong, "task_count": len(tasks)}
+
+
+@app.get("/api/student/wrong_questions_debug/{student_name}")
+def wrong_questions_debug(student_name: str):
+    """왜 틀린 문제가 안 나오는지 스스로 짚어 준다 (숫자만, 내용은 없음)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name).strip()
+    try:
+        raw = [r.to_dict() for r in db.collection("reports")
+               .where("student_name", "==", name).limit(1200).stream()]
+    except Exception as e:
+        return {"success": False, "detail": f"{type(e).__name__}: {e}"}
+    kinds = {}
+    for r in raw:
+        kinds[str(r.get("type", ""))] = kinds.get(str(r.get("type", "")), 0) + 1
+    scored = [r for r in raw if str(r.get("type", "")) in SCORED_TYPES]
+    return {
+        "success": True, "student": name,
+        "기록_전체": len(raw),
+        "종류별": kinds,
+        "채점_기록": len(scored),
+        "틀린게_있는_기록": sum(1 for r in scored if (r.get("wrongs") or [])),
+    }
 
 
 class AvatarSaveRequest(BaseModel):
