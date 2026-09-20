@@ -5181,6 +5181,101 @@ async def retry_submit(req: RetrySubmitReq):
     }
 
 
+EXPL_TARGETS = {"과제 제출": "homeworks", "모의고사": "exams", "타임어택 퀴즈": "quizzes"}
+
+
+def task_question_count(kind: str, title: str) -> int:
+    """그 과제·시험의 문항 수. 해설 칸을 몇 개 그릴지 정하는 데 쓴다."""
+    key = answer_key_for(kind, title)
+    if key:
+        return len(key)
+    if db is None:
+        return 0
+    try:
+        if kind == "과제 제출":
+            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+            return int((d.to_dict() or {}).get("question_count", 0) or 0) if d.exists else 0
+    except Exception:
+        pass
+    return 0
+
+
+@app.get("/api/admin/explanations", dependencies=[Depends(verify_admin)])
+def get_explanations(title: str, kind: str = "모의고사"):
+    """지금 등록돼 있는 문항별 해설을 꺼내 준다 (고쳐 쓰기 위해)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    task = urllib.parse.unquote(title or "").strip()
+    if not task:
+        return {"success": False, "detail": "항목을 고르지 못했습니다."}
+    if kind not in EXPL_TARGETS:
+        return {"success": False, "detail": "이 종류에는 해설을 넣을 수 없습니다."}
+    return {
+        "success": True, "title": task, "kind": kind,
+        "question_count": task_question_count(kind, task),
+        "answers": answer_key_for(kind, task),
+        "explanations": explanations_for(kind, task),
+    }
+
+
+class SetExplanationsReq(BaseModel):
+    title: str
+    kind: str = "모의고사"
+    explanations: dict = {}
+    replace: bool = False      # True 면 통째로 갈아끼운다 (기본은 있는 것에 얹기)
+
+
+@app.post("/api/admin/explanations", dependencies=[Depends(verify_admin)])
+async def set_explanations(req: SetExplanationsReq):
+    """이미 배포된 시험·과제·퀴즈에 문항별 해설을 나중에 붙인다.
+
+    💡 시험을 만들 때 해설을 못 넣었으면 학생은 틀린 문항 번호만 보게 된다.
+       번호만으로는 복습이 안 되므로, 나중에라도 붙일 수 있어야 한다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    task = (req.title or "").strip()
+    kind = (req.kind or "").strip()
+    if not task:
+        return {"success": False, "detail": "항목을 고르지 못했습니다."}
+    if kind not in EXPL_TARGETS:
+        return {"success": False, "detail": "이 종류에는 해설을 넣을 수 없습니다."}
+
+    incoming = parse_explanation_map(req.explanations)
+    merged = dict({} if req.replace else await asyncio.to_thread(explanations_for, kind, task))
+    for k, v in incoming.items():
+        merged[k] = v
+    # 빈 값으로 보낸 문항은 지운다
+    for k, v in (req.explanations or {}).items():
+        if not str(v or "").strip():
+            merged.pop(str(k).strip(), None)
+
+    doc_id = sanitize_doc_id(task)
+    if kind == "타임어택 퀴즈":
+        # 퀴즈는 문항 안에 해설이 들어간다
+        ref = db.collection("quizzes").document(doc_id)
+        snap = await asyncio.to_thread(ref.get)
+        if not snap.exists:
+            return {"success": False, "detail": "퀴즈를 찾지 못했습니다."}
+        qs = list((snap.to_dict() or {}).get("questions") or [])
+        for i, q in enumerate(qs):
+            txt = merged.get(str(i + 1), "")
+            if txt:
+                q["explanation"] = txt
+            else:
+                q.pop("explanation", None)
+        await asyncio.to_thread(lambda: ref.set({"questions": qs}, merge=True))
+    else:
+        coll = EXPL_TARGETS[kind]
+        ref = db.collection(coll).document(doc_id)
+        snap = await asyncio.to_thread(ref.get)
+        if not snap.exists:
+            return {"success": False, "detail": "항목을 찾지 못했습니다."}
+        await asyncio.to_thread(lambda: ref.set({"explanations": merged}, merge=True))
+
+    return {"success": True, "title": task, "kind": kind,
+            "count": len(merged), "explanations": merged}
+
+
 @app.get("/api/admin/activity", dependencies=[Depends(verify_admin)])
 def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", title: str = ""):
     """누가 무엇을 하고 몇 점을 받았는지 최근 순으로 모아 준다.
