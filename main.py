@@ -2633,17 +2633,24 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     safe_title = sanitize_doc_id(title)
 
     # 💡 수정하면서 제목을 바꾼 경우, 예전 이름의 퀴즈가 남아 둘 다 배포되어 버린다.
-    #    old_title이 오면 그 문서를 지운다.
+    #    또한 만든 날짜는 '예전 제목' 문서에서 이어받아야 한다 — 새 제목 문서는
+    #    존재한 적이 없어 그냥 보면 늘 비어 있다(제목을 바꿀 때마다 만든 날짜가
+    #    오늘로 리셋되던 문제). 이어받은 뒤 예전 제목 문서를 지운다.
     old_title = str(req.get("old_title", "") or "").strip()
     if old_title and sanitize_doc_id(old_title) != safe_title:
+        old_doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(sanitize_doc_id(old_title)).get())
+        prev_data = old_doc.to_dict() if old_doc.exists else {}
+        prev_existed = old_doc.exists
         await asyncio.to_thread(lambda: db.collection("quizzes").document(sanitize_doc_id(old_title)).delete())
+    else:
+        prev = await asyncio.to_thread(lambda: db.collection("quizzes").document(safe_title).get())
+        prev_data = prev.to_dict() if prev.exists else {}
+        prev_existed = prev.exists
 
-    # 고치는 경우에는 처음 만든 날짜를 그대로 둔다
-    prev = await asyncio.to_thread(lambda: db.collection("quizzes").document(safe_title).get())
-    created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
-    created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = prev_data.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    is_new = not prev.exists
+    # 고치기(제목을 바꿨든 안 바꿨든)에는 알림을 울리지 않는다
+    is_new = prev_existed is False and not old_title
     tclass = str(req.get("target_class", "") or "").strip()
     questions = req.get("questions", [])
     await asyncio.to_thread(
@@ -6026,23 +6033,40 @@ async def create_homework(
     kind: str = Form("class"),
     answers: str = Form(""),
     explanations: str = Form(""),
+    old_title: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
     if db is None:
         return {"success": False}
-    ans_url = ""
-    if answer_file and answer_file.filename:
-        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
 
     answer_list = parse_answer_list(answers)
     safe_title = sanitize_doc_id(title)
     kind_norm = normalize_homework_kind(kind)
-    # 💡 같은 제목으로 다시 올리면 '고치기'다 — 만든 날짜는 그대로 두고, 알림도 다시 울리지 않는다.
-    prev = await asyncio.to_thread(lambda: db.collection("homeworks").document(safe_title).get())
-    is_new = not prev.exists
-    created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
-    created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    old_title = (old_title or "").strip()
+
+    # 💡 같은 제목이면 그 문서에서, 제목을 바꿔 고친 경우엔 '예전 제목' 문서에서
+    #    만든 날짜·해답 파일 같은 값을 이어받아야 한다 — 새 제목 문서는 존재한 적이
+    #    없어 그냥 보면 늘 비어 있다. 이어받은 뒤에는 예전 제목 문서를 지운다.
+    if old_title and sanitize_doc_id(old_title) != safe_title:
+        old_doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(sanitize_doc_id(old_title)).get())
+        prev_data = old_doc.to_dict() if old_doc.exists else {}
+        prev_existed = old_doc.exists
+        await asyncio.to_thread(lambda: db.collection("homeworks").document(sanitize_doc_id(old_title)).delete())
+    else:
+        prev = await asyncio.to_thread(lambda: db.collection("homeworks").document(safe_title).get())
+        prev_data = prev.to_dict() if prev.exists else {}
+        prev_existed = prev.exists
+
+    # 고치기(제목을 바꿨든 안 바꿨든)에는 알림을 울리지 않는다
+    is_new = prev_existed is False and not old_title
+    created_at = prev_data.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 새 해답 파일을 안 올리면(고치는 중 굳이 다시 첨부하지 않으면) 기존 파일을 그대로 둔다
+    ans_url = prev_data.get("answer_file", "")
+    if answer_file and answer_file.filename:
+        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
+
     await asyncio.to_thread(
         lambda: db.collection("homeworks").document(safe_title).set(
             {
