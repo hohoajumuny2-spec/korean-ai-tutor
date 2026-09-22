@@ -8349,10 +8349,70 @@ def save_record_criteria(req: RecordCriteriaReq):
     return {"success": True}
 
 
+# ── 학교별 주요 사항 (학생부종합 평가 기준) ──────────────
+#   학종은 공통 기준 위에 대학마다 다른 잣대가 모집요강에 적혀 있다.
+#   원장님이 대학별로 그 내용을 넣어두면, 평가할 때 그 대학 기준으로 본다.
+def univ_criteria_ref(univ: str):
+    return db.collection("univ_criteria").document(sanitize_doc_id(univ.strip()))
+
+
+def load_univ_criteria(univ: str) -> dict:
+    if db is None or not (univ or "").strip():
+        return {}
+    try:
+        doc = univ_criteria_ref(univ).get()
+        return doc.to_dict() if doc.exists else {}
+    except Exception:
+        return {}
+
+
+@app.get("/api/admin/counsel/univ_criteria", dependencies=[Depends(verify_admin)])
+def list_univ_criteria(univ: str = ""):
+    """대학별 주요 사항 — 하나를 콕 집어 보거나(univ), 전체 목록을 본다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류", "items": []}
+    if univ.strip():
+        d = load_univ_criteria(univ)
+        return {"success": True, "univ": univ.strip(), "text": d.get("text", ""),
+                "updated_at": d.get("updated_at", "")}
+    items = []
+    for doc in db.collection("univ_criteria").stream():
+        d = doc.to_dict() or {}
+        items.append({"univ": d.get("univ", doc.id), "updated_at": d.get("updated_at", ""),
+                      "preview": str(d.get("text", ""))[:80]})
+    items.sort(key=lambda x: x["univ"])
+    return {"success": True, "items": items}
+
+
+class UnivCriteriaReq(BaseModel):
+    univ: str
+    text: str = ""
+
+
+@app.post("/api/admin/counsel/univ_criteria", dependencies=[Depends(verify_admin)])
+def save_univ_criteria(req: UnivCriteriaReq):
+    """대학 하나의 학생부종합 평가 기준을 저장한다. 내용을 비우면 지운다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    univ = req.univ.strip()
+    if not univ:
+        return {"success": False, "detail": "대학 이름을 적어주세요."}
+    text = (req.text or "").strip()
+    if not text:
+        univ_criteria_ref(univ).delete()
+        return {"success": True, "deleted": True}
+    univ_criteria_ref(univ).set({
+        "univ": univ[:60], "text": text[:8000],
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    return {"success": True}
+
+
 class RecordEvalReq(BaseModel):
     student_name: str
     record_text: str
     target_major: str = ""
+    target_univ: str = ""
 
 
 @app.post("/api/admin/counsel/record_eval", dependencies=[Depends(verify_admin)])
@@ -8363,12 +8423,38 @@ async def eval_record(req: RecordEvalReq):
         return {"success": False, "detail": "학생부 내용을 조금 더 붙여넣어 주세요. (최소 50자)"}
 
     view = build_counsel_view(name)
-    major = req.target_major.strip() or (view.get("profile") or {}).get("target_major") or "미정"
+    profile = view.get("profile") or {}
+    major = req.target_major.strip() or profile.get("target_major") or "미정"
+    univ = req.target_univ.strip() or str(profile.get("target_univ", "")).strip()
     criteria = get_record_criteria()
+
+    # 💡 학종은 대학마다 모집요강에 적어둔 잣대가 다르다. 그 대학 기준이 저장돼
+    #    있으면 공통 기준 위에 얹어, 그 대학 눈으로 본 평가를 함께 내놓는다.
+    univ_block, univ_sections = "", ""
+    used_univ_criteria = False
+    if univ:
+        saved = load_univ_criteria(univ)
+        body_txt = str(saved.get("text", "")).strip()
+        if body_txt:
+            used_univ_criteria = True
+            univ_block = f"""
+
+[{univ} 학교별 주요 사항 — 이 대학이 모집요강에 밝힌 평가 기준입니다]
+아래 내용은 위 공통 기준보다 우선합니다. 공통 기준과 어긋나는 대목이 있으면 이쪽을 따르세요.
+{body_txt[:6000]}"""
+            univ_sections = f"""
+
+## 6. {univ} 기준으로 본 평가
+(위 '{univ} 학교별 주요 사항'의 항목을 하나씩 짚어, 이 학생부가 그 기준에 얼마나 맞는지 근거와 함께 적을 것)
+
+## 7. {univ} 지원을 위해 남은 기간에 채워야 할 것
+(그 대학 기준에서 지금 약한 대목을 메우려면 무엇을 해야 하는지 3~5가지, 실행 가능한 수준으로)"""
+
     prompt = f"""당신은 대학 학생부종합전형 서류평가 경험이 있는 평가자입니다.
 아래 학생부 기록을 실제 서류평가 관점에서 정성적으로 평가하세요.
 
 [학생] {name}
+[희망 대학] {univ or "미정"}
 [희망 전공] {major}
 
 [성적 참고]
@@ -8378,7 +8464,7 @@ async def eval_record(req: RecordEvalReq):
 {body[:12000]}
 
 [평가 기준 — 이 학원의 기준입니다. 반드시 이 기준만 사용하세요]
-{criteria}
+{criteria}{univ_block}
 
 [반드시 지킬 것]
 0. 위 [평가 기준]에 적힌 영역과 등급 잣대만 사용하세요. 기준에 없는 영역을 새로 만들거나, 기준과 다른 잣대로 등급을 매기지 마세요.
@@ -8400,7 +8486,7 @@ async def eval_record(req: RecordEvalReq):
 (2~3가지. 구체적으로)
 
 ## 5. 남은 학기 보완 전략
-(앞으로 어떤 활동·탐구를 채워야 하는지 4~5개. 실행 가능한 수준으로)
+(앞으로 어떤 활동·탐구를 채워야 하는지 4~5개. 실행 가능한 수준으로){univ_sections}
 """
     try:
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
@@ -8412,8 +8498,10 @@ async def eval_record(req: RecordEvalReq):
     counsel_ref(name).set({
         "student_name": name, "record_text": body, "target_major": major,
         "record_eval": text, "record_eval_at": at, "updated_at": at,
+        "record_eval_univ": univ,
     }, merge=True)
-    return {"success": True, "record_eval": text, "at": at}
+    return {"success": True, "record_eval": text, "at": at,
+            "univ": univ, "used_univ_criteria": used_univ_criteria}
 
 
 # ── 학생부에서 출결·봉사·독서만 따로 뽑아내기 ─────────────
@@ -8914,8 +9002,8 @@ async def make_summary(req: CounselNameReq):
 #   "이 열이 대학, 이 열이 등급" 하고 짝지어 받은 뒤에 저장한다.
 # 💡 입결 자료는 전형 종류에 따라 견줄 성적이 다르다.
 #    수시(교과·종합)는 내신, 논술은 논술전형 입결, 정시는 수능 — 셋을 섞으면 판단이 어긋난다.
-UNIV_KINDS = ("susi", "nonsul", "jeongsi")
-UNIV_KIND_LABELS = {"susi": "수시", "nonsul": "논술", "jeongsi": "정시"}
+UNIV_KINDS = ("susi", "nonsul", "jeongsi", "yeche")
+UNIV_KIND_LABELS = {"susi": "수시", "nonsul": "논술", "jeongsi": "정시", "yeche": "예체능"}
 
 
 def normalize_univ_kind(value: str) -> str:
@@ -8924,6 +9012,9 @@ def normalize_univ_kind(value: str) -> str:
         return "jeongsi"
     if v.startswith("논") or v in ("nonsul", "논술"):
         return "nonsul"
+    # 예체능 — 실기가 함께 반영되어 수능·내신만으로는 판단할 수 없다
+    if v.startswith("예") or v in ("yeche", "yechenung", "arts", "실기"):
+        return "yeche"
     return "susi"
 
 
@@ -9060,6 +9151,9 @@ UNIV_TEMPLATES = {
             ("min_suneung", "수능최저", False, "국수영탐 3합 7",
              "수능 최저학력기준. 적어두면 상담 때 학과마다 함께 보여줍니다."),
             ("rate", "경쟁률", False, "12.4", "경쟁률. 숫자만 적어주세요(예: 12.4)."),
+            ("key_points", "학교별 주요 사항", False, "서류 100%, 전공적합성보다 학업역량 비중 큼",
+             "학생부종합에서 이 대학만의 평가 잣대나 유의사항. 모집요강에 적힌 내용을 옮겨두면 "
+             "상담 화면에서 학과마다 함께 보여주고, 학생부 평가에도 참고합니다."),
             _COL_YEAR, _COL_NOTE,
         ],
         "samples": [
@@ -9067,12 +9161,14 @@ UNIV_TEMPLATES = {
              "type": "학생부교과", "subtype": "지역균형", "quota": "12",
              "method": "학생부 100%", "subjects": "국,수,영,사/과 중 3과목",
              "cut50": "1.9", "cut70": "2.1",
-             "min_suneung": "국수영탐 3합 7", "rate": "12.4", "year": "2026", "note": ""},
+             "min_suneung": "국수영탐 3합 7", "rate": "12.4",
+             "key_points": "서류 100%, 학업역량 비중 큼", "year": "2026", "note": ""},
             {"univ": "아주대학교", "region": "경기 수원시 영통구", "major": "경영학과",
              "type": "학생부종합", "subtype": "ACE", "quota": "20",
              "method": "서류 100%", "subjects": "전과목",
              "cut50": "2.4", "cut70": "2.7",
-             "min_suneung": "없음", "rate": "9.8", "year": "2026", "note": ""},
+             "min_suneung": "없음", "rate": "9.8",
+             "key_points": "면접 없음, 전공 관련 탐구의 연속성 중시", "year": "2026", "note": ""},
         ],
         "tips": [
             "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
@@ -9082,6 +9178,52 @@ UNIV_TEMPLATES = {
             "● 전형 유형(학생부교과/학생부종합/논술/실기 등)과 세부 전형(그 학교만의 전형 이름)을 나눠 적으면, 상담 화면에서 학과마다 두 가지를 함께 볼 수 있습니다.",
             "● 소재지를 채우면 상담 화면 지도에 지원 가능 대학이 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
             "● 논술 자료는 올릴 때 '논술'을 골라주세요. 같은 양식을 그대로 쓰시면 됩니다.",
+        ],
+    },
+    "yeche": {
+        "label": "예체능",
+        "filename": "입결자료_예체능양식.xlsx",
+        "columns": [
+            _COL_UNIV, _COL_REGION, _COL_MAJOR,
+            ("track", "계열", False, "음악", "음악 / 미술 / 체육 / 연기·무용 등."),
+            ("type", "전형 유형", False, "실기위주", "전형의 큰 갈래. 실기위주 / 학생부교과(실기) / 수능위주(실기) 등."),
+            ("subtype", "세부 전형", False, "일반전형", "그 전형 안의 세부 이름."),
+            ("quota", "모집 인원", False, "15", "모집 인원."),
+            ("method", "전형 방법", False, "실기 70 + 수능 30",
+             "실기와 수능·학생부의 반영 비율. 예: 실기 70+수능 30, 실기 100 등."),
+            ("practical", "실기 종목", False, "피아노 자유곡 1곡",
+             "무엇을 어떻게 보는지. 예: 피아노 자유곡 1곡 / 기초디자인 / 100m·제자리멀리뛰기."),
+            ("practical_note", "실기 기준", False, "지정곡 없음, 4분 이내",
+             "실기에서 눈여겨보는 점이나 조건. 상담 때 그대로 보여줍니다."),
+            ("subjects", "수능 반영 과목", False, "국어,영어",
+             "수능을 반영한다면 어떤 과목인지. 예: 국어,영어 / 국수탐 중 상위 2. 실기 100%면 비워두세요."),
+            ("cut50", "50%컷", False, "",
+             "합격자 50%컷. 수능을 반영하면 그 기준 점수를, 실기 100%면 비워두세요."),
+            ("cut70", "70%컷", False, "",
+             "합격자 70%컷. 이 값이 있어야 합격선을 숫자로 견줄 수 있습니다. 실기 100%라 숫자가 없으면 비워두셔도 되고, 그때는 목록에만 보입니다."),
+            ("rate", "경쟁률", False, "18.5", "경쟁률. 숫자만 적어주세요."),
+            _COL_YEAR, _COL_NOTE,
+        ],
+        "samples": [
+            {"univ": "한양대학교", "region": "서울 성동구", "major": "성악과", "track": "음악",
+             "type": "실기위주", "subtype": "일반전형", "quota": "15",
+             "method": "실기 70 + 수능 30", "practical": "가곡·아리아 각 1곡",
+             "practical_note": "암보 필수, 반주자 동반", "subjects": "국어,영어",
+             "cut50": "150.0", "cut70": "145.0", "rate": "18.5", "year": "2026", "note": ""},
+            {"univ": "경희대학교", "region": "서울 동대문구", "major": "체육학과", "track": "체육",
+             "type": "실기위주", "subtype": "일반전형", "quota": "20",
+             "method": "실기 100", "practical": "제자리멀리뛰기·배근력·20m 왕복달리기",
+             "practical_note": "종목별 환산표 적용", "subjects": "",
+             "cut50": "", "cut70": "", "rate": "12.3", "year": "2026", "note": "수능 미반영"},
+        ],
+        "tips": [
+            "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
+            "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
+            "● 예체능은 실기 비중이 커서 수능 점수만으로는 합격 여부를 판단할 수 없습니다. 그래서 '실기 종목'과 '전형 방법'을 함께 적어두면 상담 화면에서 학과마다 같이 보여줍니다.",
+            "● 수능을 반영하는 전형이면 '수능 반영 과목'과 70%컷을 채워주세요. 그러면 학생 백분위와 견줘 가능·부족을 숫자로 보여줍니다.",
+            "● 실기 100% 전형이라 수능 컷이 없으면 50%컷·70%컷을 비워두세요. 그런 학과는 합격선 비교 없이 목록과 실기 정보만 보여줍니다.",
+            "● 올릴 때 '이 자료는 수시인가요, 정시인가요?'에서 반드시 '예체능'을 골라주세요.",
+            "● 소재지를 채우면 상담 화면 지도에 표시됩니다.",
         ],
     },
     "jeongsi": {
@@ -9142,6 +9284,9 @@ UNIV_HEADER_HINTS = {
     "cut": ["기준점수", "합격선", "등급컷", "커트", "cut", "점수"],
     "metric_col": ["점수종류", "점수구분", "기준구분", "metric"],
     "eng": ["영어등급", "영어", "eng"],
+    "practical": ["실기종목", "실기과목", "실기", "practical"],
+    "key_points": ["학교별주요사항", "주요사항", "평가기준", "유의사항", "keypoints"],
+    "practical_note": ["실기기준", "실기안내", "실기비고"],
     "note": ["비고", "메모", "note"],
 }
 
@@ -9219,9 +9364,99 @@ def build_univ_template_xlsx(kind: str = "susi") -> bytes:
     return buf.getvalue()
 
 
+def build_univ_export_xlsx(kind: str, rows: list) -> bytes:
+    """지금 저장돼 있는 입결 자료를 표준 양식 그대로 엑셀로 만든다.
+
+    💡 이미 수천 줄을 올려두셨는데 '반영 과목' 같은 칸을 새로 채우려고 원본을
+       다시 만드는 건 너무 번거롭다. 저장된 내용을 그대로 양식에 부어 내려주면,
+       빈 칸만 채워서 다시 올리면 된다."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    spec = UNIV_TEMPLATES.get(kind) or UNIV_TEMPLATES["susi"]
+    columns = spec["columns"]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"{spec['label']}입결"
+
+    head_fill = PatternFill("solid", fgColor="1F3864")
+    req_fill = PatternFill("solid", fgColor="C00000")
+    empty_fill = PatternFill("solid", fgColor="FFF2CC")   # 채워 넣으시라고 노란 칸
+    white_bold = Font(color="FFFFFF", bold=True, size=11)
+
+    for i, (_key, label, required, _example, _desc) in enumerate(columns, start=1):
+        cell = ws.cell(row=1, column=i, value=label + ("*" if required else ""))
+        cell.fill = req_fill if required else head_fill
+        cell.font = white_bold
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[cell.column_letter].width = max(12, min(30, len(label) * 2 + 9))
+
+    for r, row in enumerate(rows, start=2):
+        for i, (key, *_rest) in enumerate(columns, start=1):
+            # 컷은 저장할 때 70%컷을 우선 썼으므로 되돌려 줄 때도 같은 자리에 넣는다
+            if key == "cut70":
+                v = row.get("cut70", row.get("cut", ""))
+            elif key == "cut50":
+                v = row.get("cut50", "")
+            else:
+                v = row.get(key, "")
+            c = ws.cell(row=r, column=i, value="" if v is None else v)
+            if (v is None or v == "") and key == "subjects":
+                c.fill = empty_fill
+    ws.freeze_panes = "A2"
+
+    guide = wb.create_sheet("작성안내")
+    guide.column_dimensions["A"].width = 16
+    guide.column_dimensions["B"].width = 10
+    guide.column_dimensions["C"].width = 24
+    guide.column_dimensions["D"].width = 86
+    for i, text in enumerate(["열 이름", "필수", "예시", "설명"], start=1):
+        c = guide.cell(row=1, column=i, value=text)
+        c.fill = head_fill
+        c.font = white_bold
+    for r, (_key, label, required, example, desc) in enumerate(columns, start=2):
+        guide.cell(row=r, column=1, value=label)
+        guide.cell(row=r, column=2, value="필수" if required else "선택")
+        guide.cell(row=r, column=3, value=example)
+        guide.cell(row=r, column=4, value=desc)
+    base = len(columns) + 3
+    guide.cell(row=base, column=1, value="※ 이 파일은 지금 저장돼 있는 자료를 그대로 내려받은 것입니다.")
+    guide.cell(row=base + 1, column=1, value="※ 노란 칸(반영 과목)을 채운 뒤 그대로 다시 올리시면 됩니다. 올릴 때 '덧붙이기'는 끄세요.")
+    for r, line in enumerate(spec["tips"], start=base + 3):
+        guide.cell(row=r, column=1, value=line)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.get("/api/admin/univ_table/export", dependencies=[Depends(verify_admin)])
+def export_univ_table(kind: str = "jeongsi"):
+    """저장된 입결 자료를 표준 양식 엑셀로 내려받는다 (빈 칸만 채워 다시 올리도록)."""
+    key = normalize_univ_kind(kind)
+    rows = [r for r in load_univ_table() if normalize_univ_kind(r.get("kind", "susi")) == key]
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"{UNIV_KIND_LABELS.get(key, key)} 자료가 없습니다.")
+    template_key = key if key in UNIV_TEMPLATES else "susi"
+    try:
+        data = build_univ_export_xlsx(template_key, rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"엑셀을 만들지 못했습니다: {e}")
+    label = UNIV_KIND_LABELS.get(key, key)
+    fname = urllib.parse.quote(f"입결자료_{label}_내려받기.xlsx".encode("utf-8"))
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+    )
+
+
 @app.get("/api/admin/univ_table/template", dependencies=[Depends(verify_admin)])
 def download_univ_template(kind: str = "susi"):
-    key = "jeongsi" if normalize_univ_kind(kind) == "jeongsi" else "susi"
+    key = normalize_univ_kind(kind)
+    if key not in UNIV_TEMPLATES:
+        key = "susi"
     try:
         data = build_univ_template_xlsx(key)
     except Exception as e:
@@ -9333,7 +9568,9 @@ async def import_univ_table(
         return str(r[idx]).strip() if idx < len(r) else ""
 
     fixed_metric = str(m.get("metric", "grade"))
-    if fixed_metric not in ("grade", "percentile", "score", "eng_grade"):
+    # 💡 'percentile_sum'을 빠뜨려서, 올릴 때 '백분위 합'을 골라도 조용히 '등급'으로
+    #    저장되고 있었다(화면에서는 고른 대로 보여 원인을 찾기 어려웠음).
+    if fixed_metric not in ("grade", "percentile", "percentile_sum", "score", "eng_grade"):
         fixed_metric = "grade"
     kind = normalize_univ_kind(kind)
 
@@ -9361,7 +9598,9 @@ async def import_univ_table(
         cut70 = _num(cell(r, "cut70"))
         cut50 = _num(cell(r, "cut50"))
         cut = cut70 if cut70 is not None else (cut50 if cut50 is not None else _num(cell(r, "cut")))
-        if not univ or cut is None:
+        # 💡 예체능은 실기 100% 전형처럼 수능 합격선 숫자가 아예 없는 학과가 많다.
+        #    그런 줄까지 버리면 목록에서 통째로 사라지므로, 예체능은 컷이 없어도 담는다.
+        if not univ or (cut is None and kind != "yeche"):
             skipped += 1
             continue
         e = {
@@ -9372,7 +9611,7 @@ async def import_univ_table(
             "subtype": cell(r, "subtype")[:40],
             "method": cell(r, "method")[:80],
             "subjects": cell(r, "subjects")[:80],
-            "cut": round(cut, 3),
+            "cut": round(cut, 3) if cut is not None else None,
             "metric": metric_of(r),
             "kind": kind,
             "note": cell(r, "note")[:120],
@@ -9387,6 +9626,10 @@ async def import_univ_table(
         rate = _num(cell(r, "rate"))
         if rate is not None:
             e["rate"] = round(rate, 2)
+        for key in ("practical", "practical_note", "key_points"):
+            v = cell(r, key)
+            if v:
+                e[key] = v[:120]
         min_suneung = cell(r, "min_suneung")
         if min_suneung:
             e["min_suneung"] = min_suneung[:60]
@@ -9905,7 +10148,20 @@ def get_univ_possible(req: UnivPossibleReq):
             skipped_special += 1
             continue
         item = compare_univ_row(r, used)
-        if not item or item["gap"] is None:
+        # 💡 예체능 실기 100% 전형처럼 견줄 숫자가 없는 학과도 목록에는 보여야 한다.
+        #    점수 비교만 못 할 뿐, 어떤 실기를 보는지가 상담에서 더 중요하다.
+        score_free = kind_n == "yeche"
+        if not item:
+            if not score_free:
+                continue
+            item = {"univ": r.get("univ", ""), "major": r.get("major", ""), "type": r.get("type", ""),
+                    "subtype": r.get("subtype", ""), "method": r.get("method", ""),
+                    "subjects": r.get("subjects", ""), "reflect": "", "year": r.get("year", ""),
+                    "cut": None, "unit": "", "gap": None, "reach": None, "mine": None,
+                    "quota": r.get("quota"), "rate": r.get("rate"),
+                    "min_suneung": r.get("min_suneung", ""), "eng_cut": r.get("eng"),
+                    "practical": r.get("practical", ""), "practical_note": r.get("practical_note", "")}
+        elif item["gap"] is None and not score_free:
             continue
         slot = merged.setdefault(item["univ"], {
             "univ": item["univ"], "majors": [], "reach_count": 0, "total": 0,
@@ -9914,18 +10170,21 @@ def get_univ_possible(req: UnivPossibleReq):
         slot["total"] += 1
         if item["reach"]:
             slot["reach_count"] += 1
-        if slot["best_gap"] is None or item["gap"] < slot["best_gap"]:
+        if item["gap"] is not None and (slot["best_gap"] is None or item["gap"] < slot["best_gap"]):
             slot["best_gap"] = item["gap"]
         if len(slot["majors"]) < 60:
             slot["majors"].append({
                 "major": item["major"], "type": item["type"], "subtype": item["subtype"],
                 "method": item["method"], "subjects": item["subjects"], "year": item["year"],
                 "cut": item["cut"], "unit": item["unit"], "gap": item["gap"],
-                "reach": item["reach"], "short_by": None if item["reach"] else abs(item["gap"]),
+                "reach": item["reach"],
+                "short_by": None if (item["reach"] or item["gap"] is None) else abs(item["gap"]),
                 "quota": item["quota"], "rate": item["rate"],
                 "min_suneung": item["min_suneung"], "eng_cut": item["eng_cut"],
                 # 이 학과가 몇 과목을 어떻게 반영하는지 + 그 기준으로 본 내 점수
                 "reflect": item.get("reflect", ""), "mine": item.get("mine"),
+                "practical": item.get("practical", ""), "practical_note": item.get("practical_note", ""),
+                "key_points": item.get("key_points", ""),
             })
         if not slot["region_text"]:
             slot["region_text"] = r.get("region", "")
@@ -9934,12 +10193,14 @@ def get_univ_possible(req: UnivPossibleReq):
     if req.only_reachable:
         univs = [u for u in univs if u["reach_count"]]
     for u in univs:
-        u["majors"].sort(key=lambda m: m["gap"])
+        # 견줄 숫자가 없는 학과(실기 100% 등)는 맨 뒤로 보낸다
+        u["majors"].sort(key=lambda m: (m["gap"] is None, m["gap"] if m["gap"] is not None else 0))
         u["short_by"] = None if u["best_gap"] is None or u["best_gap"] <= 0 else round(u["best_gap"], 2)
         reg = resolve_univ_region(u["univ"], u.get("region_text", ""))
         u["sido"], u["sigungu"] = reg.get("sido", ""), reg.get("sigungu", "")
     # 닿는 대학을 먼저, 그다음 조금이라도 덜 모자란 순서로
-    univs.sort(key=lambda u: (0 if u["reach_count"] else 1, u["best_gap"]))
+    univs.sort(key=lambda u: (0 if u["reach_count"] else 1,
+                              u["best_gap"] is None, u["best_gap"] if u["best_gap"] is not None else 0))
 
     return {
         "success": True, "kind": kind_n, "student": name,
@@ -10128,6 +10389,8 @@ def compare_univ_row(r: dict, mine_all: dict):
         "track": r.get("track", ""), "type": r.get("type", ""),
         "subtype": r.get("subtype", ""), "method": r.get("method", ""),
         "subjects": r.get("subjects", ""), "reflect": reflect_label,
+        "practical": r.get("practical", ""), "practical_note": r.get("practical_note", ""),
+        "key_points": r.get("key_points", ""),
         "year": r.get("year", ""), "kind": r.get("kind", "susi"),
         "cut": cut, "metric": metric, "unit": unit,
         "cut50": r.get("cut50"), "cut70": r.get("cut70"),
