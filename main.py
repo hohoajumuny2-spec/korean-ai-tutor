@@ -9143,12 +9143,19 @@ async def preview_univ_table(file: UploadFile = File(...), sheet: str = Form("")
 
     # 열 이름만 보고 자동으로 짝지어 본다 — 표준 양식이면 이것만으로 끝난다
     auto = guess_univ_mapping(columns)
-    is_template, template_kind = False, ""
+    # 💡 수시/정시 양식의 '필수' 열(대학·학과·70%컷)은 서로 똑같아서, 필수 열만
+    # 보고 고르면 늘 먼저 나오는 수시로만 판정된다(실제로 정시 파일을 올려도
+    # '수시'로 잘못 판정되던 버그). 두 양식에만 있는 나머지 열(세부 전형·전형
+    # 방법·반영 과목 vs 영어등급)까지 함께 보고, 더 많이 들어맞는 쪽을 고른다.
+    is_template, template_kind, best_score = False, "", -1
     for key, spec in UNIV_TEMPLATES.items():
         required = [k for k, _l, req, *_x in spec["columns"] if req]
-        if all(k in auto for k in required):
-            is_template, template_kind = True, key
-            break
+        if not all(k in auto for k in required):
+            continue
+        all_keys = [k for k, *_rest in spec["columns"]]
+        score = sum(1 for k in all_keys if k in auto)
+        if score > best_score:
+            is_template, template_kind, best_score = True, key, score
 
     return {"success": True, "sheets": sheets, "sheet": sheet or (sheets[0] if sheets else ""),
             "header_row": hidx, "header_span": span, "columns": columns, "sample": sample,
@@ -9378,6 +9385,35 @@ def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metr
             if all_kinds == {kind_n}:
                 meta["metric"] = to_metric
                 db.collection("settings").document("univ_table_meta").set(meta)
+    return {"success": True, "changed": changed}
+
+
+@app.post("/api/admin/univ_table/fix_kind", dependencies=[Depends(verify_admin)])
+def fix_univ_kind(from_kind: str = Form(...), to_kind: str = Form(...)):
+    """이미 저장된 자료의 갈래(수시/논술/정시)를 통째로 바꾼다.
+    예) 정시 표준 양식을 올렸는데 화면의 '수시/정시' 선택을 그대로 두고 올려서
+    (또는 옛 버전의 자동판정 오류로) 전부 '수시'로 잘못 저장됐을 때 —
+    다시 올리지 않고 바로 고칠 수 있게. 이 갈래 전체를 바꾸므로, 같은 갈래
+    안에 서로 다른 자료가 섞여 있지 않을 때만 안전하다(관리자가 확인 후 사용)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    from_n, to_n = normalize_univ_kind(from_kind), normalize_univ_kind(to_kind)
+    if from_n == to_n:
+        return {"success": False, "detail": "지금 갈래와 바꿀 갈래가 같습니다."}
+
+    rows = load_univ_table()
+    changed = 0
+    for r in rows:
+        if normalize_univ_kind(r.get("kind", "susi")) == from_n:
+            r["kind"] = to_n
+            changed += 1
+    if changed:
+        for d in list(db.collection("univ_table").stream()):
+            d.reference.delete()
+        for i in range(0, len(rows), UNIV_CHUNK_SIZE):
+            db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
+                {"rows": rows[i:i + UNIV_CHUNK_SIZE]}
+            )
     return {"success": True, "changed": changed}
 
 
