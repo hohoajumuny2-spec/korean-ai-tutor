@@ -9385,15 +9385,22 @@ def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metr
     valid_metrics = ("grade", "percentile", "percentile_sum", "score", "eng_grade")
     if to_metric not in valid_metrics:
         return {"success": False, "detail": "바꿀 점수 종류가 올바르지 않습니다."}
-    if from_metric not in valid_metrics:
+    # 💡 "any" = 지금 값이 무엇이든 — 화면에서 지금 무엇으로 저장돼 있는지 확신하기
+    #    어려울 때(고치기를 눌러도 '해당 자료 없음'만 반복될 때) 쓰라고 열어둔다.
+    if from_metric != "any" and from_metric not in valid_metrics:
         return {"success": False, "detail": "지금 점수 종류가 올바르지 않습니다."}
 
     rows = load_univ_table()
     changed = 0
     for r in rows:
-        if normalize_univ_kind(r.get("kind", "susi")) == kind_n and r.get("metric", "grade") == from_metric:
-            r["metric"] = to_metric
-            changed += 1
+        if normalize_univ_kind(r.get("kind", "susi")) != kind_n:
+            continue
+        if from_metric != "any" and r.get("metric", "grade") != from_metric:
+            continue
+        if r.get("metric", "grade") == to_metric:
+            continue
+        r["metric"] = to_metric
+        changed += 1
     if changed:
         for d in list(db.collection("univ_table").stream()):
             d.reference.delete()
@@ -9421,16 +9428,22 @@ def fix_univ_kind(from_kind: str = Form(...), to_kind: str = Form(...)):
     안에 서로 다른 자료가 섞여 있지 않을 때만 안전하다(관리자가 확인 후 사용)."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
-    from_n, to_n = normalize_univ_kind(from_kind), normalize_univ_kind(to_kind)
+    to_n = normalize_univ_kind(to_kind)
+    # 💡 "any" = 지금 갈래가 무엇이든 (저장된 값이 뭔지 확신하기 어려울 때)
+    from_n = "any" if str(from_kind).strip().lower() == "any" else normalize_univ_kind(from_kind)
     if from_n == to_n:
         return {"success": False, "detail": "지금 갈래와 바꿀 갈래가 같습니다."}
 
     rows = load_univ_table()
     changed = 0
     for r in rows:
-        if normalize_univ_kind(r.get("kind", "susi")) == from_n:
-            r["kind"] = to_n
-            changed += 1
+        cur = normalize_univ_kind(r.get("kind", "susi"))
+        if from_n != "any" and cur != from_n:
+            continue
+        if cur == to_n:
+            continue
+        r["kind"] = to_n
+        changed += 1
     if changed:
         for d in list(db.collection("univ_table").stream()):
             d.reference.delete()
