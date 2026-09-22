@@ -726,6 +726,34 @@ def get_best_model(prefer_quality: bool = False):
         raise Exception(f"AI 모델 초기화 실패: {str(e)}")
 
 
+# 💡 휴대폰으로 찍은 문제지 사진은 보통 3000~4000px가 넘는다. 구글 AI는 이미지를
+#    타일 단위로 쪼개 토큰을 매기는데, 일정 해상도(약 2000px)를 넘어가면 글자를
+#    읽는 정확도는 더 좋아지지 않으면서 토큰만 그만큼 더 나간다 — 문항 수가 많아
+#    여러 번 나눠 보낼 때마다 똑같은 사진을 매번 다시 통째로 보내는 구조라 이 낭비가
+#    그대로 여러 배가 된다. 읽는 데 필요한 해상도는 그대로 유지하면서 크기만 줄인다.
+IMAGE_MAX_DIM_FOR_AI = 2000
+
+
+def compress_image_for_ai(data: bytes, content_type: str = "") -> tuple:
+    """AI에게 보내기 전, 너무 큰 사진만 축소한다(글자를 읽는 데는 지장이 없는 선).
+    이미지가 아니거나(예: PDF 원본) 이미 작거나 처리에 실패하면 원본을 그대로 돌려준다."""
+    if not (content_type or "").startswith("image/"):
+        return data, content_type
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        w, h = img.size
+        if max(w, h) <= IMAGE_MAX_DIM_FOR_AI:
+            return data, content_type
+        scale = IMAGE_MAX_DIM_FOR_AI / max(w, h)
+        img = img.convert("RGB").resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=85)
+        return out.getvalue(), "image/jpeg"
+    except Exception:
+        return data, content_type
+
+
 def safe_generate(contents, stream=False, prefer_quality=False):
     model = get_best_model(prefer_quality=prefer_quality)
     return model.generate_content(contents, stream=stream)
@@ -2224,7 +2252,8 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
             except Exception as e:
                 return {"success": False, "detail": f"PDF를 읽지 못했습니다: {e}"}
         else:
-            parts.append({"mime_type": f.content_type or "image/png", "data": raw})
+            cdata, ctype = compress_image_for_ai(raw, f.content_type or "image/png")
+            parts.append({"mime_type": ctype, "data": cdata})
 
     if not parts:
         return {"success": False, "detail": "읽을 수 있는 파일이 없습니다. 이미지나 PDF를 올려주세요."}
@@ -2308,7 +2337,8 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
             continue
         raw = await f.read()
         if raw:
-            parts.append({"mime_type": f.content_type or "image/png", "data": raw})
+            cdata, ctype = compress_image_for_ai(raw, f.content_type or "image/png")
+            parts.append({"mime_type": ctype, "data": cdata})
     if not parts:
         return {"success": False, "detail": "이미지를 찾지 못했습니다."}
 
@@ -3364,7 +3394,8 @@ async def upload_vocab_file(file: UploadFile = File(...), difficulty: str = Form
             except Exception as e:
                 return {"success": False, "detail": f"PDF를 읽지 못했습니다: {e}"}
         elif (file.content_type or "").startswith("image/"):
-            parts.append({"mime_type": file.content_type, "data": raw})
+            cdata, ctype = compress_image_for_ai(raw, file.content_type)
+            parts.append({"mime_type": ctype, "data": cdata})
         else:
             return {"success": False, "detail": "엑셀(.xlsx/.csv), 이미지, PDF 파일만 올릴 수 있습니다."}
         words, last_error = await extract_vocab_words_via_ai([VOCAB_EXTRACT_PROMPT] + parts)
@@ -4279,11 +4310,14 @@ async def generate_stream(
                 if len(extracted.strip()) >= PDF_TEXT_MIN_CHARS:
                     sources.append({"label": f.filename, "text": extracted.strip(), "parts": []})
                 else:
-                    # 스캔본이거나 이미지 파일이면 원본을 그대로 보여줘야 한다
+                    # 스캔본이거나 이미지 파일이면 원본을 그대로 보여줘야 한다. 이 자료는
+                    # 문항 수에 따라 여러 배치로 나뉠 때마다 매번 다시 통째로 보내지므로,
+                    # 여기서 줄여두면 그만큼 여러 번 절약된다.
+                    cdata, ctype = compress_image_for_ai(file_bytes, f.content_type or "application/octet-stream")
                     sources.append({
                         "label": f.filename,
                         "text": "",
-                        "parts": [{"mime_type": f.content_type or "application/octet-stream", "data": file_bytes}],
+                        "parts": [{"mime_type": ctype, "data": cdata}],
                     })
     if not sources:
         sources = [{"label": "", "text": q_text, "parts": []}]
@@ -4444,7 +4478,8 @@ async def generate_explainer(
                 source_text = (source_text + "\n\n" + extracted).strip() if source_text else extracted.strip()
             else:
                 # PDF 텍스트 추출이 안 됐거나(스캔본 등) 이미지 파일이면 원본을 그대로 AI에게 보여준다
-                file_parts.append({"mime_type": f.content_type or "application/octet-stream", "data": file_bytes})
+                cdata, ctype = compress_image_for_ai(file_bytes, f.content_type or "application/octet-stream")
+                file_parts.append({"mime_type": ctype, "data": cdata})
 
     if not source_text.strip() and not file_parts:
         def empty_response():
@@ -8486,7 +8521,8 @@ async def extract_mock_scores(student_name: str = Form(...), text: str = Form(""
                               for r in rows if any(str(c or "").strip() for c in r))
             extra_text = (extra_text + "\n" + table).strip()
         elif (f.content_type or "").startswith("image/"):
-            parts.append({"mime_type": f.content_type, "data": raw})
+            cdata, ctype = compress_image_for_ai(raw, f.content_type)
+            parts.append({"mime_type": ctype, "data": cdata})
         else:
             return {"success": False, "detail": f"'{f.filename}' 은(는) 읽을 수 없는 형식입니다. 사진·캡처 이미지, PDF, 엑셀만 올려주세요."}
 
