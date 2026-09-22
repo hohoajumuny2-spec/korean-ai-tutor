@@ -9338,12 +9338,31 @@ async def import_univ_table(
             "total_rows": total_rows, "metric": fixed_metric, "warning": warning}
 
 
+# 수능 성적으로 견주는 점수 종류 — 이 기준으로 저장된 자료는 정시 자료다.
+SUNEUNG_METRICS = ("percentile", "percentile_sum", "score", "eng_grade")
+
+
+def fix_kind_by_metric(row: dict) -> dict:
+    """갈래가 '수시'인데 점수 기준이 백분위·점수처럼 수능 기준이면 정시로 본다.
+
+    💡 수시는 정의상 내신 등급으로 견주므로 '수시 + 백분위 합' 같은 조합은
+       성립하지 않는다. 올릴 때 화면의 수시/정시 선택을 놓치면 기본값(수시)
+       그대로 저장돼 정시 자료가 통째로 수시로 묻히는 일이 실제로 있었고,
+       그러면 정시 지도에 아무것도 뜨지 않는다. 원장님이 직접 갈래를 다시
+       맞추지 않아도 되도록 읽을 때 자동으로 바로잡는다.
+       (논술은 원장님이 직접 고른 값이므로 건드리지 않는다.)"""
+    if row.get("kind", "susi") in ("susi", "", None) and row.get("metric") in SUNEUNG_METRICS:
+        row = dict(row)
+        row["kind"] = "jeongsi"
+    return row
+
+
 def load_univ_table() -> list:
     if db is None:
         return []
     out = []
     for d in db.collection("univ_table").stream():
-        out.extend((d.to_dict() or {}).get("rows", []))
+        out.extend(fix_kind_by_metric(r) for r in ((d.to_dict() or {}).get("rows") or []))
     return out
 
 
