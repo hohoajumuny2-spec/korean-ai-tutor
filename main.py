@@ -1176,7 +1176,8 @@ def task_source_questions(kind: str, title: str) -> list:
         elif kind == "과제 제출":
             d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
             for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
-                out.append({"text": "", "answer": str(a), "answer_text": "", "options": [], "bogi": "", "image": ""})
+                out.append({"text": "", "answer": str(a), "answer_text": "", "options": [], "bogi": "", "image": "",
+                            "qtype": slot_kind(a)})
     except Exception as e:
         print("문항 되짚기 실패:", kind, title, e)
     return out
@@ -5454,12 +5455,18 @@ async def retry_info(req: RetryInfoReq):
     wrongs = sorted(int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None)
     retry = rep.get("retry") or {}
     expl = await asyncio.to_thread(explanations_for, kind, title)
+    # 💡 문항마다 1~5번 중 고르는지, 글자로 직접 쓰는지, 정해진 정답이 없는
+    #    서술형인지가 달라 다시 풀기 화면도 그에 맞게 그려야 한다.
+    qs = await asyncio.to_thread(task_source_questions, kind, title)
+    qtypes = {n: (qs[n - 1].get("qtype", "choice") if n - 1 < len(qs) else slot_kind(key[n - 1] if n - 1 < len(key) else ""))
+              for n in wrongs}
 
     return {
         "success": True,
         "title": title, "kind": kind,
         "question_count": len(key),
         "wrongs": wrongs,
+        "qtypes": qtypes,
         "score": rep.get("score", ""),
         "submitted_at": rep.get("submitted_at", ""),
         "retry_count": int(retry.get("count", 0) or 0),
@@ -5999,11 +6006,27 @@ async def delete_explain_video(video_id: str, name: str = Depends(current_admin_
 # ─────────────────────────────────────────────────────────
 # 관리자 - 숙제 및 기타
 # ─────────────────────────────────────────────────────────
+def strip_homework_answers(hw: dict) -> dict:
+    """학생에게 보내기 전에 정답표(answers)·해설을 지우고, 문항별로 객관식인지
+    단답형인지만 남긴다(OMR 화면에 알맞은 입력칸을 그리는 용도)."""
+    out = dict(hw)
+    answers = out.get("answers") or []
+    out["omr_kinds"] = [slot_kind(a) for a in answers]
+    out.pop("answers", None)
+    out.pop("explanations", None)
+    return out
+
+
 @app.get("/api/homeworks")
-def get_homeworks():
+def get_homeworks(student_name: str = ""):
     if db is None:
         return {"success": False, "homeworks": []}
-    return {"success": True, "homeworks": [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if student_name:
+        # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
+        #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
+        rows = [strip_homework_answers(h) for h in rows]
+    return {"success": True, "homeworks": rows}
 
 
 # 과제는 수업에서 내주는 것과 클리닉(보충)에서 내주는 것이 쓰임이 다르다.
@@ -6051,6 +6074,15 @@ def answer_label(key_slot) -> str:
     if not parts:
         return str(key_slot or "").strip()
     return " 또는 ".join(f"{p}번" for p in parts)
+
+
+def slot_kind(key_slot) -> str:
+    """정답 한 자리가 '1~5번 중 고르기'인지 '글자로 직접 쓰기'인지 — 정답 내용은
+    드러내지 않고 이 구분만 학생 화면에 보내, OMR 버튼판과 입력칸을 알맞게 그린다."""
+    parts = answer_slots(key_slot)
+    if parts and all(p in "12345" for p in parts):
+        return "choice"
+    return "short"
 
 
 UNSURE_MARK = "?"      # 학생이 '모름'을 고른 문항
