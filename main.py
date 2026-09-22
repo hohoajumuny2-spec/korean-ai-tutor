@@ -95,6 +95,7 @@ LEVELS = [
 AVATAR_SLOTS = [
     {"key": "face",   "name": "캐릭터",  "icon": "🙂"},
     {"key": "color",  "name": "색깔",    "icon": "🎨"},
+    {"key": "outfit", "name": "옷",      "icon": "👕"},
     {"key": "hat",    "name": "머리",    "icon": "🎩"},
     {"key": "pet",    "name": "친구",    "icon": "🐾"},
     {"key": "badge",  "name": "배지",    "icon": "🏅"},
@@ -130,6 +131,16 @@ AVATAR_ITEMS = {
         {"id": "candy",   "label": "솜사탕",   "css": "linear-gradient(135deg,#db2777,#38bdf8)", "ring": "#f472b6", "level": 8},
         {"id": "aurora",  "label": "오로라",   "css": "linear-gradient(135deg,#059669,#7c3aed,#0ea5e9)", "ring": "#a78bfa", "level": 9},
         {"id": "gold",    "label": "황금",     "css": "linear-gradient(135deg,#78350f,#f59e0b,#fde68a)", "ring": "#fbbf24", "level": 10},
+    ],
+    "outfit": [
+        {"id": "none",   "emoji": "",   "label": "없음",         "level": 1},
+        {"id": "tshirt", "emoji": "👕", "label": "티셔츠",       "level": 2},
+        {"id": "vest",   "emoji": "🦺", "label": "조끼",         "level": 3},
+        {"id": "hoodie", "emoji": "🧥", "label": "후드티",       "level": 5},
+        {"id": "jacket", "emoji": "🧥", "label": "재킷",         "level": 6},
+        {"id": "cape",   "emoji": "🦸", "label": "망토",         "level": 7},
+        {"id": "suit",   "emoji": "🤵", "label": "정장",         "level": 8},
+        {"id": "royal",  "emoji": "👑", "label": "황금 로브",    "level": 10},
     ],
     "hat": [
         {"id": "none",     "emoji": "",   "label": "없음",       "level": 1},
@@ -177,7 +188,7 @@ AVATAR_ITEMS = {
     ],
 }
 
-AVATAR_DEFAULTS = {"face": "boy", "color": "blue", "hat": "none",
+AVATAR_DEFAULTS = {"face": "boy", "color": "blue", "outfit": "none", "hat": "none",
                    "pet": "none", "badge": "none", "effect": "none"}
 
 
