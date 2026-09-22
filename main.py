@@ -1154,8 +1154,14 @@ def task_source_questions(kind: str, title: str) -> list:
             for q in ((d.to_dict() or {}).get("questions") or []) if d.exists else []:
                 opts = q.get("options") or []
                 ans = q.get("answer", "")
-                idx = _num(ans)
-                label = opts[int(idx) - 1] if idx and 1 <= int(idx) <= len(opts) else str(ans)
+                # 💡 복수 정답("1/3")이면 각 보기 글을 모아 "가 또는 다"처럼 보여준다
+                nums = answer_slots(ans)
+                labels = []
+                for n in nums:
+                    ni = _num(n)
+                    if ni and 1 <= int(ni) <= len(opts) and opts[int(ni) - 1]:
+                        labels.append(opts[int(ni) - 1])
+                label = " 또는 ".join(labels) if labels else str(ans)
                 out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
                             "options": opts, "bogi": q.get("bogi", ""), "image": q.get("image", "")})
         elif kind == "모의고사":
@@ -2363,7 +2369,7 @@ async def submit_exam(req: ExamSubmitRequest):
             point = int(q.get("score", 0) or 0)
             total_possible += point
             is_unsure = student_ans == UNSURE_MARK
-            is_ok = bool(student_ans) and not is_unsure and student_ans == correct_ans
+            is_ok = bool(student_ans) and not is_unsure and answer_matches(student_ans, correct_ans)
             if is_ok:
                 actual_score += point
             else:
@@ -2988,7 +2994,7 @@ async def submit_quiz(req: QuizSubmitReq):
             total_possible += point
             # 💡 '모름'은 오답으로 채점하되 따로 표시해, 찍어서 맞힌 것과 구분한다
             is_unsure = my_ans == UNSURE_MARK
-            is_ok = bool(my_ans) and not is_unsure and my_ans == correct_ans
+            is_ok = bool(my_ans) and not is_unsure and answer_matches(my_ans, correct_ans)
             if is_ok:
                 actual_score += point
             options = [str(o) for o in (q.get("options") or [])]
@@ -5181,7 +5187,7 @@ def grade_question_bank(name: str, profile: dict, title: str, content: str, answ
         if got == UNSURE_MARK:
             unsure.append(i + 1)
             wrongs.append(i + 1)
-        elif got and got == ans:
+        elif got and answer_matches(got, ans):
             correct += 1
         else:
             wrongs.append(i + 1)
@@ -5411,7 +5417,7 @@ async def retry_submit(req: RetrySubmitReq):
         if got == UNSURE_MARK:
             unsure.append(no)
             still.add(no); fixed.discard(no)
-        elif got and want and got == want:
+        elif got and want and answer_matches(got, want):
             graded.append(no)
             fixed.add(no); still.discard(no)
         elif got:
@@ -5908,6 +5914,31 @@ def normalize_homework_kind(v) -> str:
     return "class"
 
 
+def answer_slots(key_slot) -> list:
+    """정답 한 자리에 슬래시(/)로 여러 보기가 적혀 있으면 인정하는 보기 목록으로 나눈다.
+    문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리."""
+    raw = str(key_slot or "").strip()
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split("/") if p.strip()]
+
+
+def answer_matches(mine, key_slot) -> bool:
+    """학생이 고른 답이, 그 자리에 정답으로 인정된 보기 중 하나와 같은지."""
+    mine = str(mine or "").strip()
+    if not mine:
+        return False
+    return mine in answer_slots(key_slot)
+
+
+def answer_label(key_slot) -> str:
+    """정답을 사람이 읽기 좋은 문구로 — 복수 정답이면 '1번 또는 3번'처럼."""
+    parts = answer_slots(key_slot)
+    if not parts:
+        return str(key_slot or "").strip()
+    return " 또는 ".join(f"{p}번" for p in parts)
+
+
 UNSURE_MARK = "?"      # 학생이 '모름'을 고른 문항
 
 
@@ -6160,7 +6191,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
         if got == UNSURE_MARK:
             unsure.append(i + 1)
             wrongs.append(i + 1)
-        elif got and got == ans:
+        elif got and answer_matches(got, ans):
             correct += 1
         else:
             wrongs.append(i + 1)
