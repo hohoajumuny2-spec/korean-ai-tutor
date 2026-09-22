@@ -2332,7 +2332,7 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
         resp = await asyncio.to_thread(lambda: safe_generate([prompt] + parts))
         text = (resp.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"이미지 분석 실패: {str(e)}"}
+        return {"success": False, "detail": f"이미지 분석 실패: {friendly_ai_error(e)}"}
 
     # 코드블록이나 앞뒤 군말이 섞여 와도 JSON 덩어리만 뽑아낸다
     match = re.search(r"\{.*\}", text, re.S)
@@ -8040,7 +8040,7 @@ async def analyze_counsel(req: CounselNameReq):
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
         text = (res.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 분석 실패: {str(e)}"}
+        return {"success": False, "detail": f"AI 분석 실패: {friendly_ai_error(e)}"}
 
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     counsel_ref(name).set({"analysis": {"text": text, "at": at}, "updated_at": at}, merge=True)
@@ -8114,7 +8114,7 @@ async def analyze_tendency(req: TendencyAnalyzeReq):
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
         text = (res.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 분석 실패: {str(e)}"}
+        return {"success": False, "detail": f"AI 분석 실패: {friendly_ai_error(e)}"}
 
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     t["analysis"] = text
@@ -8743,7 +8743,7 @@ async def make_summary(req: CounselNameReq):
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
         text = (res.text or "").strip()
     except Exception as e:
-        return {"success": False, "detail": f"AI 소견 작성 실패: {str(e)}"}
+        return {"success": False, "detail": f"AI 소견 작성 실패: {friendly_ai_error(e)}"}
 
     at = datetime.now().strftime("%Y-%m-%d %H:%M")
     counsel_ref(name).set({"summary": {"text": text, "at": at}, "updated_at": at}, merge=True)
