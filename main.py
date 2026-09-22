@@ -7488,11 +7488,16 @@ def delete_grade_cuts(req: GradeCutDeleteReq):
 def gst_percentile_sum(rel_rows) -> float:
     """국어+수학 백분위에 탐구(과목이 둘이면 평균) 백분위를 더한 값 — 정시
     배치표에서 흔히 '국수탐(평균) 백분위 합'으로 쓰는 기준. 국어·수학 중
-    하나라도 없거나 탐구가 하나도 없으면 계산할 수 없어 None을 돌려준다."""
-    kor = next((_num(x.get("percentile")) for x in rel_rows if str(x.get("subject", "")).strip() == "국어"), None)
-    math = next((_num(x.get("percentile")) for x in rel_rows if str(x.get("subject", "")).strip() == "수학"), None)
+    하나라도 없거나 탐구가 하나도 없으면 계산할 수 없어 None을 돌려준다.
+    💡 성적표에서 뽑을 때 "국어(언어와매체)"처럼 선택과목을 괄호로 붙이므로
+    정확히 "국어"/"수학"과 같은지가 아니라 그 글자로 시작하는지를 본다."""
+    def is_kor(name): return str(name or "").strip().startswith("국어")
+    def is_math(name): return str(name or "").strip().startswith("수학")
+
+    kor = next((_num(x.get("percentile")) for x in rel_rows if is_kor(x.get("subject"))), None)
+    math = next((_num(x.get("percentile")) for x in rel_rows if is_math(x.get("subject"))), None)
     tamgu_ps = [_num(x.get("percentile")) for x in rel_rows
-                if str(x.get("subject", "")).strip() not in ("국어", "수학")]
+                if not is_kor(x.get("subject")) and not is_math(x.get("subject"))]
     tamgu_ps = [p for p in tamgu_ps if p is not None]
     if kor is None or math is None or not tamgu_ps:
         return None
