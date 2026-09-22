@@ -7491,17 +7491,32 @@ def gst_percentile_sum(rel_rows) -> float:
     하나라도 없거나 탐구가 하나도 없으면 계산할 수 없어 None을 돌려준다.
     💡 성적표에서 뽑을 때 "국어(언어와매체)"처럼 선택과목을 괄호로 붙이므로
     정확히 "국어"/"수학"과 같은지가 아니라 그 글자로 시작하는지를 본다."""
+    value, _missing = gst_percentile_sum_detail(rel_rows)
+    return value
+
+
+def gst_percentile_sum_detail(rel_rows):
+    """위 계산을 하되, 못 구했을 때 '어느 과목의 백분위가 없어서인지'도 함께 돌려준다.
+    💡 화면에 '백분위 합 없음'이라고만 뜨면 원장님이 무엇을 채워야 할지 알 수 없다."""
     def is_kor(name): return str(name or "").strip().startswith("국어")
     def is_math(name): return str(name or "").strip().startswith("수학")
 
     kor = next((_num(x.get("percentile")) for x in rel_rows if is_kor(x.get("subject"))), None)
     math = next((_num(x.get("percentile")) for x in rel_rows if is_math(x.get("subject"))), None)
-    tamgu_ps = [_num(x.get("percentile")) for x in rel_rows
-                if not is_kor(x.get("subject")) and not is_math(x.get("subject"))]
-    tamgu_ps = [p for p in tamgu_ps if p is not None]
-    if kor is None or math is None or not tamgu_ps:
-        return None
-    return round(kor + math + sum(tamgu_ps) / len(tamgu_ps), 2)
+    tamgu_rows = [x for x in rel_rows
+                  if not is_kor(x.get("subject")) and not is_math(x.get("subject"))]
+    tamgu_ps = [p for p in (_num(x.get("percentile")) for x in tamgu_rows) if p is not None]
+
+    missing = []
+    if kor is None:
+        missing.append("국어 백분위" if any(is_kor(x.get("subject")) for x in rel_rows) else "국어")
+    if math is None:
+        missing.append("수학 백분위" if any(is_math(x.get("subject")) for x in rel_rows) else "수학")
+    if not tamgu_ps:
+        missing.append("탐구 백분위" if tamgu_rows else "탐구")
+    if missing:
+        return None, missing
+    return round(kor + math + sum(tamgu_ps) / len(tamgu_ps), 2), []
 
 
 def summarize_mock(rows: list) -> dict:
@@ -7513,7 +7528,8 @@ def summarize_mock(rows: list) -> dict:
              if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None
              or _num(r.get("raw")) is not None]
     if not valid:
-        return {"avg": None, "pct_avg": None, "pct_sum_gst": None, "latest": None, "count": 0,
+        return {"avg": None, "pct_avg": None, "pct_sum_gst": None, "pct_sum_missing": ["모의고사 성적"],
+                "latest": None, "count": 0,
                 "by_date": [], "absolute": [], "abs_text": "", "raw_sum": None, "raw_text": ""}
 
     by_date = {}
@@ -7532,10 +7548,12 @@ def summarize_mock(rows: list) -> dict:
         abs_list = [{"subject": str(x.get("subject", "")).strip(),
                      "grade": _num(x.get("grade")), "raw": _num(x.get("raw"))}
                     for x in absolute if _num(x.get("grade")) is not None or _num(x.get("raw")) is not None]
+        pct_sum, pct_sum_missing = gst_percentile_sum_detail(rel)
         return {
             "avg": round(sum(gs) / len(gs), 2) if gs else None,
             "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
-            "pct_sum_gst": gst_percentile_sum(rel),
+            "pct_sum_gst": pct_sum,
+            "pct_sum_missing": pct_sum_missing,
             "raw_sum": round(sum(raws), 1) if raws else None,
             "raw_count": len(raws),
             "rel_count": len(rel),
@@ -7555,6 +7573,7 @@ def summarize_mock(rows: list) -> dict:
         "avg": latest["avg"] if latest else None,
         "pct_avg": latest["pct_avg"] if latest else None,
         "pct_sum_gst": latest["pct_sum_gst"] if latest else None,
+        "pct_sum_missing": (latest.get("pct_sum_missing") or []) if latest else ["모의고사 성적"],
         "raw_sum": raw_sum,
         "raw_text": raw_text,
         "latest": latest["date"] if latest else None,
@@ -9315,6 +9334,7 @@ async def import_univ_table(
     for e in merged:
         k = e.get("kind", "susi")
         kinds[k] = kinds.get(k, 0) + 1
+    invalidate_univ_cache()
     db.collection("settings").document("univ_table_meta").set({
         "label": " + ".join(dict.fromkeys(labels))[:160] or "입결 자료",
         "count": len(merged),
@@ -9357,12 +9377,31 @@ def fix_kind_by_metric(row: dict) -> dict:
     return row
 
 
+# 💡 입결 자료는 수천 줄인데 원장님이 가끔 올릴 뿐 거의 바뀌지 않는다. 그런데
+#    상담 화면을 한 번 열 때마다(상담 카드 → 목표 대학 거리 → 지도) 같은 자료를
+#    Firestore에서 통째로 두세 번씩 다시 읽어 느렸다. 한 번 읽어두고 재사용한다.
+_univ_table_cache = {"rows": None, "at": 0.0}
+UNIV_CACHE_TTL = 300.0     # 5분 — 여러 대에 나눠 떠 있을 때를 대비한 안전장치
+
+
+def invalidate_univ_cache():
+    """자료를 새로 올리거나 고친 직후 — 다음 요청은 다시 읽어오게 한다."""
+    _univ_table_cache["rows"] = None
+    _univ_table_cache["at"] = 0.0
+
+
 def load_univ_table() -> list:
     if db is None:
         return []
+    now = time.time()
+    cached = _univ_table_cache["rows"]
+    if cached is not None and (now - _univ_table_cache["at"]) < UNIV_CACHE_TTL:
+        return cached
     out = []
     for d in db.collection("univ_table").stream():
         out.extend(fix_kind_by_metric(r) for r in ((d.to_dict() or {}).get("rows") or []))
+    _univ_table_cache["rows"] = out
+    _univ_table_cache["at"] = now
     return out
 
 
@@ -9390,6 +9429,7 @@ def clear_univ_table():
     for d in db.collection("univ_table").stream():
         d.reference.delete()
     db.collection("settings").document("univ_table_meta").delete()
+    invalidate_univ_cache()
     return {"success": True}
 
 
@@ -9435,6 +9475,8 @@ def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metr
             if all_kinds == {kind_n}:
                 meta["metric"] = to_metric
                 db.collection("settings").document("univ_table_meta").set(meta)
+    if changed:
+        invalidate_univ_cache()
     return {"success": True, "changed": changed}
 
 
@@ -9470,6 +9512,8 @@ def fix_univ_kind(from_kind: str = Form(...), to_kind: str = Form(...)):
             db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
                 {"rows": rows[i:i + UNIV_CHUNK_SIZE]}
             )
+    if changed:
+        invalidate_univ_cache()
     return {"success": True, "changed": changed}
 
 
@@ -9689,6 +9733,94 @@ def resolve_univ_region(univ: str, region_text: str = "") -> dict:
     return {"sido": "", "sido_code": "", "sigungu": "", "source": "unknown"}
 
 
+class UnivPossibleReq(BaseModel):
+    student_name: str = ""
+    kind: str = "jeongsi"
+    # 비워두면 학생의 실제 성적으로 본다. 숫자를 넣으면 '그 점수라면 어디까지
+    # 가능한지'를 미리 본다 — 성적이 오르내릴 때를 대비한 상담용.
+    percentile_sum: Optional[float] = None
+    percentile: Optional[float] = None
+    grade: Optional[float] = None
+    eng_grade: Optional[float] = None
+    only_reachable: bool = False
+    limit: int = 80
+
+
+@app.post("/api/admin/counsel/univ_possible", dependencies=[Depends(verify_admin)])
+def get_univ_possible(req: UnivPossibleReq):
+    """가능한 '대학'을 먼저 보여주고, 대학마다 가능한 '학과'와 모자란 점수를 함께 준다.
+
+    💡 지도는 지역별로 훑어보는 용도라 '어느 대학이 되는지'를 한눈에 보기 어려웠다.
+       여기서는 대학을 가까운 순서로 줄 세우고, 그 안에 학과를 담아 돌려준다.
+       '가능 백분위'를 넣으면 학생 실제 성적 대신 그 점수로 견줘, 성적이 이만큼
+       되면 어디까지 열리는지 미리 볼 수 있다."""
+    rows = load_univ_table()
+    if not rows:
+        return {"success": False, "detail": "입결 자료가 아직 올라오지 않았습니다. '입결 자료(엑셀) 관리'에서 먼저 올려주세요."}
+
+    name = (req.student_name or "").strip()
+    mine_all = {"grade": None, "percentile": None, "percentile_sum": None, "score": None, "eng_grade": None}
+    if name:
+        mine_all = student_scores(build_counsel_view(name))
+
+    # 직접 넣은 값이 있으면 그것을 우선한다(가정 점수로 미리 보기)
+    used = dict(mine_all)
+    overridden = []
+    for key in ("percentile_sum", "percentile", "grade", "eng_grade"):
+        v = getattr(req, key, None)
+        if v is not None:
+            used[key] = float(v)
+            overridden.append(key)
+
+    kind_n = normalize_univ_kind(req.kind)
+    merged = {}
+    for r in rows:
+        if normalize_univ_kind(r.get("kind", "susi")) != kind_n:
+            continue
+        item = compare_univ_row(r, used)
+        if not item or item["gap"] is None:
+            continue
+        slot = merged.setdefault(item["univ"], {
+            "univ": item["univ"], "majors": [], "reach_count": 0, "total": 0,
+            "best_gap": None, "unit": item["unit"], "region_text": r.get("region", ""),
+        })
+        slot["total"] += 1
+        if item["reach"]:
+            slot["reach_count"] += 1
+        if slot["best_gap"] is None or item["gap"] < slot["best_gap"]:
+            slot["best_gap"] = item["gap"]
+        if len(slot["majors"]) < 60:
+            slot["majors"].append({
+                "major": item["major"], "type": item["type"], "subtype": item["subtype"],
+                "method": item["method"], "subjects": item["subjects"], "year": item["year"],
+                "cut": item["cut"], "unit": item["unit"], "gap": item["gap"],
+                "reach": item["reach"], "short_by": None if item["reach"] else abs(item["gap"]),
+                "quota": item["quota"], "rate": item["rate"],
+                "min_suneung": item["min_suneung"], "eng_cut": item["eng_cut"],
+            })
+        if not slot["region_text"]:
+            slot["region_text"] = r.get("region", "")
+
+    univs = list(merged.values())
+    if req.only_reachable:
+        univs = [u for u in univs if u["reach_count"]]
+    for u in univs:
+        u["majors"].sort(key=lambda m: m["gap"])
+        u["short_by"] = None if u["best_gap"] is None or u["best_gap"] <= 0 else round(u["best_gap"], 2)
+        reg = resolve_univ_region(u["univ"], u.get("region_text", ""))
+        u["sido"], u["sigungu"] = reg.get("sido", ""), reg.get("sigungu", "")
+    # 닿는 대학을 먼저, 그다음 조금이라도 덜 모자란 순서로
+    univs.sort(key=lambda u: (0 if u["reach_count"] else 1, u["best_gap"]))
+
+    return {
+        "success": True, "kind": kind_n, "student": name,
+        "mine": mine_all, "used": used, "overridden": overridden,
+        "reach_univ_count": sum(1 for u in univs if u["reach_count"]),
+        "total_univ_count": len(univs),
+        "univs": univs[: max(1, min(300, req.limit))],
+    }
+
+
 class UnivMapReq(BaseModel):
     student_name: str
     kind: str = "susi"
@@ -9823,6 +9955,7 @@ def student_scores(view: dict) -> dict:
         "grade": view["naesin"]["avg"],
         "percentile": view["mock"]["pct_avg"],
         "percentile_sum": view["mock"].get("pct_sum_gst"),
+        "percentile_sum_missing": view["mock"].get("pct_sum_missing") or [],
         "score": view["mock"].get("raw_sum"),
         "eng_grade": eng,
     }
