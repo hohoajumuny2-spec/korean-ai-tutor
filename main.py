@@ -4,10 +4,13 @@ import re
 import json
 import time
 import uuid
+import base64
 import hashlib
 import secrets
 import random
 import requests
+import pywebpush
+from py_vapid import Vapid01
 import threading
 import mimetypes
 import urllib.parse
@@ -2026,12 +2029,17 @@ async def create_exam(
     subj_key = normalize_subject(subject)
     title = with_subject_prefix(title, subj_key)
     safe_title = sanitize_doc_id(title)
+    tclass = str(target_class or "").strip()
+    prev = await asyncio.to_thread(lambda: db.collection("exams").document(safe_title).get())
+    is_new = not prev.exists
+    created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
+    created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await asyncio.to_thread(
         lambda: db.collection("exams").document(safe_title).set(
             {
                 "title": title,
                 "subject": subj_key,
-                "target_class": str(target_class or "").strip(),
+                "target_class": tclass,
                 "objective": objective,
                 "exam_data": exam_data,
                 "pdf_url": pdf_url,
@@ -2040,14 +2048,18 @@ async def create_exam(
                 "explanation_text": explanation_text,
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": created_at,
             }
         )
     )
     know_content = "\n\n".join(t for t in (objective, explanation_text) if t.strip())
     if know_content:
         await asyncio.to_thread(sync_knowledge_from_source, f"exam_{safe_title}", f"[모의고사] {title}", know_content, subj_key, "exam")
-    return {"success": True, "title": title}
+    if is_new:
+        await asyncio.to_thread(
+            send_push_to_audience, subj_key, tclass, "새 모의고사",
+            f"'{title}' 모의고사가 열렸어요. 응시해보세요!", "/#prog-classroom", "exam")
+    return {"success": True, "title": title, "is_new": is_new}
 
 
 class ExamFileDeleteReq(BaseModel):
@@ -2580,13 +2592,15 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
     created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    is_new = not prev.exists
+    tclass = str(req.get("target_class", "") or "").strip()
     questions = req.get("questions", [])
     await asyncio.to_thread(
         lambda: db.collection("quizzes").document(safe_title).set(
             {
                 "title": title,
                 "subject": subject,
-                "target_class": str(req.get("target_class", "") or "").strip(),
+                "target_class": tclass,
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
                 "questions": questions,
@@ -2595,6 +2609,10 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
             }
         )
     )
+    if is_new:
+        await asyncio.to_thread(
+            send_push_to_audience, subject, tclass, "새 타임어택 퀴즈",
+            f"'{title}' 퀴즈가 올라왔어요. 도전해보세요!", "/#prog-classroom", "quiz")
     # 💡 AI가 '이 퀴즈 몇 번 문제 이해가 안 돼요' 같은 질문을 받을 수 있으려면 문항
     # 내용을 알아야 한다. 다만 정답을 그대로 실으면 학생이 그걸 캐낼 수 있으니
     # (기존 knowledge 업로드의 '정답 필드 제외' 원칙과 동일하게) 문제·보기만 싣는다.
@@ -4866,6 +4884,187 @@ UNSURE_REPORT_MAX_ROWS = 400      # 한 번에 훑어볼 제출 기록 수
 #   💡 학생이 직접 낸 것과 기록이 똑같아야 한다. 그래서 채점 로직을 새로 짜지 않고
 #      학생용 제출 함수를 그대로 부른다. 점수·오답·모름·경험치·알림까지 전부 같은 길.
 # ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────
+# 푸시 알림 — 학생 휴대폰/브라우저로 보낸다
+#   💡 VAPID 키는 서버가 처음 켜질 때 스스로 만들어 Firestore에 저장해두고
+#      계속 그걸 쓴다. 원장님이 따로 키를 설정하실 필요가 없다.
+# ─────────────────────────────────────────────────────────
+_vapid_keys_cache = None
+
+
+def get_vapid_keys() -> dict:
+    """공개키·개인키·발신자 표시를 돌려준다. 없으면 새로 만들어 저장한다."""
+    global _vapid_keys_cache
+    if _vapid_keys_cache:
+        return _vapid_keys_cache
+    if db is None:
+        return {}
+    doc_ref = db.collection("settings").document("push_vapid")
+    doc = doc_ref.get()
+    if doc.exists:
+        data = doc.to_dict() or {}
+        if data.get("private_pem") and data.get("public_b64"):
+            _vapid_keys_cache = data
+            return data
+
+    from cryptography.hazmat.primitives.asymmetric import ec  # noqa: F401 (형식 확인용)
+    from cryptography.hazmat.primitives import serialization
+    vapid = Vapid01()
+    vapid.generate_keys()
+    priv_pem = vapid.private_pem()
+    if isinstance(priv_pem, bytes):
+        priv_pem = priv_pem.decode()
+    raw_pub = vapid.public_key.public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    pub_b64 = base64.urlsafe_b64encode(raw_pub).rstrip(b"=").decode()
+    data = {"private_pem": priv_pem, "public_b64": pub_b64, "subject": "mailto:owner@logyedu.co.kr"}
+    doc_ref.set(data)
+    _vapid_keys_cache = data
+    return data
+
+
+def save_push_subscription(student_name: str, endpoint: str, p256dh: str, auth: str):
+    """학생 기기 하나를 등록한다. 같은 기기가 다시 등록하면 갱신만 한다."""
+    if db is None or not student_name or not endpoint:
+        return
+    doc_id = sanitize_doc_id(hashlib.sha1(endpoint.encode("utf-8")).hexdigest())
+    db.collection("push_subs").document(doc_id).set({
+        "student_name": student_name, "endpoint": endpoint,
+        "p256dh": p256dh, "auth": auth,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
+def remove_push_subscription(endpoint: str):
+    if db is None or not endpoint:
+        return
+    doc_id = sanitize_doc_id(hashlib.sha1(endpoint.encode("utf-8")).hexdigest())
+    db.collection("push_subs").document(doc_id).delete()
+
+
+def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> bool:
+    """구독 하나에 실제로 쏜다. 기기가 사라졌으면(410/404) False를 돌려줘 정리하게 한다."""
+    keys = get_vapid_keys()
+    if not keys:
+        return True
+    payload = json.dumps({"title": title, "body": body, "url": url or "/", "tag": tag or "logyedu"})
+    subscription_info = {
+        "endpoint": sub_doc["endpoint"],
+        "keys": {"p256dh": sub_doc["p256dh"], "auth": sub_doc["auth"]},
+    }
+    try:
+        pywebpush.webpush(
+            subscription_info=subscription_info, data=payload,
+            vapid_private_key=keys["private_pem"],
+            vapid_claims={"sub": keys.get("subject", "mailto:owner@logyedu.co.kr")},
+            timeout=6,
+        )
+        return True
+    except pywebpush.WebPushException as e:
+        status = getattr(e.response, "status_code", None)
+        if status in (404, 410):
+            return False   # 기기에서 알림을 껐거나 앱을 지웠다 — 조용히 정리한다
+        print("푸시 전송 실패:", e)
+        return True
+    except Exception as e:
+        print("푸시 전송 실패:", e)
+        return True
+
+
+def _push_to_docs(docs, title: str, body: str, url: str, tag: str) -> int:
+    sent = 0
+    for d in docs:
+        row = d.to_dict() or {}
+        if not row.get("endpoint"):
+            continue
+        if _push_one(row, title, body, url, tag):
+            sent += 1
+        else:
+            db.collection("push_subs").document(d.id).delete()
+    return sent
+
+
+def send_push_to_student(student_name: str, title: str, body: str, url: str = "", tag: str = "") -> int:
+    """한 학생의 모든 기기로 보낸다."""
+    if db is None or not student_name:
+        return 0
+    docs = list(db.collection("push_subs").where("student_name", "==", student_name).stream())
+    return _push_to_docs(docs, title, body, url, tag)
+
+
+def send_push_to_all(title: str, body: str, url: str = "", tag: str = "") -> int:
+    """등록된 모든 학생 기기로 보낸다 (공지·전체 과제용)."""
+    if db is None:
+        return 0
+    docs = list(db.collection("push_subs").stream())
+    return _push_to_docs(docs, title, body, url, tag)
+
+
+def send_push_to_audience(subject: str, target_class: str, title: str, body: str, url: str = "", tag: str = "") -> int:
+    """그 과목(+반)을 듣는 학생에게만 보낸다 (모의고사·퀴즈용)."""
+    if db is None:
+        return 0
+    docs = list(db.collection("push_subs").stream())
+    seen_students = {}
+    for d in docs:
+        row = d.to_dict() or {}
+        name = row.get("student_name", "")
+        if name and name not in seen_students:
+            seen_students[name] = task_visible_to_student(subject, target_class, name)
+    sent = 0
+    for d in docs:
+        row = d.to_dict() or {}
+        name = row.get("student_name", "")
+        if not seen_students.get(name):
+            continue
+        if _push_one(row, title, body, url, tag):
+            sent += 1
+        else:
+            db.collection("push_subs").document(d.id).delete()
+    return sent
+
+
+class PushSubscribeReq(BaseModel):
+    student_name: str
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+@app.get("/api/push/vapid_public_key")
+def push_vapid_public_key():
+    keys = get_vapid_keys()
+    return {"success": bool(keys), "key": keys.get("public_b64", "")}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(req: PushSubscribeReq):
+    if not req.student_name.strip():
+        return {"success": False, "detail": "학생 이름이 없습니다."}
+    await asyncio.to_thread(save_push_subscription, req.student_name.strip(), req.endpoint, req.p256dh, req.auth)
+    return {"success": True}
+
+
+class PushUnsubscribeReq(BaseModel):
+    endpoint: str
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(req: PushUnsubscribeReq):
+    await asyncio.to_thread(remove_push_subscription, req.endpoint)
+    return {"success": True}
+
+
+@app.post("/api/admin/push_test", dependencies=[Depends(verify_admin)])
+async def push_test(student_name: str = Form(...)):
+    """원장님이 알림이 실제로 뜨는지 시험 삼아 한 번 보내본다."""
+    n = await asyncio.to_thread(
+        send_push_to_student, student_name.strip(), "로지에듀",
+        "테스트 알림입니다. 이게 보이면 정상 동작 중이에요!", "/", "test")
+    return {"success": True, "sent": n}
+
+
 GRADE_KINDS = {
     "homework": ("과제 제출", "과제"),
     "exam": ("모의고사", "모의고사"),
@@ -5501,6 +5700,14 @@ async def grade_for_student(req: GradeForStudentReq):
         res["graded_by_admin"] = True
         res["replaced"] = replaced
         res["kind_label"] = kind_label
+        if res.get("success", True):
+            score_txt = res.get("score", "")
+            if res.get("correct") is not None and res.get("total") is not None:
+                score_txt = f"{res['correct']}/{res['total']}"
+            await asyncio.to_thread(
+                send_push_to_student, name, f"{kind_label} 채점 완료",
+                f"'{title}' 채점 결과가 나왔어요" + (f" ({score_txt})" if score_txt else "") + ".",
+                "/#prog-mypage", "grade_result")
     return res
 
 
@@ -5778,12 +5985,18 @@ async def create_homework(
 
     answer_list = parse_answer_list(answers)
     safe_title = sanitize_doc_id(title)
+    kind_norm = normalize_homework_kind(kind)
+    # 💡 같은 제목으로 다시 올리면 '고치기'다 — 만든 날짜는 그대로 두고, 알림도 다시 울리지 않는다.
+    prev = await asyncio.to_thread(lambda: db.collection("homeworks").document(safe_title).get())
+    is_new = not prev.exists
+    created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
+    created_at = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await asyncio.to_thread(
         lambda: db.collection("homeworks").document(safe_title).set(
             {
                 "title": title,
                 "desc": desc,
-                "kind": normalize_homework_kind(kind),
+                "kind": kind_norm,
                 "answer_text": answer_text,
                 "answer_file": ans_url,
                 # 정답을 넣어두면 학생이 OMR로 답만 마킹해도 그 자리에서 채점된다
@@ -5791,12 +6004,17 @@ async def create_homework(
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": created_at,
             }
         )
     )
+    if is_new:
+        kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
+        await asyncio.to_thread(
+            send_push_to_all, f"새 {kind_label}",
+            f"'{title}' {kind_label}가 올라왔어요. 확인해보세요!", "/#prog-classroom", "homework")
     return {"success": True, "question_count": len(answer_list),
-            "explanation_count": len(parse_explanation_map(explanations))}
+            "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
 
 class HomeworkFileDeleteReq(BaseModel):
@@ -5968,6 +6186,7 @@ async def create_board_post_admin(title: str = Form(...), desc: str = Form(""), 
     file_url = ""
     if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
     await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    await asyncio.to_thread(send_push_to_all, "새 공지사항", title[:120], "/#prog-classroom", "board")
     return {"success": True}
 
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])

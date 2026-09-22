@@ -10,3 +10,5 @@ openpyxl
 Pillow
 gTTS
 imageio-ffmpeg
+pywebpush
+py-vapid
