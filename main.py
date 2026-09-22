@@ -1171,8 +1171,9 @@ def task_source_questions(kind: str, title: str) -> list:
             if d.exists:
                 data = json.loads((d.to_dict() or {}).get("exam_data") or "{}")
                 for q in (data.get("questions") or []):
-                    out.append({"text": "", "answer": str(q.get("ans", "")), "answer_text": "",
-                                "options": [], "bogi": "", "image": ""})
+                    ans = q.get("ans", "")
+                    out.append({"text": "", "answer": str(ans), "answer_text": "",
+                                "options": [], "bogi": "", "image": "", "qtype": slot_kind(ans)})
         elif kind == "과제 제출":
             d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
             for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
@@ -2148,11 +2149,13 @@ def delete_exam_file(req: ExamFileDeleteReq):
 
 
 def strip_exam_answers(exam: dict) -> dict:
-    """학생에게 보내기 전에 exam_data 안 문항에서 정답(ans)만 지운다."""
+    """학생에게 보내기 전에 exam_data 안 문항에서 정답(ans)만 지우고, 그 자리가
+    객관식인지 단답형인지만 남긴다(OMR 화면에 알맞은 입력칸을 그리는 용도)."""
     out = dict(exam)
     try:
         data = json.loads(exam.get("exam_data") or "{}")
         for q in (data.get("questions") or []):
+            q["qtype"] = slot_kind(q.get("ans", ""))
             q.pop("ans", None)
         out["exam_data"] = json.dumps(data, ensure_ascii=False)
     except Exception:
