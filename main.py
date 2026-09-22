@@ -22,14 +22,15 @@ from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form, WebSocket,
     WebSocketDisconnect, Response, Request, Header, Depends
 )
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timedelta
 import fitz
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
@@ -42,6 +43,10 @@ for folder in ["exams", "homeworks", "board", "chat", "profiles", "explain_video
     os.makedirs(f"uploads/{folder}", exist_ok=True)
 
 app = FastAPI()
+
+# 💡 상담 화면은 입결 자료 수천 줄을 한 번에 받아 간다. 글자로 된 답이라 눌러 보내면
+#    크기가 1/8 안팎으로 줄어든다. 브라우저가 알아서 풀어 쓰므로 화면 쪽은 손댈 것이 없다.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.add_middleware(
     CORSMiddleware,
@@ -617,6 +622,14 @@ def normalize_grade(value: str) -> str:
     return m.group(0) if m else value.strip()
 
 
+# 💡 올린 파일은 같은 이름이면 내용이 바뀌지 않는다(새로 올리면 이름도 새로 생긴다).
+#    그래서 브라우저가 오래 갖고 있어도 안전하다. 이 머리글이 없어서 프로필 사진·학습자료가
+#    화면을 열 때마다 통째로 다시 내려왔고, 그게 서버 전송량을 다 잡아먹었다.
+UPLOAD_CACHE_HEADER = "public, max-age=604800, immutable"   # 7일
+# 파일 주소를 구글 저장소로 바로 넘길 때 그 주소가 살아 있는 시간
+UPLOAD_SIGNED_URL_MINUTES = 60
+
+
 @app.get("/uploads/{folder}/{filename}")
 def get_upload_file(folder: str, filename: str):
     safe_filename = get_safe_filename(filename)
@@ -627,15 +640,35 @@ def get_upload_file(folder: str, filename: str):
     encoded_filename = urllib.parse.quote(safe_filename.encode("utf-8"))
     is_inline = mt in ["application/pdf", "image/jpeg", "image/png", "image/gif"]
     disposition = "inline" if is_inline else "attachment"
+    content_disposition = f"{disposition}; filename*=UTF-8''{encoded_filename}"
 
     if bucket:
         try:
             blob = bucket.blob(filepath)
             if blob.exists():
+                # ① 되도록 구글 저장소 주소로 넘겨준다 — 파일 자체가 우리 서버를
+                #    지나가지 않으므로 서버 전송량을 거의 쓰지 않는다.
+                try:
+                    url = blob.generate_signed_url(
+                        version="v4",
+                        expiration=timedelta(minutes=UPLOAD_SIGNED_URL_MINUTES),
+                        method="GET",
+                        response_disposition=content_disposition,
+                        response_type=mt or "application/octet-stream",
+                    )
+                    return RedirectResponse(
+                        url, status_code=307,
+                        # 넘겨주는 주소보다 짧게 — 주소가 만료된 뒤에도 쓰이지 않도록
+                        headers={"Cache-Control": f"private, max-age={(UPLOAD_SIGNED_URL_MINUTES - 5) * 60}"},
+                    )
+                except Exception as e:
+                    print("저장소 주소 넘기기 실패, 직접 보냄:", e)
+                # ② 넘기지 못하면 예전처럼 직접 보내되, 브라우저가 갖고 있게 한다
                 return Response(
                     content=blob.download_as_bytes(),
                     media_type=mt or "application/octet-stream",
-                    headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}"},
+                    headers={"Content-Disposition": content_disposition,
+                             "Cache-Control": UPLOAD_CACHE_HEADER},
                 )
         except Exception:
             pass
@@ -644,7 +677,8 @@ def get_upload_file(folder: str, filename: str):
         return FileResponse(
             filepath,
             media_type=mt or "application/octet-stream",
-            headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}"},
+            headers={"Content-Disposition": content_disposition,
+                     "Cache-Control": UPLOAD_CACHE_HEADER},
         )
     raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
@@ -9197,6 +9231,9 @@ UNIV_TEMPLATES = {
              "실기에서 눈여겨보는 점이나 조건. 상담 때 그대로 보여줍니다."),
             ("subjects", "수능 반영 과목", False, "국어,영어",
              "수능을 반영한다면 어떤 과목인지. 예: 국어,영어 / 국수탐 중 상위 2. 실기 100%면 비워두세요."),
+            ("metric_col", "점수종류", False, "백분위 합",
+             "아래 컷이 무엇으로 적힌 숫자인지. 예체능은 수시(학생부 등급)와 정시(수능 백분위)를 "
+             "한 파일에 함께 담게 되므로 줄마다 적어둡니다. '백분위 합' / '백분위' / '등급' / '점수'."),
             ("cut50", "50%컷", False, "",
              "합격자 50%컷. 수능을 반영하면 그 기준 점수를, 실기 100%면 비워두세요."),
             ("cut70", "70%컷", False, "",
@@ -9209,11 +9246,13 @@ UNIV_TEMPLATES = {
              "type": "실기위주", "subtype": "일반전형", "quota": "15",
              "method": "실기 70 + 수능 30", "practical": "가곡·아리아 각 1곡",
              "practical_note": "암보 필수, 반주자 동반", "subjects": "국어,영어",
+             "metric_col": "백분위 합",
              "cut50": "150.0", "cut70": "145.0", "rate": "18.5", "year": "2026", "note": ""},
             {"univ": "경희대학교", "region": "서울 동대문구", "major": "체육학과", "track": "체육",
              "type": "실기위주", "subtype": "일반전형", "quota": "20",
              "method": "실기 100", "practical": "제자리멀리뛰기·배근력·20m 왕복달리기",
              "practical_note": "종목별 환산표 적용", "subjects": "",
+             "metric_col": "",
              "cut50": "", "cut70": "", "rate": "12.3", "year": "2026", "note": "수능 미반영"},
         ],
         "tips": [
@@ -9222,6 +9261,7 @@ UNIV_TEMPLATES = {
             "● 예체능은 실기 비중이 커서 수능 점수만으로는 합격 여부를 판단할 수 없습니다. 그래서 '실기 종목'과 '전형 방법'을 함께 적어두면 상담 화면에서 학과마다 같이 보여줍니다.",
             "● 수능을 반영하는 전형이면 '수능 반영 과목'과 70%컷을 채워주세요. 그러면 학생 백분위와 견줘 가능·부족을 숫자로 보여줍니다.",
             "● 실기 100% 전형이라 수능 컷이 없으면 50%컷·70%컷을 비워두세요. 그런 학과는 합격선 비교 없이 목록과 실기 정보만 보여줍니다.",
+            "● 예체능은 수시(학생부 등급)와 정시(수능 백분위)를 한 파일에 같이 담게 됩니다. 줄마다 '점수종류' 칸에 '등급' 또는 '백분위 합'을 적어두면 줄마다 알맞은 기준으로 견줍니다. 비워두면 올릴 때 고른 종류를 씁니다.",
             "● 올릴 때 '이 자료는 수시인가요, 정시인가요?'에서 반드시 '예체능'을 골라주세요.",
             "● 소재지를 채우면 상담 화면 지도에 표시됩니다.",
         ],
@@ -9296,11 +9336,16 @@ def guess_univ_mapping(columns: list) -> dict:
     표준 양식대로 올렸으면 이것만으로 짝짓기가 끝난다."""
     norm = [re.sub(r"[\s()·\-_/]", "", str(c or "")).lower() for c in columns]
     out, used = {}, set()
-    for key, hints in UNIV_HEADER_HINTS.items():
-        for hint in hints:
-            h = hint.lower()
-            # 정확히 같은 이름을 먼저, 없으면 포함하는 이름
-            for exact in (True, False):
+    # 💡 이름이 똑같은 짝을 '모든 열'에 대해 먼저 맞춘 뒤에야 '들어 있는' 짝을 본다.
+    #    한 열씩 끝까지 보던 예전 방식에서는, 앞자리 열쇠가 가진 느슨한 낱말이
+    #    뒷자리 열쇠의 정확한 이름을 가로챘다. ('점수종류' 열을 기준점수(cut)가
+    #    '점수'로 집어가 버려서, 줄마다 점수 종류를 적어도 무시됐다.)
+    for exact in (True, False):
+        for key, hints in UNIV_HEADER_HINTS.items():
+            if key in out:
+                continue
+            for hint in hints:
+                h = hint.lower()
                 for i, c in enumerate(norm):
                     if i in used or not c:
                         continue
@@ -9310,8 +9355,6 @@ def guess_univ_mapping(columns: list) -> dict:
                         break
                 if key in out:
                     break
-            if key in out:
-                break
     return out
 
 
@@ -9910,7 +9953,8 @@ UNIV_REGIONS = {
     "한국항공대": ("31", "고양시덕양구"), "중앙대(안성)": ("31", "안성시"),
     "한경대": ("31", "안성시"), "한경국립대": ("31", "안성시"),
     # ── 인천 ──
-    "인하대": ("23", "남구"), "인천대": ("23", "연수구"), "경인교대": ("23", "계양구"),
+    # 인천 남구는 2018년에 미추홀구로 이름이 바뀌었다
+    "인하대": ("23", "미추홀구"), "인천대": ("23", "연수구"), "경인교대": ("23", "계양구"),
     "경인교육대": ("23", "계양구"), "인천가톨릭대": ("23", "강화군"),
     "가천대(메디컬)": ("23", "남동구"),
     # ── 부산 ──
@@ -9980,12 +10024,66 @@ UNIV_REGIONS = {
     "진주교대": ("38", "진주시"), "진주교육대": ("38", "진주시"), "한국국제대": ("38", "진주시"),
     # ── 제주 ──
     "제주대": ("39", "제주시"), "제주국제대": ("39", "제주시"),
+    # ── 캠퍼스가 갈린 대학 ──
+    # 💡 받아 온 입결 자료는 캠퍼스가 갈린 대학도 '대학 주소' 한 줄만 적어 놓는 일이
+    #    많아(단국대(천안)에 용인 주소, 고려대(세종)에 성북 주소), 그대로 두면 지도에서
+    #    엉뚱한 지역에 찍힌다. 캠퍼스 이름이 적혀 온 줄은 여기서 바로잡는다.
+    "가야대(김해)": ("38", "김해시"),
+    "가천대(글로벌)": ("31", "성남시수정구"), "가천대(메디컬)": ("23", "남동구"),
+    "가톨릭대(성심)": ("31", "부천시원미구"), "가톨릭대(성신)": ("11", "종로구"),
+    "가톨릭대(성의)": ("11", "서초구"),
+    "강원대(강릉)": ("32", "강릉시"), "강원대(원주)": ("32", "원주시"),
+    "강원대(도계)": ("32", "삼척시"),
+    "건양대(메디컬)": ("25", "서구"),
+    "경동대(원주문막)": ("32", "원주시"),
+    "경북대(상주)": ("37", "상주시"),
+    "경상국립대(창원)": ("38", "창원시의창구"), "경상국립대(칠암)": ("38", "진주시"),
+    "계명대(대명)": ("22", "남구"), "계명대(성서)": ("22", "달서구"),
+    "공주대(예산)": ("34", "예산군"), "공주대(천안)": ("34", "천안시서북구"),
+    "단국대(죽전)": ("31", "용인시수지구"),
+    "대구한의대(삼성)": ("37", "경산시"),
+    "동국대(wise)": ("37", "경주시"),
+    "동아대(승학)": ("21", "사하구"), "동아대(구덕)": ("21", "서구"),
+    "동아대(부민)": ("21", "서구"),
+    "동양대(영주)": ("37", "영주시"), "동양대(동두천)": ("31", "동두천시"),
+    "명지대(서울)": ("11", "서대문구"),
+    "목포대(담양)": ("36", "담양군"),
+    "부경대(용당)": ("21", "남구"),
+    "부산대(밀양)": ("38", "밀양시"), "부산대(양산)": ("38", "양산시"),
+    "상명대(서울)": ("11", "종로구"),
+    "성신여대(돈암수정)": ("11", "성북구"), "성신여대(미아운정)": ("11", "강북구"),
+    "신한대(의정부)": ("31", "의정부시"), "신한대(동두천)": ("31", "동두천시"),
+    "안양대(강화)": ("23", "강화군"),
+    "연세대(국제)": ("23", "연수구"),
+    "영남대(대구)": ("22", "남구"), "영산대(양산)": ("38", "양산시"),
+    "우석대(전주)": ("35", "전주시완산구"),
+    "유원대(아산)": ("34", "아산시"),
+    "을지대(성남)": ("31", "성남시수정구"), "을지대(의정부)": ("31", "의정부시"),
+    "인제대(부산)": ("21", "부산진구"),
+    "전남대(여수)": ("36", "여수시"), "전북대(익산)": ("35", "익산시"),
+    "제주대(사라)": ("39", "제주시"),
+    "중부대(고양)": ("31", "고양시덕양구"), "중앙대(다빈치)": ("31", "안성시"),
+    "창원대(거창)": ("38", "거창군"),
+    "청운대(인천)": ("23", "미추홀구"),
+    "한경국립대(안성)": ("31", "안성시"), "한경국립대(평택)": ("31", "평택시"),
+    "한국교통대(의왕)": ("31", "의왕시"), "한국교통대(증평)": ("33", "증평군"),
+    "한국외대(글)": ("31", "용인시처인구"),
+    "한서대(태안)": ("34", "태안군"),
+    "호서대(아산)": ("34", "아산시"), "호서대(천안)": ("34", "천안시동남구"),
+    "호서대(당진)": ("34", "당진시"),
 }
 
 # 캠퍼스를 가리키는 말 — '고려대 세종캠퍼스'처럼 붙어 오면 캠퍼스별 소재지로 찾는다
-UNIV_CAMPUS_HINTS = ["세종", "글로벌", "국제", "erica", "안산", "미래", "원주", "천안", "경주",
-                     "자연", "수원", "안성", "충주", "글로컬", "삼척", "일산", "바이오메디",
-                     "메디컬", "대전", "서울", "양주"]
+UNIV_CAMPUS_HINTS = ["세종", "글로벌", "국제", "erica", "안산", "미래", "원주문막", "원주",
+                     "천안", "경주", "자연", "수원", "안성", "충주", "글로컬", "삼척", "일산",
+                     "바이오메디", "메디컬", "대전", "서울", "양주",
+                     # 입결 자료에 실제로 적혀 오는 캠퍼스 이름들
+                     "김해", "성심", "성신", "성의", "강릉", "도계", "상주", "창원", "칠암",
+                     "대명", "성서", "예산", "죽전", "삼성", "wise", "승학", "구덕", "부민",
+                     "영주", "동두천", "담양", "용당", "밀양", "양산", "돈암수정", "미아운정",
+                     "의정부", "강화", "대구", "전주", "아산", "성남", "부산", "여수", "익산",
+                     "사라", "고양", "다빈치", "거창", "인천", "평택", "의왕", "증평",
+                     "태안", "당진", "글"]
 
 
 def normalize_univ_name(name: str) -> str:
@@ -10035,6 +10133,25 @@ def univ_has_multi_campus(univ: str) -> bool:
     return any(k.startswith(base + "(") for k in UNIV_REGIONS)
 
 
+def trim_to_sigungu(rest: str) -> str:
+    """시도를 떼고 남은 글자에서 시군구까지만 남긴다.
+
+    💡 어디가·대학알리미에서 받은 자료는 소재지가 '경상남도 김해시 삼계로 208'처럼
+       도로명 주소 전체로 들어온다. 그대로 두면 시군구가 '김해시삼계로208'이 되어
+       지도에서 짝을 못 찾는다. 도로명·번지를 잘라내 '김해시'만 남긴다.
+       '수원시 영통구'처럼 시 아래 구가 또 있는 곳은 둘 다 살린다."""
+    t = str(rest or "")
+    m = re.match(r"([가-힣]{1,6}?[시군구])", t)
+    if not m:
+        return t
+    head, tail = m.group(1), t[m.end():]
+    if head.endswith("시"):
+        m2 = re.match(r"([가-힣]{1,6}?구)", tail)
+        if m2:
+            head += m2.group(1)
+    return head
+
+
 def resolve_univ_region(univ: str, region_text: str = "") -> dict:
     """대학이 어느 시도·시군구에 있는지 정한다.
     ① 엑셀 '소재지' 열 → ② 내장 소재지 표 → ③ 알 수 없음."""
@@ -10065,9 +10182,9 @@ def resolve_univ_region(univ: str, region_text: str = "") -> dict:
                     break
         if hit:
             short, rest = hit
-            # 세종은 시 전체가 하나의 시군구다 — 소재지를 '세종시'라고만 적어도 지도에 얹힌다
-            if short == "세종" and not rest:
-                rest = "세종시"
+            # 세종은 시 전체가 하나의 시군구다. 읍·면을 적어 와도 지도에서는 한 칸이므로
+            # 무엇이 적혀 있든 '세종시'로 본다.
+            rest = "세종시" if short == "세종" else trim_to_sigungu(rest)
             return {"sido": short, "sido_code": SIDO_CODES[short], "sigungu": rest, "source": "file"}
 
     for key in univ_lookup_keys(univ):
