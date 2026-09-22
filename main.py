@@ -10022,6 +10022,19 @@ def univ_lookup_keys(name: str) -> list:
     return keys
 
 
+def univ_has_multi_campus(univ: str) -> bool:
+    """이 대학이 캠퍼스를 여러 곳 두고 있는지 (내장 소재지 표 기준).
+
+    💡 '연세대'라고만 적혀 오면 본교(서울) 자리로 찍히는데, 실제로는 미래(원주)
+       캠퍼스 자료일 수 있다. 그런 대학은 소재지를 직접 적어주셔야 정확하다."""
+    keys = univ_lookup_keys(univ)
+    base = keys[-1] if keys else ""
+    if not base:
+        return False
+    # '연세대'가 본교로 들어 있고, '연세대(...)' 형태가 하나라도 더 있으면 여러 곳
+    return any(k.startswith(base + "(") for k in UNIV_REGIONS)
+
+
 def resolve_univ_region(univ: str, region_text: str = "") -> dict:
     """대학이 어느 시도·시군구에 있는지 정한다.
     ① 엑셀 '소재지' 열 → ② 내장 소재지 표 → ③ 알 수 없음."""
@@ -10065,6 +10078,36 @@ def resolve_univ_region(univ: str, region_text: str = "") -> dict:
     return {"sido": "", "sido_code": "", "sigungu": "", "source": "unknown"}
 
 
+# 💡 "가능한 대학"을 다 보여주면 한참 아래 대학까지 수백 곳이 쏟아져 상담에 쓸 수 없다.
+#    점수 기준마다 단위가 다르므로(등급 1~9 / 백분위 0~100 / 백분위 합 0~300),
+#    기준별로 '한 칸'의 크기를 정해 두고 그 칸으로 상향·적정·안정을 가른다.
+UNIV_BAND_BY_METRIC = {
+    "grade": 0.5,
+    "percentile": 5.0,
+    "percentile_sum": 12.0,
+    "score": 12.0,
+    "eng_grade": 0.5,
+}
+UNIV_LINE_LABELS = {"challenge": "상향", "fit": "적정", "safe": "안정", "low": "많이 낮음"}
+
+
+def univ_line_of(gap, metric: str) -> str:
+    """내 점수와 컷의 차이를 상향·적정·안정·많이 낮음으로 가른다.
+    gap 은 '모자란 정도'라 음수면 내가 컷을 넘어선 것."""
+    if gap is None:
+        return ""
+    band = UNIV_BAND_BY_METRIC.get(metric, 12.0)
+    if gap > band:
+        return "far"          # 한 칸보다 더 모자람 — 지금은 무리
+    if gap > 0:
+        return "challenge"    # 조금 모자람 — 상향 지원권
+    if gap >= -band:
+        return "fit"          # 컷 언저리 — 적정
+    if gap >= -band * 2:
+        return "safe"         # 여유 있음 — 안정
+    return "low"              # 너무 아래 — 상담에서 볼 필요가 적다
+
+
 class UnivPossibleReq(BaseModel):
     student_name: str = ""
     kind: str = "jeongsi"
@@ -10084,6 +10127,9 @@ class UnivPossibleReq(BaseModel):
     only_reachable: bool = False
     # 농어촌·기회균등 같은 특별전형은 합격선이 낮아 일반 학생 기준을 왜곡한다
     exclude_special: bool = True
+    # 내 점수에서 어느 정도 범위만 볼지 — 기본은 상향·적정·안정까지만 본다
+    # (한참 아래 대학까지 다 나오면 상담에 쓸 수 없어서)
+    lines: List[str] = ["challenge", "fit", "safe"]
     limit: int = 80
 
 
@@ -10139,8 +10185,10 @@ def get_univ_possible(req: UnivPossibleReq):
             used["percentile_sum"] = round(pcts["국어"] + pcts["수학"] + pcts["탐구"], 2)
 
     kind_n = normalize_univ_kind(req.kind)
+    allow_lines = set(req.lines or ["challenge", "fit", "safe"])
     merged = {}
     skipped_special = 0
+    skipped_line = 0
     for r in rows:
         if normalize_univ_kind(r.get("kind", "susi")) != kind_n:
             continue
@@ -10163,6 +10211,15 @@ def get_univ_possible(req: UnivPossibleReq):
                     "practical": r.get("practical", ""), "practical_note": r.get("practical_note", "")}
         elif item["gap"] is None and not score_free:
             continue
+        # 💡 범위 밖(한참 위 / 한참 아래) 학과는 상담에 쓰이지 않으므로, 대학을
+        #    만들기 전에 먼저 거른다. 여기서 대학을 먼저 만들면 학과가 하나도
+        #    안 남은 대학이 빈 채로 목록에 남는다.
+        #    예체능처럼 견줄 숫자가 없는 줄(line "")은 그대로 남긴다.
+        line = univ_line_of(item["gap"], item.get("metric", ""))
+        if line and line not in allow_lines:
+            skipped_line += 1
+            continue
+        item["line"] = line
         slot = merged.setdefault(item["univ"], {
             "univ": item["univ"], "majors": [], "reach_count": 0, "total": 0,
             "best_gap": None, "unit": item["unit"], "region_text": r.get("region", ""),
@@ -10185,6 +10242,7 @@ def get_univ_possible(req: UnivPossibleReq):
                 "reflect": item.get("reflect", ""), "mine": item.get("mine"),
                 "practical": item.get("practical", ""), "practical_note": item.get("practical_note", ""),
                 "key_points": item.get("key_points", ""),
+                "line": item.get("line", ""), "line_label": UNIV_LINE_LABELS.get(item.get("line", ""), ""),
             })
         if not slot["region_text"]:
             slot["region_text"] = r.get("region", "")
@@ -10196,8 +10254,19 @@ def get_univ_possible(req: UnivPossibleReq):
         # 견줄 숫자가 없는 학과(실기 100% 등)는 맨 뒤로 보낸다
         u["majors"].sort(key=lambda m: (m["gap"] is None, m["gap"] if m["gap"] is not None else 0))
         u["short_by"] = None if u["best_gap"] is None or u["best_gap"] <= 0 else round(u["best_gap"], 2)
+        u["line"] = u["majors"][0].get("line", "") if u["majors"] else ""
+        u["line_label"] = UNIV_LINE_LABELS.get(u["line"], "")
         reg = resolve_univ_region(u["univ"], u.get("region_text", ""))
         u["sido"], u["sigungu"] = reg.get("sido", ""), reg.get("sigungu", "")
+        u["region_source"] = reg.get("source", "")
+        # 💡 연세대·동국대·건국대처럼 캠퍼스가 여러 곳인 대학은, 이름에 캠퍼스가
+        #    안 적혀 있고 소재지 칸도 비어 있으면 본교 자리로 찍힌다. 실제로는
+        #    분교 자료일 수 있으므로 '확인 필요'로 표시해 둔다.
+        u["campus_check"] = bool(
+            reg.get("source") == "table"
+            and not str(u.get("region_text", "")).strip()
+            and univ_has_multi_campus(u["univ"])
+        )
     # 닿는 대학을 먼저, 그다음 조금이라도 덜 모자란 순서로
     univs.sort(key=lambda u: (0 if u["reach_count"] else 1,
                               u["best_gap"] is None, u["best_gap"] if u["best_gap"] is not None else 0))
@@ -10207,6 +10276,9 @@ def get_univ_possible(req: UnivPossibleReq):
         "mine": mine_all, "used": used, "overridden": overridden,
         "subject_pcts": pcts, "base_subject_pcts": base_pcts,
         "excluded_special": skipped_special if req.exclude_special else 0,
+        "excluded_line": skipped_line, "lines": sorted(allow_lines),
+        "band": UNIV_BAND_BY_METRIC.get(
+            "percentile_sum" if kind_n in ("jeongsi", "yeche") else "grade", 12.0),
         "reach_univ_count": sum(1 for u in univs if u["reach_count"]),
         "total_univ_count": len(univs),
         "univs": univs[: max(1, min(300, req.limit))],
