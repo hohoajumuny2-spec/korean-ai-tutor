@@ -5901,8 +5901,19 @@ def task_results(title: str, kind: str = "모의고사"):
     }
 
     stats = compute_question_stats(task, kind, with_names=True)
+    # 💡 번호와 정답률만 있으면 '5번을 다들 틀렸다'는 것까지만 알 수 있다.
+    #    어떤 문제였는지 함께 보내야 무엇을 다시 가르칠지 판단할 수 있다.
+    src = task_source_questions(kind, task)
     for q in stats.get("questions", []):
         q["explanation"] = expl.get(str(q["no"]), "")
+        s = src[q["no"] - 1] if 0 < q["no"] <= len(src) else {}
+        q["text"] = s.get("text", "")
+        q["bogi"] = s.get("bogi", "")
+        q["image"] = s.get("image", "")
+        q["options"] = s.get("options", [])
+        q["answer"] = s.get("answer", "")
+        q["answer_text"] = s.get("answer_text", "")
+        q["qtype"] = s.get("qtype", "choice")
 
     return {"success": True, "title": task, "kind": kind,
             "students": rows, "summary": summary,
