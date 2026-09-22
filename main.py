@@ -7495,9 +7495,10 @@ def gst_percentile_sum(rel_rows) -> float:
     return value
 
 
-def gst_percentile_sum_detail(rel_rows):
-    """위 계산을 하되, 못 구했을 때 '어느 과목의 백분위가 없어서인지'도 함께 돌려준다.
-    💡 화면에 '백분위 합 없음'이라고만 뜨면 원장님이 무엇을 채워야 할지 알 수 없다."""
+def subject_percentiles(rel_rows) -> dict:
+    """상대평가 과목 백분위를 국어·수학·탐구(둘이면 평균) 셋으로 모은다.
+    💡 대학마다 반영 과목 수가 달라(2과목·3과목) 합계를 미리 하나로 굳힐 수 없다.
+       과목별 값을 그대로 들고 있다가, 대학이 정한 방식대로 그때그때 더한다."""
     def is_kor(name): return str(name or "").strip().startswith("국어")
     def is_math(name): return str(name or "").strip().startswith("수학")
 
@@ -7506,17 +7507,71 @@ def gst_percentile_sum_detail(rel_rows):
     tamgu_rows = [x for x in rel_rows
                   if not is_kor(x.get("subject")) and not is_math(x.get("subject"))]
     tamgu_ps = [p for p in (_num(x.get("percentile")) for x in tamgu_rows) if p is not None]
+    tamgu = round(sum(tamgu_ps) / len(tamgu_ps), 2) if tamgu_ps else None
 
     missing = []
     if kor is None:
         missing.append("국어 백분위" if any(is_kor(x.get("subject")) for x in rel_rows) else "국어")
     if math is None:
         missing.append("수학 백분위" if any(is_math(x.get("subject")) for x in rel_rows) else "수학")
-    if not tamgu_ps:
+    if tamgu is None:
         missing.append("탐구 백분위" if tamgu_rows else "탐구")
+    return {"국어": kor, "수학": math, "탐구": tamgu, "missing": missing,
+            "탐구_과목수": len(tamgu_ps)}
+
+
+# 반영 과목을 적어둔 칸에서 읽어내는 말들
+_REFLECT_WORDS = {"국어": ("국어", "국"), "수학": ("수학", "수"), "탐구": ("탐구", "탐", "사탐", "과탐")}
+
+
+def parse_reflect_rule(text) -> dict:
+    """대학이 어떤 과목을 몇 개 반영하는지 읽어낸다.
+
+    '국어,수학'        → 그 두 과목만 더한다
+    '국수탐'           → 셋 다 더한다
+    '국수탐 중 상위 2' → 학생에게 유리한 두 과목을 골라 더한다
+    비어 있으면        → 국수탐 셋 (지금까지 쓰던 기본값)
+    """
+    t = re.sub(r"\s+", "", str(text or ""))
+    if not t:
+        return {"mode": "fixed", "subjects": ["국어", "수학", "탐구"], "label": "국수탐"}
+
+    top = re.search(r"상위\s*(\d)|택\s*(\d)|중\s*(\d)", t)
+    named = [s for s, words in _REFLECT_WORDS.items() if any(w in t for w in words)]
+    # '국수탐'처럼 붙여 적은 경우도 위에서 모두 잡힌다
+    if top:
+        n = int(next(g for g in top.groups() if g))
+        pool = named or ["국어", "수학", "탐구"]
+        n = max(1, min(n, len(pool)))
+        return {"mode": "top", "count": n, "subjects": pool, "label": f"{'·'.join(pool)} 중 상위 {n}"}
+    if named:
+        return {"mode": "fixed", "subjects": named, "label": "+".join(named)}
+    return {"mode": "fixed", "subjects": ["국어", "수학", "탐구"], "label": "국수탐"}
+
+
+def reflected_percentile_sum(pcts: dict, rule: dict):
+    """그 대학의 반영 방식대로 학생 백분위를 더한다. 못 구하면 (None, 빠진 과목)."""
+    rule = rule or {"mode": "fixed", "subjects": ["국어", "수학", "탐구"]}
+    pool = [s for s in rule.get("subjects") or [] if s in ("국어", "수학", "탐구")] or ["국어", "수학", "탐구"]
+    have = {s: pcts.get(s) for s in pool}
+    if rule.get("mode") == "top":
+        n = max(1, min(int(rule.get("count") or len(pool)), len(pool)))
+        vals = sorted((v for v in have.values() if v is not None), reverse=True)
+        if len(vals) < n:
+            return None, [f"{s} 백분위" for s, v in have.items() if v is None]
+        return round(sum(vals[:n]), 2), []
+    missing = [f"{s} 백분위" for s, v in have.items() if v is None]
     if missing:
         return None, missing
-    return round(kor + math + sum(tamgu_ps) / len(tamgu_ps), 2), []
+    return round(sum(have.values()), 2), []
+
+
+def gst_percentile_sum_detail(rel_rows):
+    """국수탐 셋을 더한 기본 합계 — 대학별 반영 방식을 모를 때 쓰는 기준값."""
+    p = subject_percentiles(rel_rows)
+    if p["missing"]:
+        return None, p["missing"]
+    return round(p["국어"] + p["수학"] + p["탐구"], 2), []
 
 
 def summarize_mock(rows: list) -> dict:
@@ -7529,7 +7584,7 @@ def summarize_mock(rows: list) -> dict:
              or _num(r.get("raw")) is not None]
     if not valid:
         return {"avg": None, "pct_avg": None, "pct_sum_gst": None, "pct_sum_missing": ["모의고사 성적"],
-                "pct_sum_date": None, "latest": None, "count": 0,
+                "pct_sum_date": None, "subject_pcts": {}, "latest": None, "count": 0,
                 "by_date": [], "absolute": [], "abs_text": "", "raw_sum": None, "raw_text": ""}
 
     by_date = {}
@@ -7549,7 +7604,9 @@ def summarize_mock(rows: list) -> dict:
                      "grade": _num(x.get("grade")), "raw": _num(x.get("raw"))}
                     for x in absolute if _num(x.get("grade")) is not None or _num(x.get("raw")) is not None]
         pct_sum, pct_sum_missing = gst_percentile_sum_detail(rel)
+        subj_pcts = subject_percentiles(rel)
         return {
+            "subject_pcts": {k: subj_pcts[k] for k in ("국어", "수학", "탐구")},
             "avg": round(sum(gs) / len(gs), 2) if gs else None,
             "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
             "pct_sum_gst": pct_sum,
@@ -7582,12 +7639,14 @@ def summarize_mock(rows: list) -> dict:
     pct_sum = latest["pct_sum_gst"] if latest else None
     pct_sum_missing = (latest.get("pct_sum_missing") or []) if latest else ["모의고사 성적"]
     pct_sum_date = latest["date"] if (latest and pct_sum is not None) else None
+    subject_pcts_used = (latest.get("subject_pcts") or {}) if latest else {}
     if pct_sum is None:
         for older in reversed(trend[:-1]):
             if older.get("pct_sum_gst") is not None:
                 pct_sum = older["pct_sum_gst"]
                 pct_sum_date = older["date"]
                 pct_sum_missing = []
+                subject_pcts_used = older.get("subject_pcts") or {}
                 break
 
     return {
@@ -7596,6 +7655,7 @@ def summarize_mock(rows: list) -> dict:
         "pct_sum_gst": pct_sum,
         "pct_sum_missing": pct_sum_missing,
         "pct_sum_date": pct_sum_date,
+        "subject_pcts": subject_pcts_used,
         "raw_sum": raw_sum,
         "raw_text": raw_text,
         "latest": latest["date"] if latest else None,
@@ -9030,6 +9090,9 @@ UNIV_TEMPLATES = {
         "columns": [
             _COL_UNIV, _COL_REGION, _COL_MAJOR,
             ("type", "전형", False, "수능위주(일반전형)", "전형 이름."),
+            ("subjects", "반영 과목", False, "국수탐",
+             "이 대학이 백분위를 몇 과목 반영하는지. '국수탐'(3과목) / '국어,수학'(2과목) / "
+             "'국수탐 중 상위 2' 처럼 적으면 그대로 계산합니다. 비우면 국수탐 3과목으로 봅니다."),
             ("cut50", "50%컷", False, "89.5", "합격자 50%컷(중간)."),
             ("cut70", "70%컷", True, "88.0", "합격자 70%컷. 합격선 판단의 기준으로 씁니다."),
             ("eng", "영어등급", False, "2", "영어 반영·최저 등급."),
@@ -9037,17 +9100,21 @@ UNIV_TEMPLATES = {
         ],
         "samples": [
             {"univ": "부산대학교", "region": "부산 금정구", "major": "경영학과",
-             "type": "수능위주(일반전형)", "cut50": "89.5", "cut70": "88.0", "eng": "2",
-             "year": "2026", "note": "국수영탐 백분위 평균"},
+             "type": "수능위주(일반전형)", "subjects": "국수탐",
+             "cut50": "265.0", "cut70": "258.0", "eng": "2",
+             "year": "2026", "note": "국어+수학+탐구평균 백분위 합"},
             {"univ": "충남대학교", "region": "대전 유성구", "major": "행정학부",
-             "type": "수능위주(일반전형)", "cut50": "85.0", "cut70": "83.5", "eng": "3",
-             "year": "2026", "note": ""},
+             "type": "수능위주(일반전형)", "subjects": "국어,수학",
+             "cut50": "172.0", "cut70": "168.0", "eng": "3",
+             "year": "2026", "note": "국어+수학 두 과목만 반영"},
         ],
         "tips": [
             "● 첫 줄(열 이름)은 지우거나 바꾸지 마세요. 이 이름을 보고 프로그램이 알아서 열을 짝지어 줍니다.",
             "● 2번째 줄부터가 실제 자료입니다. 예시로 넣어둔 두 줄은 지우고 쓰시면 됩니다.",
             "● 합격선은 70%컷을 기준으로 판단합니다. 70%컷이 없으면 50%컷으로 대신합니다.",
-            "● 정시 자료는 학생의 수능 백분위(또는 원점수)와 견줍니다. 올릴 때 '점수 종류'를 백분위/점수 중 맞는 것으로 골라주세요.",
+            "● 정시 자료는 학생의 수능 백분위(또는 원점수)와 견줍니다. 올릴 때 '점수 종류'를 백분위 평균/백분위 합/점수 중 맞는 것으로 골라주세요.",
+            "● 대학마다 반영 과목 수가 다릅니다(2과목·3과목). '반영 과목' 칸에 '국수탐' / '국어,수학' / '국수탐 중 상위 2'처럼 적어두면, 그 대학 방식대로 학생 백분위를 더해 견줍니다. 비워두면 국수탐 3과목으로 봅니다.",
+            "● 농어촌·기회균등 같은 특별전형은 합격선이 낮아 일반 학생 기준을 왜곡합니다. '전형' 칸에 그 이름을 적어두면 상담 화면에서 빼고 볼 수 있습니다.",
             "● 소재지를 채우면 상담 화면 지도에 지원 가능 대학이 표시됩니다. 비워두면 이름이 알려진 대학은 자동으로 채워집니다.",
         ],
     },
@@ -9764,7 +9831,16 @@ class UnivPossibleReq(BaseModel):
     percentile: Optional[float] = None
     grade: Optional[float] = None
     eng_grade: Optional[float] = None
+    # 과목별로 직접 넣거나(kor/math/tamgu), 지금 성적에서 ±로 움직여 본다(kor_delta 등)
+    kor: Optional[float] = None
+    math: Optional[float] = None
+    tamgu: Optional[float] = None
+    kor_delta: float = 0
+    math_delta: float = 0
+    tamgu_delta: float = 0
     only_reachable: bool = False
+    # 농어촌·기회균등 같은 특별전형은 합격선이 낮아 일반 학생 기준을 왜곡한다
+    exclude_special: bool = True
     limit: int = 80
 
 
@@ -9794,10 +9870,39 @@ def get_univ_possible(req: UnivPossibleReq):
             used[key] = float(v)
             overridden.append(key)
 
+    # 💡 과목별로 얼마나 오르내렸을 때 어디가 달라지는지 — 상담에서 가장 많이 묻는 것.
+    #    값을 직접 넣거나(kor=70), 지금 성적에서 ±로 움직여 볼 수 있다(kor_delta=+5).
+    base_pcts = dict(mine_all.get("subject_pcts") or {})
+    pcts = dict(base_pcts)
+    for key, field, delta_field in (("국어", "kor", "kor_delta"),
+                                    ("수학", "math", "math_delta"),
+                                    ("탐구", "tamgu", "tamgu_delta")):
+        v = getattr(req, field, None)
+        d = float(getattr(req, delta_field, 0) or 0)
+        if v is not None:
+            pcts[key] = float(v)
+            overridden.append(field)
+        elif d and pcts.get(key) is not None:
+            pcts[key] = max(0.0, min(100.0, round(pcts[key] + d, 2)))
+            overridden.append(delta_field)
+    if req.percentile_sum is not None:
+        # 💡 합계만 직접 넣은 경우엔 과목별로 어떻게 나뉘는지 알 수 없다. 과목별 값을
+        #    비워, 국수탐 3과목을 반영하는 대학만 그 합계로 견주게 한다(2과목 반영
+        #    대학은 합계만으로는 계산할 수 없으므로 건너뛴다).
+        used["subject_pcts"] = {}
+    else:
+        used["subject_pcts"] = pcts
+        if all(pcts.get(k) is not None for k in ("국어", "수학", "탐구")):
+            used["percentile_sum"] = round(pcts["국어"] + pcts["수학"] + pcts["탐구"], 2)
+
     kind_n = normalize_univ_kind(req.kind)
     merged = {}
+    skipped_special = 0
     for r in rows:
         if normalize_univ_kind(r.get("kind", "susi")) != kind_n:
+            continue
+        if req.exclude_special and special_admission_label(r):
+            skipped_special += 1
             continue
         item = compare_univ_row(r, used)
         if not item or item["gap"] is None:
@@ -9819,6 +9924,8 @@ def get_univ_possible(req: UnivPossibleReq):
                 "reach": item["reach"], "short_by": None if item["reach"] else abs(item["gap"]),
                 "quota": item["quota"], "rate": item["rate"],
                 "min_suneung": item["min_suneung"], "eng_cut": item["eng_cut"],
+                # 이 학과가 몇 과목을 어떻게 반영하는지 + 그 기준으로 본 내 점수
+                "reflect": item.get("reflect", ""), "mine": item.get("mine"),
             })
         if not slot["region_text"]:
             slot["region_text"] = r.get("region", "")
@@ -9837,6 +9944,8 @@ def get_univ_possible(req: UnivPossibleReq):
     return {
         "success": True, "kind": kind_n, "student": name,
         "mine": mine_all, "used": used, "overridden": overridden,
+        "subject_pcts": pcts, "base_subject_pcts": base_pcts,
+        "excluded_special": skipped_special if req.exclude_special else 0,
         "reach_univ_count": sum(1 for u in univs if u["reach_count"]),
         "total_univ_count": len(univs),
         "univs": univs[: max(1, min(300, req.limit))],
@@ -9979,6 +10088,7 @@ def student_scores(view: dict) -> dict:
         "percentile_sum": view["mock"].get("pct_sum_gst"),
         "percentile_sum_missing": view["mock"].get("pct_sum_missing") or [],
         "percentile_sum_date": view["mock"].get("pct_sum_date"),
+        "subject_pcts": view["mock"].get("subject_pcts") or {},
         "latest_date": view["mock"].get("latest"),
         "score": view["mock"].get("raw_sum"),
         "eng_grade": eng,
@@ -9991,13 +10101,23 @@ def compare_univ_row(r: dict, mine_all: dict):
     cut = _num(r.get("cut"))
     if cut is None:
         return None
+    reflect_label = ""
     if metric == "grade":
         mine, unit, lower_is_better = mine_all["grade"], "등급", True
     elif metric == "percentile":
         mine, unit, lower_is_better = mine_all["percentile"], "백분위", False
     elif metric == "percentile_sum":
-        # 정시 배치표에서 흔히 쓰는 '국수탐(평균) 백분위 합' 기준
-        mine, unit, lower_is_better = mine_all["percentile_sum"], "백분위 합", False
+        # 💡 대학마다 반영 과목이 다르다(국수탐 셋 / 국+수 둘 / 국수탐 중 상위 2 …).
+        #    같은 '백분위 합'이라도 2과목 합과 3과목 합은 크기가 전혀 달라 그대로
+        #    견주면 안 된다. 그 대학이 '반영 과목' 칸에 적어둔 대로 다시 더해 견준다.
+        rule = parse_reflect_rule(r.get("subjects", ""))
+        pcts = mine_all.get("subject_pcts") or {}
+        mine, _missing = reflected_percentile_sum(pcts, rule)
+        if mine is None and not pcts:
+            # 과목별 값이 아예 없으면 예전처럼 국수탐 합이라도 써 본다
+            mine = mine_all.get("percentile_sum")
+        unit, lower_is_better = "백분위 합", False
+        reflect_label = rule.get("label", "")
     elif metric == "eng_grade":
         mine, unit, lower_is_better = mine_all["eng_grade"], "영어 등급", True
     else:   # score — 원점수·표준점수·대학별 환산점수
@@ -10007,7 +10127,7 @@ def compare_univ_row(r: dict, mine_all: dict):
         "univ": r.get("univ", ""), "major": r.get("major", ""),
         "track": r.get("track", ""), "type": r.get("type", ""),
         "subtype": r.get("subtype", ""), "method": r.get("method", ""),
-        "subjects": r.get("subjects", ""),
+        "subjects": r.get("subjects", ""), "reflect": reflect_label,
         "year": r.get("year", ""), "kind": r.get("kind", "susi"),
         "cut": cut, "metric": metric, "unit": unit,
         "cut50": r.get("cut50"), "cut70": r.get("cut70"),
@@ -10016,7 +10136,26 @@ def compare_univ_row(r: dict, mine_all: dict):
         "mine": mine, "gap": gap,
         "reach": None if gap is None else gap <= 0,
         "eng_cut": r.get("eng"), "note": r.get("note", ""),
+        "special": special_admission_label(r),
     }
+
+
+# 농어촌·기회균등 같은 특별전형 — 일반 학생과 견주면 합격선이 낮아 결과가 왜곡된다.
+SPECIAL_ADMISSION_WORDS = [
+    "농어촌", "기회균등", "기회균형", "기초생활", "차상위", "국가보훈", "보훈",
+    "특성화고", "만학도", "재직자", "westudy", "고른기회", "사회배려", "사회통합",
+    "특수교육대상", "장애인", "북한이탈", "다문화", "저소득",
+]
+
+
+def special_admission_label(row: dict) -> str:
+    """이 줄이 특별전형이면 어떤 전형인지 돌려준다(아니면 빈 문자열)."""
+    hay = re.sub(r"\s+", "", " ".join(str(row.get(k, "") or "")
+                                      for k in ("type", "subtype", "major", "method", "note"))).lower()
+    for w in SPECIAL_ADMISSION_WORDS:
+        if w.lower() in hay:
+            return w
+    return ""
 
 
 def build_target_gap(view: dict) -> dict:
