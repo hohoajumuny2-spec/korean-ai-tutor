@@ -9308,6 +9308,43 @@ def clear_univ_table():
     return {"success": True}
 
 
+@app.post("/api/admin/univ_table/fix_metric", dependencies=[Depends(verify_admin)])
+def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metric: str = Form(...)):
+    """이미 저장된 자료의 '점수 종류'를 통째로 바꾼다.
+    예) 정시 자료를 올릴 때 '기준 점수의 종류'를 등급 그대로 두고 올려서, 백분위 자료인데
+    등급으로 잘못 저장됐을 때 — 다시 올리지 않고 바로 고칠 수 있게."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    kind_n = normalize_univ_kind(kind)
+    if to_metric not in ("grade", "percentile", "score", "eng_grade"):
+        return {"success": False, "detail": "바꿀 점수 종류가 올바르지 않습니다."}
+    if from_metric not in ("grade", "percentile", "score", "eng_grade"):
+        return {"success": False, "detail": "지금 점수 종류가 올바르지 않습니다."}
+
+    rows = load_univ_table()
+    changed = 0
+    for r in rows:
+        if normalize_univ_kind(r.get("kind", "susi")) == kind_n and r.get("metric", "grade") == from_metric:
+            r["metric"] = to_metric
+            changed += 1
+    if changed:
+        for d in list(db.collection("univ_table").stream()):
+            d.reference.delete()
+        for i in range(0, len(rows), UNIV_CHUNK_SIZE):
+            db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
+                {"rows": rows[i:i + UNIV_CHUNK_SIZE]}
+            )
+        # 목록 화면 위쪽에 뜨는 '등급 기준/백분위 기준' 문구도, 자료 전체가 이번에
+        # 바뀐 갈래 하나뿐이었다면 함께 맞춰준다 (수시·정시가 섞여 있으면 그대로 둠)
+        meta = load_univ_meta()
+        if meta:
+            all_kinds = {normalize_univ_kind(r.get("kind", "susi")) for r in rows}
+            if all_kinds == {kind_n}:
+                meta["metric"] = to_metric
+                db.collection("settings").document("univ_table_meta").set(meta)
+    return {"success": True, "changed": changed}
+
+
 # ─────────────────────────────────────────────────────────
 # 대학 소재지 — 지원 가능 대학을 지도에 뿌리기 위한 자료
 #   입결 엑셀에 '소재지' 열이 있으면 그것을 먼저 쓰고, 없으면 아래 표로 채운다.
