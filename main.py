@@ -7485,6 +7485,20 @@ def delete_grade_cuts(req: GradeCutDeleteReq):
     return {"success": True, "sets": load_grade_cuts()}
 
 
+def gst_percentile_sum(rel_rows) -> float:
+    """국어+수학 백분위에 탐구(과목이 둘이면 평균) 백분위를 더한 값 — 정시
+    배치표에서 흔히 '국수탐(평균) 백분위 합'으로 쓰는 기준. 국어·수학 중
+    하나라도 없거나 탐구가 하나도 없으면 계산할 수 없어 None을 돌려준다."""
+    kor = next((_num(x.get("percentile")) for x in rel_rows if str(x.get("subject", "")).strip() == "국어"), None)
+    math = next((_num(x.get("percentile")) for x in rel_rows if str(x.get("subject", "")).strip() == "수학"), None)
+    tamgu_ps = [_num(x.get("percentile")) for x in rel_rows
+                if str(x.get("subject", "")).strip() not in ("국어", "수학")]
+    tamgu_ps = [p for p in tamgu_ps if p is not None]
+    if kor is None or math is None or not tamgu_ps:
+        return None
+    return round(kor + math + sum(tamgu_ps) / len(tamgu_ps), 2)
+
+
 def summarize_mock(rows: list) -> dict:
     """가장 최근 시행월의 성적을 정리한다.
     💡 영어·한국사는 절대평가라 백분위가 없고 등급만 나온다. 이 과목들을
@@ -7494,7 +7508,7 @@ def summarize_mock(rows: list) -> dict:
              if _num(r.get("grade")) is not None or _num(r.get("percentile")) is not None
              or _num(r.get("raw")) is not None]
     if not valid:
-        return {"avg": None, "pct_avg": None, "latest": None, "count": 0,
+        return {"avg": None, "pct_avg": None, "pct_sum_gst": None, "latest": None, "count": 0,
                 "by_date": [], "absolute": [], "abs_text": "", "raw_sum": None, "raw_text": ""}
 
     by_date = {}
@@ -7516,6 +7530,7 @@ def summarize_mock(rows: list) -> dict:
         return {
             "avg": round(sum(gs) / len(gs), 2) if gs else None,
             "pct_avg": round(sum(ps) / len(ps), 1) if ps else None,
+            "pct_sum_gst": gst_percentile_sum(rel),
             "raw_sum": round(sum(raws), 1) if raws else None,
             "raw_count": len(raws),
             "rel_count": len(rel),
@@ -7534,6 +7549,7 @@ def summarize_mock(rows: list) -> dict:
     return {
         "avg": latest["avg"] if latest else None,
         "pct_avg": latest["pct_avg"] if latest else None,
+        "pct_sum_gst": latest["pct_sum_gst"] if latest else None,
         "raw_sum": raw_sum,
         "raw_text": raw_text,
         "latest": latest["date"] if latest else None,
@@ -9214,6 +9230,8 @@ async def import_univ_table(
         if not raw_txt:
             return fixed_metric
         t = raw_txt.replace(" ", "")
+        if "백분위" in t and ("합" in t or "국수탐" in t):
+            return "percentile_sum"
         if "백분위" in t:
             return "percentile"
         if "등급" in t:
@@ -9359,9 +9377,10 @@ def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metr
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     kind_n = normalize_univ_kind(kind)
-    if to_metric not in ("grade", "percentile", "score", "eng_grade"):
+    valid_metrics = ("grade", "percentile", "percentile_sum", "score", "eng_grade")
+    if to_metric not in valid_metrics:
         return {"success": False, "detail": "바꿀 점수 종류가 올바르지 않습니다."}
-    if from_metric not in ("grade", "percentile", "score", "eng_grade"):
+    if from_metric not in valid_metrics:
         return {"success": False, "detail": "지금 점수 종류가 올바르지 않습니다."}
 
     rows = load_univ_table()
@@ -9766,6 +9785,7 @@ def student_scores(view: dict) -> dict:
     return {
         "grade": view["naesin"]["avg"],
         "percentile": view["mock"]["pct_avg"],
+        "percentile_sum": view["mock"].get("pct_sum_gst"),
         "score": view["mock"].get("raw_sum"),
         "eng_grade": eng,
     }
@@ -9781,6 +9801,9 @@ def compare_univ_row(r: dict, mine_all: dict):
         mine, unit, lower_is_better = mine_all["grade"], "등급", True
     elif metric == "percentile":
         mine, unit, lower_is_better = mine_all["percentile"], "백분위", False
+    elif metric == "percentile_sum":
+        # 정시 배치표에서 흔히 쓰는 '국수탐(평균) 백분위 합' 기준
+        mine, unit, lower_is_better = mine_all["percentile_sum"], "백분위 합", False
     elif metric == "eng_grade":
         mine, unit, lower_is_better = mine_all["eng_grade"], "영어 등급", True
     else:   # score — 원점수·표준점수·대학별 환산점수
