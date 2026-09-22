@@ -1163,7 +1163,9 @@ def task_source_questions(kind: str, title: str) -> list:
                         labels.append(opts[int(ni) - 1])
                 label = " 또는 ".join(labels) if labels else str(ans)
                 out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
-                            "options": opts, "bogi": q.get("bogi", ""), "image": q.get("image", "")})
+                            "options": opts, "bogi": q.get("bogi", ""), "image": q.get("image", ""),
+                            "qtype": str(q.get("qtype", "choice") or "choice"),
+                            "rubric": q.get("rubric", "")})
         elif kind == "모의고사":
             d = db.collection("exams").document(sanitize_doc_id(title)).get()
             if d.exists:
@@ -1207,6 +1209,7 @@ def view_result(student_name: str, title: str, kind: str):
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
     unsure = {int(u) for u in (rep.get("unsure") or []) if _num(u) is not None}
     mine = rep.get("mine") or []
+    ai_feedback = rep.get("ai_feedback") or {}
     total_q = max(len(qs), len(mine), max(wrongs) if wrongs else 0)
 
     items = []
@@ -1214,6 +1217,8 @@ def view_result(student_name: str, title: str, kind: str):
         q = qs[no - 1] if 0 < no <= len(qs) else {}
         items.append({
             "no": no,
+            "qtype": q.get("qtype", "choice"), "rubric": q.get("rubric", ""),
+            "ai_feedback": ai_feedback.get(str(no), ""),
             "text": q.get("text", ""), "bogi": q.get("bogi", ""), "image": q.get("image", ""),
             "options": q.get("options", []),
             "mine": str(mine[no - 1]) if no - 1 < len(mine) and mine[no - 1] not in (None, "") else "",
@@ -2141,6 +2146,19 @@ def delete_exam_file(req: ExamFileDeleteReq):
     return {"success": True, "which": req.which}
 
 
+def strip_exam_answers(exam: dict) -> dict:
+    """학생에게 보내기 전에 exam_data 안 문항에서 정답(ans)만 지운다."""
+    out = dict(exam)
+    try:
+        data = json.loads(exam.get("exam_data") or "{}")
+        for q in (data.get("questions") or []):
+            q.pop("ans", None)
+        out["exam_data"] = json.dumps(data, ensure_ascii=False)
+    except Exception:
+        pass
+    return out
+
+
 @app.get("/api/exams")
 def get_exams(student_name: str = ""):
     if db is None:
@@ -2148,6 +2166,7 @@ def get_exams(student_name: str = ""):
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
     if student_name:
         rows = [e for e in rows if task_visible_to_student(e.get("subject", "korean"), e.get("target_class", ""), student_name)]
+        rows = [strip_exam_answers(e) for e in rows]
     return {"success": True, "exams": rows}
 
 
@@ -2712,6 +2731,20 @@ async def upload_quiz_image(file: UploadFile = File(...)):
     return {"success": True, "url": url}
 
 
+def strip_quiz_answers(quiz: dict) -> dict:
+    """학생에게 보내기 전에 문항에서 정답만 지운다. 문항 유형은 그대로 둬야
+    화면이 객관식/단답형/서술형에 맞는 입력칸을 그릴 수 있다."""
+    out = dict(quiz)
+    qs = []
+    for q in (quiz.get("questions") or []):
+        qc = dict(q)
+        qc.pop("answer", None)
+        qc.pop("explanation", None)   # 해설도 정답을 드러낼 수 있어 함께 지운다
+        qs.append(qc)
+    out["questions"] = qs
+    return out
+
+
 @app.get("/api/quizzes")
 def get_quizzes(student_name: str = ""):
     if db is None:
@@ -2722,6 +2755,8 @@ def get_quizzes(student_name: str = ""):
     # 부르므로 전체가 그대로 보인다.
     if student_name:
         rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), q.get("target_class", ""), student_name)]
+        # 💡 API 응답을 직접 열어봐도 정답이 보이면 안 된다 — 문항 유형만 남기고 지운다.
+        rows = [strip_quiz_answers(q) for q in rows]
     return {"success": True, "quizzes": rows}
 
 
@@ -2984,6 +3019,7 @@ async def submit_quiz(req: QuizSubmitReq):
     actual_score = 0
     total_possible = 0
     details = []
+    essay_batch = []
     if doc.exists:
         for i, q in enumerate(doc.to_dict().get("questions", [])):
             raw = req.answers[i] if i < len(req.answers) else None
@@ -2992,11 +3028,9 @@ async def submit_quiz(req: QuizSubmitReq):
             correct_ans = str(q.get("answer", "")).strip()
             point = int(q.get("score", 0) or 0)
             total_possible += point
+            qtype = str(q.get("qtype", "choice") or "choice")
             # 💡 '모름'은 오답으로 채점하되 따로 표시해, 찍어서 맞힌 것과 구분한다
             is_unsure = my_ans == UNSURE_MARK
-            is_ok = bool(my_ans) and not is_unsure and answer_matches(my_ans, correct_ans)
-            if is_ok:
-                actual_score += point
             options = [str(o) for o in (q.get("options") or [])]
 
             def pick(n):
@@ -3006,24 +3040,56 @@ async def submit_quiz(req: QuizSubmitReq):
                     return ""
                 return options[idx] if 0 <= idx < len(options) else ""
 
+            if qtype == "essay":
+                # 정답이 하나로 정해지지 않으니, AI에게 한꺼번에 모아 보내 채점 기준으로 판단한다
+                is_ok = None   # 잠시 비워 두고 아래에서 AI 결과로 채운다
+                if my_ans and not is_unsure:
+                    essay_batch.append({"no": i + 1, "prompt": str(q.get("q_text", "")),
+                                        "rubric": str(q.get("rubric", "") or ""), "student": my_ans})
+                my_text, ans_text = "", str(q.get("rubric", "") or "")
+            else:
+                # 객관식·단답형은 지금처럼 바로 채점한다 (단답형은 복수 정답과 같은
+                # answer_matches 를 쓰되, 띄어쓰기·대소문자 차이는 너그럽게 본다)
+                is_ok = bool(my_ans) and not is_unsure and answer_matches(my_ans, correct_ans)
+                my_text = pick(my_ans) if qtype == "choice" else ""
+                ans_text = pick(correct_ans) if qtype == "choice" else correct_ans
+                if is_ok:
+                    actual_score += point
+
             # 💡 퀴즈를 내고 나면 점수도 오답도 볼 수 없다는 요청 — 문항 내용과
             #    내가 고른 보기·정답 보기를 그대로 실어 보낸다.
             details.append({
                 "no": i + 1,
+                "qtype": qtype,
                 "q_text": str(q.get("q_text", "")),
                 "bogi": str(q.get("bogi", "") or ""),
                 "image": str(q.get("image", "") or ""),
                 "my": my_ans,
-                "my_text": pick(my_ans),
+                "my_text": my_text,
                 "ans": correct_ans,
-                "ans_text": pick(correct_ans),
+                "ans_text": ans_text,
                 "score": point,
                 "ok": is_ok,
                 "unsure": is_unsure,
+                "ai_feedback": "",
                 # 문항에 적어둔 해설 — 학생이 결과에서 바로 읽을 수 있게 함께 보낸다
                 "explanation": str(q.get("explanation", "") or "").strip()[:EXPLANATION_MAX_CHARS],
                 "blank": not my_ans and not is_unsure,
             })
+
+    if essay_batch:
+        essay_results = await ai_grade_quiz_essays(essay_batch)
+        for d in details:
+            if d["ok"] is None:   # 서술형이면서 채점 대상이었던 문항
+                r = essay_results.get(d["no"], {"ok": False, "feedback": "채점하지 못했습니다. 원장님께 문의해주세요."})
+                d["ok"] = r["ok"]
+                d["ai_feedback"] = r["feedback"]
+                if d["ok"]:
+                    actual_score += d["score"]
+    # 응답을 안 했거나 '모름'을 골라 AI에 보내지 않은 서술형은 여기서 오답으로 확정한다
+    for d in details:
+        if d["ok"] is None:
+            d["ok"] = False
 
     await asyncio.to_thread(
         lambda: db.collection("reports").add(
@@ -3041,6 +3107,8 @@ async def submit_quiz(req: QuizSubmitReq):
                 "wrongs": [d["no"] for d in details if not d["ok"]],
                 "unsure": [d["no"] for d in details if d.get("unsure")],
                 "mine": [d["my"] for d in details],
+                # 서술형 AI 피드백 — 결과를 다시 볼 때도 왜 그렇게 채점됐는지 보여준다
+                "ai_feedback": {str(d["no"]): d["ai_feedback"] for d in details if d.get("ai_feedback")},
             }
         )
     )
@@ -3579,6 +3647,41 @@ async def ai_grade_vocab_meanings(items: list) -> dict:
         parsed = json.loads(match.group(0))
         return {int(p["no"]): bool(p.get("ok")) for p in parsed if "no" in p}
     except Exception:
+        return {}
+
+
+async def ai_grade_quiz_essays(items: list) -> dict:
+    """서술형 문항을 한 번의 AI 호출로 모아 채점한다.
+    items: [{no, prompt, rubric, student}] → {no: {"ok": bool, "feedback": str}}."""
+    if not items:
+        return {}
+    lines = "\n".join(
+        f'{{"no": {it["no"]}, "문제": "{it["prompt"]}", '
+        f'"채점기준": "{it["rubric"] or "핵심 내용을 정확하고 논리적으로 서술했는지"}", '
+        f'"학생답안": "{it["student"] or "(빈칸)"}"}}'
+        for it in items
+    )
+    prompt = f"""다음은 서술형 문항의 채점 대상입니다. 각 문항마다 '채점기준'에 맞게 학생 답안이
+충분한지 통과(true)/미통과(false)로 판단하고, 학생이 바로 이해할 수 있게 한 문장으로 짧게
+이유를 적으세요. 표현이 서툴러도 핵심 내용이 맞으면 통과로 보되, 빈칸이거나 핵심을 벗어났으면
+미통과로 하세요.
+
+[채점 대상]
+{lines}
+
+[출력 형식 - 반드시 이 JSON 배열 형식으로만, 다른 말 없이 출력하세요]
+[{{"no": 1, "ok": true, "feedback": "핵심을 정확히 짚었습니다."}}, {{"no": 2, "ok": false, "feedback": "근거 문장이 빠졌습니다."}}]"""
+    try:
+        resp = await asyncio.to_thread(safe_generate, [prompt], False, False)
+        text = (resp.text or "").strip()
+        match = re.search(r"\[.*\]", text, re.S)
+        if not match:
+            return {}
+        parsed = json.loads(match.group(0))
+        return {int(p["no"]): {"ok": bool(p.get("ok")), "feedback": str(p.get("feedback", "")).strip()[:200]}
+                for p in parsed if "no" in p}
+    except Exception as e:
+        print("서술형 채점 실패:", e)
         return {}
 
 
@@ -5923,12 +6026,23 @@ def answer_slots(key_slot) -> list:
     return [p.strip() for p in raw.split("/") if p.strip()]
 
 
+def _norm_answer_text(s) -> str:
+    """단답형 비교용 — 대소문자·띄어쓰기 차이는 봐준다. 숫자 답에는 영향이 없다."""
+    return re.sub(r"\s+", "", str(s or "")).casefold()
+
+
 def answer_matches(mine, key_slot) -> bool:
-    """학생이 고른 답이, 그 자리에 정답으로 인정된 보기 중 하나와 같은지."""
+    """학생이 고른 답이, 그 자리에 정답으로 인정된 보기 중 하나와 같은지.
+    먼저 그대로 비교하고(선택지 번호는 이걸로 충분), 안 맞으면 띄어쓰기·대소문자를
+    무시하고 한 번 더 본다(단답형 주관식 답을 너그럽게 채점하기 위해)."""
     mine = str(mine or "").strip()
     if not mine:
         return False
-    return mine in answer_slots(key_slot)
+    slots = answer_slots(key_slot)
+    if mine in slots:
+        return True
+    mine_norm = _norm_answer_text(mine)
+    return any(_norm_answer_text(p) == mine_norm for p in slots)
 
 
 def answer_label(key_slot) -> str:
