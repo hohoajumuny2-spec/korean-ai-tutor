@@ -1142,6 +1142,90 @@ SCORED_TYPES = {"과제 제출", "모의고사", "타임어택 퀴즈", "영어 
 
 
 @app.get("/api/student/wrong_questions/{student_name}")
+def task_source_questions(kind: str, title: str) -> list:
+    """그 과제·시험·퀴즈의 문항 목록을 [{text,answer,answer_text,options}] 로 꺼낸다.
+    못 찾으면 빈 목록. (모의고사·과제는 실제 문제 글이 PDF/OMR로만 있어 text가 비어 있다.)"""
+    out = []
+    if db is None:
+        return out
+    try:
+        if kind == "타임어택 퀴즈":
+            d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+            for q in ((d.to_dict() or {}).get("questions") or []) if d.exists else []:
+                opts = q.get("options") or []
+                ans = q.get("answer", "")
+                idx = _num(ans)
+                label = opts[int(idx) - 1] if idx and 1 <= int(idx) <= len(opts) else str(ans)
+                out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
+                            "options": opts, "bogi": q.get("bogi", ""), "image": q.get("image", "")})
+        elif kind == "모의고사":
+            d = db.collection("exams").document(sanitize_doc_id(title)).get()
+            if d.exists:
+                data = json.loads((d.to_dict() or {}).get("exam_data") or "{}")
+                for q in (data.get("questions") or []):
+                    out.append({"text": "", "answer": str(q.get("ans", "")), "answer_text": "",
+                                "options": [], "bogi": "", "image": ""})
+        elif kind == "과제 제출":
+            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+            for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
+                out.append({"text": "", "answer": str(a), "answer_text": "", "options": [], "bogi": "", "image": ""})
+    except Exception as e:
+        print("문항 되짚기 실패:", kind, title, e)
+    return out
+
+
+VIEW_RESULT_KINDS = {"과제 제출", "모의고사", "타임어택 퀴즈"}
+
+
+@app.get("/api/student/view_result")
+def view_result(student_name: str, title: str, kind: str):
+    """제출한 뒤 나갔다 와도, 채점 직후 봤던 문항별 결과를 그대로 다시 본다.
+
+    💡 나중에 원장님이 정답표를 고쳐도 이 학생이 실제로 맞고 틀렸던 결과는
+       바뀌면 안 되므로, 저장해둔 wrongs/unsure(채점 당시 판정)를 그대로 쓰고
+       정답·문항 내용만 지금 등록된 것에서 가져온다."""
+    name = urllib.parse.unquote(student_name or "").strip()
+    task = urllib.parse.unquote(title or "").strip()
+    k = urllib.parse.unquote(kind or "").strip()
+    if not name or not task:
+        return {"success": False, "detail": "학생 또는 항목 정보가 없습니다."}
+    if k not in VIEW_RESULT_KINDS:
+        return {"success": False, "detail": "이 종류는 결과를 다시 볼 수 없습니다."}
+
+    rid, rep = find_report(name, task, k)
+    if not rid:
+        return {"success": False, "detail": "이 항목을 제출한 기록이 없습니다."}
+
+    qs = task_source_questions(k, task)
+    expl = explanations_for(k, task)
+    wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
+    unsure = {int(u) for u in (rep.get("unsure") or []) if _num(u) is not None}
+    mine = rep.get("mine") or []
+    total_q = max(len(qs), len(mine), max(wrongs) if wrongs else 0)
+
+    items = []
+    for no in range(1, total_q + 1):
+        q = qs[no - 1] if 0 < no <= len(qs) else {}
+        items.append({
+            "no": no,
+            "text": q.get("text", ""), "bogi": q.get("bogi", ""), "image": q.get("image", ""),
+            "options": q.get("options", []),
+            "mine": str(mine[no - 1]) if no - 1 < len(mine) and mine[no - 1] not in (None, "") else "",
+            "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
+            "explanation": expl.get(str(no), ""),
+            "is_wrong": no in wrongs, "is_unsure": no in unsure,
+        })
+
+    return {
+        "success": True, "title": task, "kind": k,
+        "submitted_at": rep.get("submitted_at", ""),
+        "score": rep.get("score", ""), "total_score": rep.get("total_score", ""),
+        "correct_count": rep.get("correct_count", ""), "question_count": len(items),
+        "retry": rep.get("retry") or {},
+        "items": items,
+    }
+
+
 def get_wrong_questions(student_name: str, limit: int = 30):
     """학생이 그동안 틀린 문항을 한자리에 모아 준다.
     💡 '몇 점'만 남으면 무엇을 틀렸는지 알 수 없어 복습이 안 된다. 그래서 채점 때 남겨둔
@@ -1169,40 +1253,6 @@ def get_wrong_questions(student_name: str, limit: int = 30):
     rows.sort(key=lambda r: str(r.get("submitted_at", "")), reverse=True)
     rows = rows[:300]
 
-    cache = {}
-
-    def source_questions(kind: str, title: str) -> list:
-        """그 과제·시험의 문항 목록을 [(문제글, 정답)] 로 꺼낸다. 못 찾으면 빈 목록."""
-        key = (kind, title)
-        if key in cache:
-            return cache[key]
-        out = []
-        try:
-            if kind == "타임어택 퀴즈":
-                d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
-                for q in ((d.to_dict() or {}).get("questions") or []) if d.exists else []:
-                    opts = q.get("options") or []
-                    ans = q.get("answer", "")
-                    idx = _num(ans)
-                    label = opts[int(idx) - 1] if idx and 1 <= int(idx) <= len(opts) else str(ans)
-                    out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
-                                "options": opts})
-            elif kind == "모의고사":
-                d = db.collection("exams").document(sanitize_doc_id(title)).get()
-                if d.exists:
-                    data = json.loads((d.to_dict() or {}).get("exam_data") or "{}")
-                    for q in (data.get("questions") or []):
-                        out.append({"text": "", "answer": str(q.get("ans", "")), "answer_text": "",
-                                    "options": []})
-            elif kind == "과제 제출":
-                d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
-                for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
-                    out.append({"text": "", "answer": str(a), "answer_text": "", "options": []})
-        except Exception as e:
-            print("틀린 문제 되짚기 실패:", title, e)
-        cache[key] = out
-        return out
-
     tasks, total_wrong = [], 0
     for r in rows:
         wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
@@ -1216,7 +1266,7 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
         if not wrongs and not expl:
             continue
-        qs = source_questions(kind, title)
+        qs = task_source_questions(kind, title)
         def make_item(no):
             q = qs[no - 1] if 0 < no <= len(qs) else {}
             return {"no": no, "text": q.get("text", ""),
@@ -2348,6 +2398,7 @@ async def submit_exam(req: ExamSubmitRequest):
                 "total_score": total_possible,
                 "question_count": len(details),
                 "correct_count": sum(1 for d in details if d["ok"]),
+                "mine": [d["my"] for d in details],
             }
         )
     )
@@ -2976,6 +3027,7 @@ async def submit_quiz(req: QuizSubmitReq):
                 "correct_count": sum(1 for d in details if d["ok"]),
                 "wrongs": [d["no"] for d in details if not d["ok"]],
                 "unsure": [d["no"] for d in details if d.get("unsure")],
+                "mine": [d["my"] for d in details],
             }
         )
     )
@@ -6102,6 +6154,8 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "percent": score, "wrongs": wrongs,
             # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
             "unsure": unsure,
+            # 나중에 결과를 다시 볼 수 있으려면 실제로 고른 답도 남아 있어야 한다
+            "mine": mine,
         })
     )
     send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
