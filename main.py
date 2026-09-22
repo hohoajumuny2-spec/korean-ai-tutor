@@ -7529,7 +7529,7 @@ def summarize_mock(rows: list) -> dict:
              or _num(r.get("raw")) is not None]
     if not valid:
         return {"avg": None, "pct_avg": None, "pct_sum_gst": None, "pct_sum_missing": ["모의고사 성적"],
-                "latest": None, "count": 0,
+                "pct_sum_date": None, "latest": None, "count": 0,
                 "by_date": [], "absolute": [], "abs_text": "", "raw_sum": None, "raw_text": ""}
 
     by_date = {}
@@ -7560,7 +7560,13 @@ def summarize_mock(rows: list) -> dict:
             "absolute": abs_list,
         }
 
-    dates = sorted(by_date.keys())
+    # 💡 '2026-9'와 '2026-10'을 글자 그대로 줄 세우면 '2026-10'이 앞에 와서
+    #    9월이 최근으로 잡힌다(10·11·12월이 늘 밀려남). 월을 두 자리로 맞춰 센다.
+    def date_key(d):
+        m = re.match(r"^(\d{4})\D+(\d{1,2})", str(d or ""))
+        return f"{m.group(1)}-{int(m.group(2)):02d}" if m else str(d or "")
+
+    dates = sorted(by_date.keys(), key=date_key)
     trend = [{"date": d, **block(by_date[d])} for d in dates]
     latest = trend[-1] if trend else None
     absolute = latest["absolute"] if latest else []
@@ -7569,11 +7575,27 @@ def summarize_mock(rows: list) -> dict:
     raw_sum = latest["raw_sum"] if latest else None
     raw_text = (f"국·수·탐 원점수 합 {raw_sum}점 ({latest['raw_count']}과목)"
                 if latest and raw_sum is not None else "")
+
+    # 💡 가장 최근 회차에 국어·수학·탐구 중 하나라도 빠져 있으면 백분위 합을 못 구해
+    #    정시 지원 가능 대학이 통째로 안 나온다. 그럴 땐 국수탐이 모두 갖춰진 가장
+    #    최근 회차로 대신 계산하고, 어느 회차를 썼는지 함께 알려준다.
+    pct_sum = latest["pct_sum_gst"] if latest else None
+    pct_sum_missing = (latest.get("pct_sum_missing") or []) if latest else ["모의고사 성적"]
+    pct_sum_date = latest["date"] if (latest and pct_sum is not None) else None
+    if pct_sum is None:
+        for older in reversed(trend[:-1]):
+            if older.get("pct_sum_gst") is not None:
+                pct_sum = older["pct_sum_gst"]
+                pct_sum_date = older["date"]
+                pct_sum_missing = []
+                break
+
     return {
         "avg": latest["avg"] if latest else None,
         "pct_avg": latest["pct_avg"] if latest else None,
-        "pct_sum_gst": latest["pct_sum_gst"] if latest else None,
-        "pct_sum_missing": (latest.get("pct_sum_missing") or []) if latest else ["모의고사 성적"],
+        "pct_sum_gst": pct_sum,
+        "pct_sum_missing": pct_sum_missing,
+        "pct_sum_date": pct_sum_date,
         "raw_sum": raw_sum,
         "raw_text": raw_text,
         "latest": latest["date"] if latest else None,
@@ -9956,6 +9978,8 @@ def student_scores(view: dict) -> dict:
         "percentile": view["mock"]["pct_avg"],
         "percentile_sum": view["mock"].get("pct_sum_gst"),
         "percentile_sum_missing": view["mock"].get("pct_sum_missing") or [],
+        "percentile_sum_date": view["mock"].get("pct_sum_date"),
+        "latest_date": view["mock"].get("latest"),
         "score": view["mock"].get("raw_sum"),
         "eng_grade": eng,
     }
