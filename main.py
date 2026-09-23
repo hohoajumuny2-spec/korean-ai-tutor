@@ -1231,7 +1231,6 @@ async def student_checkin(req: CheckinReq):
 SCORED_TYPES = {"과제 제출", "모의고사", "타임어택 퀴즈", "영어 단어 시험", "출제 문제"}
 
 
-@app.get("/api/student/wrong_questions/{student_name}")
 def task_source_questions(kind: str, title: str) -> list:
     """그 과제·시험·퀴즈의 문항 목록을 [{text,answer,answer_text,options}] 로 꺼낸다.
     못 찾으면 빈 목록. (모의고사·과제는 실제 문제 글이 PDF/OMR로만 있어 text가 비어 있다.)"""
@@ -1329,6 +1328,11 @@ def view_result(student_name: str, title: str, kind: str):
     }
 
 
+# 💡 이 주소가 실수로 task_source_questions 에 붙어 있었다. 그래서
+#    ① 학생 화면의 '틀린 문제 모아보기'가 늘 422 오류로 비어 있었고
+#    ② 그 함수는 정답까지 돌려주는 내부 함수라, 주소만 알면 정답표를
+#       통째로 볼 수 있었다. 제자리로 돌려놓는다.
+@app.get("/api/student/wrong_questions/{student_name}")
 def get_wrong_questions(student_name: str, limit: int = 30):
     """학생이 그동안 틀린 문항을 한자리에 모아 준다.
     💡 '몇 점'만 남으면 무엇을 틀렸는지 알 수 없어 복습이 안 된다. 그래서 채점 때 남겨둔
