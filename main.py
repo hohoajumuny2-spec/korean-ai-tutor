@@ -1867,31 +1867,105 @@ def get_student_class_for_subject(student_name: str, subject: str) -> str:
     return ""
 
 
-def task_visible_to_student(subject: str, target_class: str, student_name: str) -> bool:
-    """퀴즈/모의고사가 이 학생에게 보여도 되는지 — 그 과목을 듣지 않으면 안 되고,
-    특정 반 대상으로 지정된 경우 그 반이 아니면 안 된다."""
-    subs = student_subjects(student_name)
-    if subs is not None and normalize_subject(subject) not in subs:
+def normalize_target_classes(value, legacy="") -> list:
+    """대상 반을 하나의 형태(이름 목록)로 맞춘다. 빈 목록이면 '전체 대상'.
+
+    💡 예전에는 반을 딱 하나만 고를 수 있어 target_class 한 칸에 이름을 적었다.
+       이제 여러 반을 고를 수 있으므로 target_classes 목록을 쓰는데, 이미 올려둔
+       자료는 예전 칸에 들어 있다. 읽을 때 여기서 함께 받아 주므로, 원장님이
+       예전 자료를 다시 손볼 필요가 없다."""
+    out = []
+    if isinstance(value, str):
+        value = re.split(r"[,\n|]", value)
+    elif not isinstance(value, (list, tuple, set)):
+        # 글자도 목록도 아닌 것(값을 아예 안 넘긴 경우 등)은 '안 고름'으로 본다
+        value = []
+    for v in (value or []):
+        s = str(v or "").strip()
+        if s and s not in out:
+            out.append(s)
+    if not out and isinstance(legacy, str):
+        s = legacy.strip()
+        if s:
+            out = [s]
+    return out
+
+
+def task_target_classes(doc: dict) -> list:
+    """저장된 자료에서 대상 반 목록을 꺼낸다 (예전 한 칸짜리도 함께 읽는다)."""
+    doc = doc or {}
+    return normalize_target_classes(doc.get("target_classes"), doc.get("target_class", ""))
+
+
+def student_targeting_info(student_name: str):
+    """대상 판정에 필요한 것(듣는 과목, 과목별 반)을 학생 명단에서 한 번에 읽는다.
+    명단에 없는 이름(관리자 등)이면 None — 제한 없이 통과시킨다.
+
+    💡 과목과 반을 따로 읽으면 학생 한 명당 명단을 두 번 읽는다. 푸시를 보낼 때는
+       학생 수만큼 이 판정을 돌리므로, 한 번만 읽도록 묶었다."""
+    if db is None or not student_name:
+        return None
+    doc = db.collection("students").document(student_name).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict() or {}
+    subs = data.get("subjects")
+    subjects = [normalize_subject(s) for s in subs] if subs else ["korean"]
+    class_names = data.get("class_names") or {}
+    legacy = str(data.get("class_name", "") or "").strip()
+    classes = {}
+    for key in SUBJECTS:
+        val = str(class_names.get(key, "") or "").strip()
+        # 예전에는 반이 하나뿐이었고 그 학생들은 전부 국어만 들었다 (student_subjects와 같은 전제)
+        if not val and key == "korean":
+            val = legacy
+        classes[key] = val
+    return {"subjects": subjects, "classes": classes,
+            "all_classes": [c for c in dict.fromkeys(classes.values()) if c]}
+
+
+def task_visible_to_student(subject: str, target_class, student_name: str) -> bool:
+    """이 자료가 이 학생에게 보여도 되는지.
+
+    - 과목을 지정한 자료(퀴즈·모의고사·단어시험)는 그 과목을 듣는 학생만 본다.
+    - 과목이 없는 자료(과제·공지)는 과목을 따지지 않고, 학생이 속한 어느 반이든
+      대상에 들어 있으면 본다.
+    - 대상 반을 하나도 안 고르면 전체 공개다.
+    """
+    info = student_targeting_info(student_name)
+    subj_key = normalize_subject(subject) if subject else ""
+    if subj_key and info is not None and subj_key not in info["subjects"]:
         return False
-    target_class = (target_class or "").strip()
-    if not target_class:
+    targets = normalize_target_classes(target_class)
+    if not targets:
         return True
-    return get_student_class_for_subject(student_name, subject) == target_class
+    if info is None:          # 명단에 없는 이름(관리자 등)은 막지 않는다
+        return True
+    mine = [info["classes"][subj_key]] if subj_key else info["all_classes"]
+    return any(c and c in targets for c in mine)
 
 
-def task_visibility_denied_reason(subject: str, target_class: str, student_name: str) -> str:
+def task_visibility_denied_reason(subject: str, target_class, student_name: str) -> str:
     """💡 예전에는 응시가 막힌 이유를 "응시할 수 없는 시험입니다"로만 뭉뚱그려서,
     과목 미등록 때문인지 반이 달라서인지 학생도 원장님도 알 수 없었다. 어느
     조건에서 막혔는지 구체적으로 짚어서 알려준다(task_visible_to_student와
     반드시 같은 판정 순서를 따라야 한다)."""
-    subj_label = SUBJECTS[normalize_subject(subject)]["label"]
-    subs = student_subjects(student_name)
-    if subs is not None and normalize_subject(subject) not in subs:
+    info = student_targeting_info(student_name)
+    subj_key = normalize_subject(subject) if subject else ""
+    subj_label = SUBJECTS[subj_key]["label"] if subj_key else ""
+    if subj_key and info is not None and subj_key not in info["subjects"]:
         return f"'{student_name}' 학생은 {subj_label} 과목에 등록되어 있지 않아 응시할 수 없습니다. 학생 명단에서 {subj_label} 과목을 등록해주세요."
-    target_class = (target_class or "").strip()
-    if target_class:
-        my_class = get_student_class_for_subject(student_name, subject) or "(반 미배정)"
-        return f"'{target_class}' 반 학생만 응시할 수 있는 시험입니다. ('{student_name}' 학생의 {subj_label} 반: {my_class})"
+    targets = normalize_target_classes(target_class)
+    if targets:
+        if info is None:
+            mine = "(명단에 없는 학생)"
+        elif subj_key:
+            mine = info["classes"][subj_key] or "(반 미배정)"
+        else:
+            mine = ", ".join(info["all_classes"]) or "(반 미배정)"
+        where = f"{subj_label} 반" if subj_label else "반"
+        return (f"'{', '.join(targets)}' 반 학생만 응시할 수 있는 시험입니다. "
+                f"('{student_name}' 학생의 {where}: {mine})")
     return "응시할 수 없는 시험입니다."
 
 
@@ -2143,6 +2217,8 @@ async def create_exam(
     explanations: str = Form(""),
     subject: str = Form("korean"),
     target_class: str = Form(""),
+    # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 대상.
+    target_classes: str = Form(""),
     file: Optional[UploadFile] = File(None),
     ans_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
@@ -2165,7 +2241,7 @@ async def create_exam(
     subj_key = normalize_subject(subject)
     title = with_subject_prefix(title, subj_key)
     safe_title = sanitize_doc_id(title)
-    tclass = str(target_class or "").strip()
+    tclasses = normalize_target_classes(target_classes, target_class)
     prev = await asyncio.to_thread(lambda: db.collection("exams").document(safe_title).get())
     is_new = not prev.exists
     created_at = (prev.to_dict() or {}).get("created_at") if prev.exists else None
@@ -2175,7 +2251,7 @@ async def create_exam(
             {
                 "title": title,
                 "subject": subj_key,
-                "target_class": tclass,
+                "target_classes": tclasses,
                 "objective": objective,
                 "exam_data": exam_data,
                 "pdf_url": pdf_url,
@@ -2193,7 +2269,7 @@ async def create_exam(
         await asyncio.to_thread(sync_knowledge_from_source, f"exam_{safe_title}", f"[모의고사] {title}", know_content, subj_key, "exam")
     if is_new:
         await asyncio.to_thread(
-            send_push_to_audience, subj_key, tclass, "새 모의고사",
+            send_push_to_audience, subj_key, tclasses, "새 모의고사",
             f"'{title}' 모의고사가 열렸어요. 응시해보세요!", "/#prog-classroom", "exam")
     return {"success": True, "title": title, "is_new": is_new}
 
@@ -2242,7 +2318,7 @@ def get_exams(student_name: str = ""):
         return {"success": False, "exams": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("exams").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
     if student_name:
-        rows = [e for e in rows if task_visible_to_student(e.get("subject", "korean"), e.get("target_class", ""), student_name)]
+        rows = [e for e in rows if task_visible_to_student(e.get("subject", "korean"), task_target_classes(e), student_name)]
         rows = [strip_exam_answers(e) for e in rows]
     return {"success": True, "exams": rows}
 
@@ -2449,8 +2525,8 @@ async def submit_exam(req: ExamSubmitRequest):
     doc = await asyncio.to_thread(lambda: db.collection("exams").document(req.title).get())
     data = doc.to_dict() if doc.exists else {}
 
-    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "korean"), data.get("target_class", ""), req.student_name):
-        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "korean"), data.get("target_class", ""), req.student_name)
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "korean"), task_target_classes(data), req.student_name):
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "korean"), task_target_classes(data), req.student_name)
         return {"success": False, "detail": reason}
 
     actual_score = 0
@@ -2755,14 +2831,14 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
 
     # 고치기(제목을 바꿨든 안 바꿨든)에는 알림을 울리지 않는다
     is_new = prev_existed is False and not old_title
-    tclass = str(req.get("target_class", "") or "").strip()
+    tclasses = normalize_target_classes(req.get("target_classes"), req.get("target_class", ""))
     questions = req.get("questions", [])
     await asyncio.to_thread(
         lambda: db.collection("quizzes").document(safe_title).set(
             {
                 "title": title,
                 "subject": subject,
-                "target_class": tclass,
+                "target_classes": tclasses,
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
                 "questions": questions,
@@ -2773,7 +2849,7 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     )
     if is_new:
         await asyncio.to_thread(
-            send_push_to_audience, subject, tclass, "새 타임어택 퀴즈",
+            send_push_to_audience, subject, tclasses, "새 타임어택 퀴즈",
             f"'{title}' 퀴즈가 올라왔어요. 도전해보세요!", "/#prog-classroom", "quiz")
     # 💡 AI가 '이 퀴즈 몇 번 문제 이해가 안 돼요' 같은 질문을 받을 수 있으려면 문항
     # 내용을 알아야 한다. 다만 정답을 그대로 실으면 학생이 그걸 캐낼 수 있으니
@@ -2833,7 +2909,7 @@ def get_quizzes(student_name: str = ""):
     # 지정된 퀴즈인데 그 반이 아니면 목록에서 아예 뺀다. 관리자 화면은 student_name 없이
     # 부르므로 전체가 그대로 보인다.
     if student_name:
-        rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), q.get("target_class", ""), student_name)]
+        rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), student_name)]
         # 💡 API 응답을 직접 열어봐도 정답이 보이면 안 된다 — 문항 유형만 남기고 지운다.
         rows = [strip_quiz_answers(q) for q in rows]
     return {"success": True, "quizzes": rows}
@@ -2868,8 +2944,8 @@ async def start_quiz(req: QuizStartReq):
     quiz_data = quiz_doc.to_dict()
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
-    if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), quiz_data.get("target_class", ""), req.student_name):
-        reason = await asyncio.to_thread(task_visibility_denied_reason, quiz_data.get("subject", "korean"), quiz_data.get("target_class", ""), req.student_name)
+    if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), task_target_classes(quiz_data), req.student_name):
+        reason = await asyncio.to_thread(task_visibility_denied_reason, quiz_data.get("subject", "korean"), task_target_classes(quiz_data), req.student_name)
         return {"success": False, "detail": reason}
 
     existing = await asyncio.to_thread(
@@ -3078,8 +3154,8 @@ async def submit_quiz(req: QuizSubmitReq):
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     doc_data = doc.to_dict() or {}
 
-    if not await asyncio.to_thread(task_visible_to_student, doc_data.get("subject", "korean"), doc_data.get("target_class", ""), req.student_name):
-        reason = await asyncio.to_thread(task_visibility_denied_reason, doc_data.get("subject", "korean"), doc_data.get("target_class", ""), req.student_name)
+    if not await asyncio.to_thread(task_visible_to_student, doc_data.get("subject", "korean"), task_target_classes(doc_data), req.student_name):
+        reason = await asyncio.to_thread(task_visibility_denied_reason, doc_data.get("subject", "korean"), task_target_classes(doc_data), req.student_name)
         return {"success": False, "detail": reason}
 
     # 💡 클라이언트 타이머는 재입장으로 우회될 수 있으니(퀴즈방을 나갔다 다시 들어오면
@@ -3551,7 +3627,8 @@ class VocabTestCreateReq(BaseModel):
     title: str
     deadline: str = ""
     time_limit: int = 15
-    target_class: str = ""
+    target_class: str = ""          # 예전 한 칸짜리 — 그대로 받아 준다
+    target_classes: list = []
     counts: dict = {}
     manual_questions: list = None
 
@@ -3614,7 +3691,8 @@ async def create_vocab_test(req: VocabTestCreateReq):
     safe_title = sanitize_doc_id(title)
     await asyncio.to_thread(
         lambda: db.collection("vocab_tests").document(safe_title).set({
-            "title": title, "subject": "english", "target_class": (req.target_class or "").strip(),
+            "title": title, "subject": "english",
+            "target_classes": normalize_target_classes(req.target_classes, req.target_class),
             "deadline": req.deadline, "time_limit": int(req.time_limit or 0),
             "questions": questions,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3637,7 +3715,7 @@ def get_vocab_tests(student_name: str = ""):
         return {"success": False, "tests": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("vocab_tests").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
     if student_name:
-        rows = [vocab_test_public(t) for t in rows if task_visible_to_student(t.get("subject", "english"), t.get("target_class", ""), student_name)]
+        rows = [vocab_test_public(t) for t in rows if task_visible_to_student(t.get("subject", "english"), task_target_classes(t), student_name)]
     return {"success": True, "tests": rows}
 
 
@@ -3666,8 +3744,8 @@ async def start_vocab_test(req: VocabTestStartReq):
     data = doc.to_dict()
     time_limit = int(data.get("time_limit", 0) or 0)
 
-    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
-        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), data.get("target_class", ""), req.student_name)
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), task_target_classes(data), req.student_name):
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), task_target_classes(data), req.student_name)
         return {"success": False, "detail": reason}
 
     existing = await asyncio.to_thread(
@@ -3796,8 +3874,8 @@ async def submit_vocab_test(req: VocabTestSubmitReq):
         return {"success": False, "detail": "존재하지 않는 시험입니다."}
     data = doc.to_dict()
 
-    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), data.get("target_class", ""), req.student_name):
-        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), data.get("target_class", ""), req.student_name)
+    if not await asyncio.to_thread(task_visible_to_student, data.get("subject", "english"), task_target_classes(data), req.student_name):
+        reason = await asyncio.to_thread(task_visibility_denied_reason, data.get("subject", "english"), task_target_classes(data), req.student_name)
         return {"success": False, "detail": reason}
 
     time_limit = int(data.get("time_limit", 0) or 0)
@@ -5258,8 +5336,12 @@ def send_push_to_all(title: str, body: str, url: str = "", tag: str = "") -> int
     return _push_to_docs(docs, title, body, url, tag)
 
 
-def send_push_to_audience(subject: str, target_class: str, title: str, body: str, url: str = "", tag: str = "") -> int:
-    """그 과목(+반)을 듣는 학생에게만 보낸다 (모의고사·퀴즈용)."""
+def send_push_to_audience(subject: str, target_class, title: str, body: str, url: str = "", tag: str = "") -> int:
+    """대상으로 고른 학생에게만 보낸다.
+
+    subject 를 비우면 과목은 따지지 않고 반만 본다 (과제·공지용).
+    target_class 는 반 이름 하나여도 되고 여러 개의 목록이어도 된다.
+    둘 다 비우면 결국 전원에게 간다 (task_visible_to_student 가 전부 통과시킨다)."""
     if db is None:
         return 0
     docs = list(db.collection("push_subs").stream())
@@ -6122,6 +6204,10 @@ def get_homeworks(student_name: str = ""):
         return {"success": False, "homeworks": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
     if student_name:
+        # 💡 대상 반을 고른 과제는 그 반 학생에게만 보인다. 대상을 안 고른
+        #    과제(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
+        rows = [h for h in rows
+                if task_visible_to_student("", task_target_classes(h), student_name)]
         # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
         #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
         rows = [strip_homework_answers(h) for h in rows]
@@ -6310,6 +6396,8 @@ async def create_homework(
     answers: str = Form(""),
     explanations: str = Form(""),
     old_title: str = Form(""),
+    # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 대상.
+    target_classes: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -6349,6 +6437,7 @@ async def create_homework(
                 "title": title,
                 "desc": desc,
                 "kind": kind_norm,
+                "target_classes": normalize_target_classes(target_classes),
                 "answer_text": answer_text,
                 "answer_file": ans_url,
                 # 정답을 넣어두면 학생이 OMR로 답만 마킹해도 그 자리에서 채점된다
@@ -6363,7 +6452,7 @@ async def create_homework(
     if is_new:
         kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
         await asyncio.to_thread(
-            send_push_to_all, f"새 {kind_label}",
+            send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
             f"'{title}' {kind_label}가 올라왔어요. 확인해보세요!", "/#prog-classroom", "homework")
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
@@ -6530,17 +6619,28 @@ async def submit_homework(
     return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else "", "level_up": lvl_up}
 
 @app.get("/api/board")
-def get_board():
+def get_board(student_name: str = ""):
     if db is None: return {"success": False, "posts": []}
-    return {"success": True, "posts": [{"id": d.id, **d.to_dict()} for d in db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]}
+    rows = [{"id": d.id, **d.to_dict()} for d in db.collection("board").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if student_name:
+        # 💡 대상 반을 고른 공지는 그 반 학생에게만 보인다. 대상을 안 고른
+        #    공지(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
+        rows = [r for r in rows
+                if task_visible_to_student("", task_target_classes(r), student_name)]
+    return {"success": True, "posts": rows}
 
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
-async def create_board_post_admin(title: str = Form(...), desc: str = Form(""), file: Optional[UploadFile] = File(None)):
+async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
+                                  # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
+                                  target_classes: str = Form(""),
+                                  file: Optional[UploadFile] = File(None)):
     if db is None: return {"success": False}
     file_url = ""
     if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
-    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
-    await asyncio.to_thread(send_push_to_all, "새 공지사항", title[:120], "/#prog-classroom", "board")
+    tclasses = normalize_target_classes(target_classes)
+    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
+    await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
     return {"success": True}
 
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
