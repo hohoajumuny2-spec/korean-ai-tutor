@@ -1922,6 +1922,69 @@ def get_student_schedule(student_name: str = ""):
             "clinics": clinics_for(name)}
 
 
+@app.get("/api/admin/schedule_overview", dependencies=[Depends(verify_admin)])
+def schedule_overview(days: int = 7):
+    """원장님 화면용 — 오늘 오는 클리닉과 다가오는 시험을 한눈에.
+
+    💡 원장님이 제일 자주 묻는 건 '오늘 누가 오지?'다. 학생별로 흩어진
+       클리닉을 날짜로 다시 묶어 준다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    span = max(1, min(int(days or 7), 31))
+    today = _today()
+
+    rows = []
+    for d in db.collection("clinics").stream():
+        r = d.to_dict() or {}
+        who = str(r.get("student_name", "")).strip()
+        if not who:
+            continue
+        base = {"id": d.id, "student_name": who, "time": str(r.get("time", "")),
+                "subject": str(r.get("subject", "")), "memo": str(r.get("memo", ""))}
+        if str(r.get("kind", "")) == "once":
+            day = parse_ymd(r.get("date"))
+            if day and 0 <= (day - today).days < span:
+                rows.append({**base, "date": day.strftime("%Y-%m-%d"),
+                             "weekday": day.weekday(), "once": True})
+        else:
+            try:
+                wd = int(r.get("weekday", 0)) % 7
+            except (TypeError, ValueError):
+                wd = 0
+            # 매주 오는 클리닉은 앞으로 span일 안에 해당하는 날짜마다 한 번씩 놓는다
+            for n in range(span):
+                day = today + timedelta(days=n)
+                if day.weekday() == wd:
+                    rows.append({**base, "date": day.strftime("%Y-%m-%d"),
+                                 "weekday": wd, "once": False})
+
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r)
+    days_out = []
+    for n in range(span):
+        day = today + timedelta(days=n)
+        key = day.strftime("%Y-%m-%d")
+        items = sorted(by_day.get(key, []), key=lambda x: (x["time"] or "99", x["student_name"]))
+        days_out.append({"date": key, "weekday_label": WEEKDAY_LABELS[day.weekday()],
+                         "d_left": n, "items": items})
+
+    exams = []
+    for d in db.collection("exam_dates").stream():
+        r = d.to_dict() or {}
+        left = days_until(r.get("date"))
+        if left is None or left < 0:
+            continue
+        exams.append({"id": d.id, "title": r.get("title", "시험"), "date": r.get("date", ""),
+                      "school": r.get("school", ""), "grade": r.get("grade", ""),
+                      "memo": r.get("memo", ""), "d_left": left, "d_day": dday_label(left)})
+    exams.sort(key=lambda x: x["d_left"])
+
+    return {"success": True, "today": today.strftime("%Y-%m-%d"),
+            "days": days_out, "today_count": len(days_out[0]["items"]) if days_out else 0,
+            "exams": exams}
+
+
 class ExamDateReq(BaseModel):
     id: str = ""
     school: str = ""
