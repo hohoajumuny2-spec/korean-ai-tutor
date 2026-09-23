@@ -6391,8 +6391,16 @@ def parse_answer_slots(raw) -> list:
     return out
 
 
+# 단답형 정답 한 칸의 최대 길이. 짧으면 정답이 잘려 채점이 어긋나고,
+# 너무 길면 실수로 붙여 넣은 글 전체가 정답으로 들어간다.
+ANSWER_MAX_CHARS = 60
+
+
 def parse_answer_list(raw) -> list:
-    """정답표를 목록으로 만든다. '①②③' / '1,2,3' / 줄바꿈 — 어떻게 적어도 받는다."""
+    """정답표를 목록으로 만든다. '①②③' / '1,2,3' / 줄바꿈 — 어떻게 적어도 받는다.
+
+    객관식(1~5)뿐 아니라 단답형 정답도 그대로 담는다. 줄을 나눠 적으면
+    쉼표가 들어간 단답형 정답도 안전하다."""
     if isinstance(raw, list):
         items = [str(x).strip() for x in raw]
     else:
@@ -6406,9 +6414,15 @@ def parse_answer_list(raw) -> list:
             else:
                 raise ValueError
         except (ValueError, TypeError):
+            # 💡 주관식 정답에는 쉼표가 들어갈 수 있다("가난하고 외롭고, 높고 쓸쓸하니").
+            #    쉼표로 무조건 쪼개면 한 문항이 두 칸이 되고, 그 뒤 답이 전부 한 칸씩
+            #    밀려 시험 전체가 엉뚱하게 채점된다. 그래서 줄을 나눠 적었으면
+            #    줄바꿈만 믿는다 — 쉼표는 정답 글자의 일부로 본다.
+            #    한 줄로 죽 적었을 때만 예전처럼 쉼표로 나눈다.
+            sep = r"[\n]" if "\n" in text else r"[\n,]"
             # 줄바꿈/쉼표로 나누되, '1번 ③' 처럼 번호가 앞에 붙어 있으면 뒷부분만 쓴다
             items = []
-            for line in re.split(r"[\n,]", text):
+            for line in re.split(sep, text):
                 line = line.strip()
                 if not line:
                     continue
@@ -6431,7 +6445,8 @@ def parse_answer_list(raw) -> list:
             continue
         for i, ch in enumerate(circled):      # ③ → 3
             it = it.replace(ch, str(i + 1))
-        out.append(it.strip()[:20])
+        # 💡 20자로 자르면 단답형 정답이 잘려 나가 채점이 어긋난다("가난하고 외롭고 높고…").
+        out.append(it.strip()[:ANSWER_MAX_CHARS])
     return out
 
 
