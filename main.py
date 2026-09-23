@@ -4513,6 +4513,36 @@ async def generate_stream(
             body, expl = body.split("[정답 및 해설]", 1)
         return body.strip(), expl.strip(), table.strip()
 
+    # 💡 스캔본·사진 자료는 배치마다, 그리고 검수할 때마다 통째로 다시 보내진다.
+    #    40문항에 검수까지 켜면 같은 사진을 네 번 보내는 셈이다. 그래서 처음 한 번만
+    #    읽어 글로 옮겨두고, 그 뒤로는 옮긴 글로 출제·검수한다.
+    #    옮겨 적기에 실패하거나 너무 짧으면 원본 사진을 그대로 쓴다 — 사용료를 아끼려다
+    #    출제 자체를 망치는 쪽이 훨씬 나쁘기 때문.
+    OCR_MIN_CHARS = 300
+
+    async def transcribe_source(source: dict, model) -> bool:
+        """자료를 한 번 읽어 글로 옮긴다. 성공하면 True (source가 글 기반으로 바뀐다)."""
+        ocr_prompt = """첨부된 자료에 적힌 글을 하나도 빠뜨리지 말고 그대로 옮겨 적으세요.
+
+[반드시 지킬 것]
+- 요약하거나 다듬지 말고, 보이는 글자 그대로 옮기세요. 맞춤법도 고치지 마세요.
+- 문단 나눔과 줄 바꿈, 시(詩)의 연 구분을 원본대로 살리세요.
+- 작품 제목, 지은이, 출처가 적혀 있으면 그것도 함께 옮기세요.
+- 표는 각 행을 한 줄씩, 칸은 | 로 구분해 옮기세요.
+- 그림·사진·도표처럼 글로 옮길 수 없는 것은 그 자리에 [그림: 무엇을 나타내는 그림인지 한 줄 설명] 형태로 적으세요.
+- 글자가 흐려 확실하지 않은 부분은 [?] 로 표시하고 넘어가세요. 지어내지 마세요.
+- 옮긴 글 외에 인사말이나 설명을 덧붙이지 마세요."""
+        try:
+            resp = await asyncio.to_thread(model.generate_content, [ocr_prompt] + source["parts"])
+            text = (resp.text or "").strip()
+        except Exception:
+            return False
+        if len(text) < OCR_MIN_CHARS:
+            return False
+        source["text"] = text
+        source["parts"] = []
+        return True
+
     async def verify_and_refine(draft_text: str, source: dict, model) -> str:
         """💡 정답이 실제 지문과 어긋나거나(오채점), 정답 선지만 유독 티가 나서 지문을
         안 읽어도 맞힐 수 있는 문항을 한 번 더 걸러내기 위한 자체 검수 단계.
@@ -4561,6 +4591,13 @@ async def generate_stream(
             except Exception:
                 verify_model = model
 
+        # 💡 '보이는 글자를 그대로 옮겨 적기'도 판단이 필요한 일이 아니라 빠른 모델로 충분하다.
+        #    여기에 고급 모델을 쓰면 아끼려고 한 일에 도로 돈을 쓰게 된다.
+        try:
+            ocr_model = get_best_model(prefer_quality=False)
+        except Exception:
+            ocr_model = model
+
         explanations, answer_tables = [], []
         cursor = start_num
         tier_cursor = 0
@@ -4575,6 +4612,16 @@ async def generate_stream(
             # 한 자료에서 20문항이 넘으면 그 자료 안에서 다시 나눠 요청한다
             sub_batches = [src_tiers[i:i + QUESTIONS_PER_BATCH]
                            for i in range(0, len(src_tiers), QUESTIONS_PER_BATCH)] or [[]]
+
+            # 💡 사진·스캔본을 몇 번이나 다시 보내게 되는지 먼저 세어 본다.
+            #    두 번 이상이면 한 번만 읽어 글로 옮겨두는 편이 싸다.
+            #    수학은 도형·그래프 자체가 문제라 글로 옮기면 문제가 어긋나므로 그대로 둔다.
+            sends = len(sub_batches) * (2 if verify else 1)
+            if source["parts"] and subj_key != "math" and sends >= 2:
+                if await transcribe_source(source, ocr_model):
+                    yield f"\n[안내] '{source.get('label') or '올린 자료'}'를 한 번 읽어 글로 옮겼습니다. 이제 이 글로 출제합니다.\n\n"
+                else:
+                    yield f"\n[안내] '{source.get('label') or '올린 자료'}'는 글로 옮기지 못해 원본 그대로 출제합니다.\n\n"
 
             if multi:
                 yield f"\n※ [{source['label']}] 자료에서 {n_src}문항\n\n"
