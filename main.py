@@ -2695,7 +2695,7 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
 - 형식:
-{"questions":[{"q_text":"문제 내용","bogi":"<보기> 상자 안의 글","options":["선택지1","선택지2","선택지3","선택지4","선택지5"],"answer":3,"score":2}]}
+{"questions":[{"q_text":"문제 내용","bogi":"<보기> 상자 안의 글","options":["선택지1","선택지2","선택지3","선택지4","선택지5"],"answer":3,"score":10}]}
 - q_text에는 문항 번호를 빼고 발문만 적으세요.
 - bogi에는 그 문항에 딸린 <보기> 상자 안의 내용을 그대로 옮기세요. 상자가 없으면 빈 문자열("")로 두세요. <보기>라는 글자 자체는 빼고 안의 내용만 담습니다.
 - options는 보기를 순서대로 담되, ①②③④⑤ 같은 번호 기호는 빼고 내용만 적으세요.
@@ -2742,7 +2742,7 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
         try:
             score = int(q.get("score", 10))
         except (TypeError, ValueError):
-            score = 2
+            score = 10
 
         questions.append({"q_text": q_text[:500],
                           "bogi": str(q.get("bogi", "") or "").strip()[:2000],
