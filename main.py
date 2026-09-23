@@ -2767,7 +2767,7 @@ async def extract_quiz(files: List[UploadFile] = File(...)):
             no_answer += 1
 
         try:
-            score = int(q.get("score", 2))
+            score = int(q.get("score", 10))
         except (TypeError, ValueError):
             score = 2
 
@@ -2889,6 +2889,11 @@ async def submit_exam(req: ExamSubmitRequest):
         for i, q in enumerate(exam_data.get("questions", [])):
             student_ans = str(req.answers[i]).strip() if i < len(req.answers) else ""
             correct_ans = str(q.get("ans", "")).strip()
+            # 답을 안 내도 되는 문항('-')은 총점에도, 오답에도 넣지 않는다
+            if is_skip_slot(correct_ans):
+                details.append({"no": i + 1, "mine": student_ans, "answer": correct_ans,
+                                "score": 0, "is_ok": None, "skipped": True})
+                continue
             point = int(q.get("score", 0) or 0)
             total_possible += point
             is_unsure = student_ans == UNSURE_MARK
@@ -5850,7 +5855,7 @@ def grade_question_bank(name: str, profile: dict, title: str, content: str, answ
     mine = parse_answer_slots(answers or [])
     wrongs, unsure, correct, scored = [], [], 0, 0
     for i, ans in enumerate(key):
-        if not ans:                      # 정답을 못 읽은 문항은 채점에서 뺀다
+        if not ans or is_skip_slot(ans):  # 못 읽었거나, 답을 안 내도 되는 문항은 뺀다
             continue
         scored += 1
         got = mine[i] if i < len(mine) else ""
@@ -6621,6 +6626,17 @@ def normalize_homework_kind(v) -> str:
     return "class"
 
 
+# 💡 시험지에는 답을 내지 않아도 되는 자리가 있다 — 손으로 써서 내는 서술형,
+#    수업에서 같이 푸는 문항, 아직 안 나간 범위 등. 정답표에 '-'를 적어두면
+#    그 문항은 채점에서 통째로 빠진다(총점에도 안 들어가고 오답으로도 안 센다).
+SKIP_MARKS = {"-", "--", "x", "X", "없음", "패스", "제외", "생략"}
+
+
+def is_skip_slot(key_slot) -> bool:
+    """이 자리가 '답을 안 내도 되는 문항'인지."""
+    return str(key_slot or "").strip() in SKIP_MARKS
+
+
 def answer_slots(key_slot) -> list:
     """정답 한 자리에 슬래시(/)로 여러 보기가 적혀 있으면 인정하는 보기 목록으로 나눈다.
     문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리."""
@@ -6660,6 +6676,8 @@ def answer_label(key_slot) -> str:
 def slot_kind(key_slot) -> str:
     """정답 한 자리가 '1~5번 중 고르기'인지 '글자로 직접 쓰기'인지 — 정답 내용은
     드러내지 않고 이 구분만 학생 화면에 보내, OMR 버튼판과 입력칸을 알맞게 그린다."""
+    if is_skip_slot(key_slot):
+        return "none"                # 답을 안 내도 되는 문항
     parts = answer_slots(key_slot)
     if parts and all(p in "12345" for p in parts):
         return "choice"
@@ -6930,8 +6948,11 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     #    예전에는 parse_answer_list 를 써서, 한 문항만 비워도 그 뒤가 전부 밀려
     #    엉뚱하게 채점됐다.
     mine = parse_answer_slots(req.answers or [])
-    wrongs, unsure, correct = [], [], 0
+    wrongs, unsure, correct, scored = [], [], 0, 0
     for i, ans in enumerate(key):
+        if is_skip_slot(ans):            # 답을 안 내도 되는 문항은 통째로 건너뛴다
+            continue
+        scored += 1
         got = mine[i] if i < len(mine) else ""
         if got == UNSURE_MARK:
             unsure.append(i + 1)
@@ -6941,7 +6962,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
         else:
             wrongs.append(i + 1)
 
-    total = len(key)
+    total = scored
     score = round(correct / total * 100) if total else 0
     kind_label = HOMEWORK_KINDS.get(normalize_homework_kind(data.get("kind")), "수업 과제")
     await asyncio.to_thread(
