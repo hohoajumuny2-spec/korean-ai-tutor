@@ -614,6 +614,12 @@ def sanitize_doc_id(value: str, fallback: str = "unnamed") -> str:
     return cleaned[:200]
 
 
+def same_school(a, b) -> bool:
+    """학교 이름이 같은지 — 띄어쓰기는 무시한다.
+    💡 '대치고'와 '대치 고'가 다른 학교로 취급되어 로그인이 막히던 일을 없앤다."""
+    return re.sub(r"\s+", "", str(a or "")) == re.sub(r"\s+", "", str(b or ""))
+
+
 def normalize_grade(value: str) -> str:
     """'고1', '1학년', '1' 처럼 표기가 달라도 같은 학년으로 인식하도록 숫자만 추출해서 비교용으로 씀."""
     if not value:
@@ -936,7 +942,9 @@ async def authenticate(req: AuthRequest):
     doc = await asyncio.to_thread(lambda: db.collection("students").document(student_name).get())
     if doc.exists:
         data = doc.to_dict()
-        if str(data.get("school", "")).strip() == school and normalize_grade(str(data.get("grade", ""))) == normalize_grade(grade):
+        # 💡 '대치고'와 '대치 고'처럼 띄어쓰기만 다른 것 때문에 로그인이 막히면
+        #    학생도 원장님도 원인을 알 수 없다. 띄어쓰기는 무시하고 견준다.
+        if same_school(data.get("school", ""), school) and normalize_grade(str(data.get("grade", ""))) == normalize_grade(grade):
             # 출석 점수는 한 곳에서만 계산한다 (자동 로그인 때도 같은 함수를 쓴다)
             att = await asyncio.to_thread(grant_daily_attendance, student_name, data)
             lvl_up = att["level_up"]
@@ -957,7 +965,16 @@ async def authenticate(req: AuthRequest):
             )
             send_telegram_message(f"🔔 [접속 알림]\n{school} {grade}학년 {student_name} 학생이 스마트 학습실에 로그인했습니다.")
             return {"success": True, "is_admin": False, "level_up": lvl_up}
-    return {"success": False, "detail": "명부에 이름이 없거나 정보가 틀립니다."}
+    # 💡 "이름이 없거나 정보가 틀립니다"로 뭉뚱그리면 무엇을 고쳐야 할지 알 수 없다.
+    #    이름이 아예 없는 것과, 이름은 맞는데 학교·학년이 다른 것을 갈라서 알려준다.
+    #    (명부에 적힌 값 자체는 알려주지 않는다 — 남의 정보를 떠볼 수 있게 되므로.)
+    if doc.exists:
+        return {"success": False,
+                "detail": f"'{student_name}' 학생은 명부에 있는데 학교나 학년이 명부와 다릅니다. "
+                          f"입력하신 것: {school} {grade}. 원장님께 명부에 적힌 학교·학년을 여쭤보세요."}
+    return {"success": False,
+            "detail": f"명부에서 '{student_name}' 학생을 찾지 못했습니다. 이름의 띄어쓰기나 오타를 확인해주시고, "
+                      f"그래도 안 되면 원장님께 명부 등록을 부탁드리세요."}
 
 
 # ─────────────────────────────────────────────────────────
