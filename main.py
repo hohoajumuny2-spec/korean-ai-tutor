@@ -69,12 +69,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 XP_REWARD_LOGIN = 20
 XP_REWARD_HOMEWORK = 60
-XP_REWARD_ESSAY = 70
 XP_REWARD_PROFILE = 80
-XP_REWARD_CHAT = 8
-XP_REWARD_CHAT_DAILY_MAX_COUNT = 5  # 하루 최대 5회까지만 질문 포인트 인정
 XP_REWARD_QUIZ_BASE = 30
 XP_REWARD_EXAM_BASE = 50
+# 💡 틀린 문제를 다시 풀어 하나도 남김없이 고쳤을 때 준다. 시험 하나당 한 번만.
+#    질문을 많이 하거나 글을 많이 내는 것보다, 틀린 것을 끝까지 붙잡는 쪽에
+#    포인트를 주는 편이 실제 공부에 가깝다.
+XP_REWARD_RETRY_CLEAR = 100
 
 # ─────────────────────────────────────────────────────────
 # 🌱 성장 레벨 시스템 ("씨앗의 여정") — 학생 xp 누적치로 10단계 레벨 계산
@@ -2364,24 +2365,6 @@ def get_ai_guidelines(subject: str = "korean") -> str:
     return text
 
 
-def grant_chat_xp(student_name: str):
-    """AI 질문 1회당 소량의 성장 포인트를 지급한다 (하루 최대 XP_REWARD_CHAT_DAILY_MAX_COUNT회). 레벨업 시 정보를 반환."""
-    s_ref = db.collection("students").document(student_name)
-    doc = s_ref.get()
-    if not doc.exists:
-        return None
-    data = doc.to_dict()
-    today = datetime.now().strftime("%Y-%m-%d")
-    old_xp = data.get("xp", 0)
-    if data.get("chat_xp_date") != today:
-        s_ref.set({"chat_xp_date": today, "chat_xp_count": 1, "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
-        return level_up_info(old_xp, XP_REWARD_CHAT)
-    elif data.get("chat_xp_count", 0) < XP_REWARD_CHAT_DAILY_MAX_COUNT:
-        s_ref.set({"chat_xp_count": firestore.Increment(1), "xp": firestore.Increment(XP_REWARD_CHAT)}, merge=True)
-        return level_up_info(old_xp, XP_REWARD_CHAT)
-    return None
-
-
 @app.post("/api/chat")
 async def chat_with_ai(
     request: Request,
@@ -2489,13 +2472,9 @@ async def chat_with_ai(
         # 정밀한(비싼) 모델을 쓴다. 그 외(텍스트 질문, 국어·영어)는 기존처럼 빠른 모델 그대로.
         use_quality_model = subj_key == "math" and has_images
         response = await asyncio.to_thread(safe_generate, contents, False, use_quality_model)
-        lvl_up = None
-        if db is not None and student_name and student_name != "미상":
-            try:
-                lvl_up = await asyncio.to_thread(grant_chat_xp, student_name)
-            except Exception:
-                pass
-        return {"success": True, "reply": response.text, "level_up": lvl_up}
+        # 💡 질문에는 포인트를 주지 않는다. 포인트를 받으려고 아무 말이나 물어보는
+        #    일이 생기고, 그건 공부가 아니다. 대신 틀린 문제를 끝까지 고쳤을 때 준다.
+        return {"success": True, "reply": response.text, "level_up": None}
     except Exception as e:
         # 💡 예전엔 무슨 오류든 "AI 응답 지연"으로만 뭉뚱그려서 원인 파악이 불가능했음.
         # 실제 예외 메시지(모델 단종, 레이트리밋 등)를 그대로 보여주도록 수정.
@@ -2541,14 +2520,8 @@ async def grade_essay(
                     }
                 )
             )
-            s_ref = db.collection("students").document(student_name)
-            s_doc = await asyncio.to_thread(s_ref.get)
-            old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
-            lvl_up = level_up_info(old_xp, XP_REWARD_ESSAY)
-            await asyncio.to_thread(
-                lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_ESSAY)}, merge=True)
-            )
-        return {"success": True, "feedback": response.text, "level_up": lvl_up}
+        # 논술 첨삭에도 포인트를 주지 않는다 (위 질문과 같은 까닭)
+        return {"success": True, "feedback": response.text, "level_up": None}
     except Exception as e:
         return {"success": False, "detail": f"첨삭 처리 중 오류 발생: {e}"}
 
@@ -3296,6 +3269,8 @@ async def start_quiz(req: QuizStartReq):
     if not quiz_doc.exists:
         return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
     quiz_data = quiz_doc.to_dict()
+    if deadline_passed(quiz_data.get("deadline")):
+        return {"success": False, "detail": "마감 시한이 지난 퀴즈입니다."}
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
     if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), task_target_classes(quiz_data), req.student_name):
@@ -3504,6 +3479,11 @@ async def submit_quiz(req: QuizSubmitReq):
     )
     if existing:
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
+
+    # 마감이 지난 뒤에는 내지도 못하게 한다 (시작만 미리 해두는 것을 막는다)
+    quiz_doc0 = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
+    if quiz_doc0.exists and deadline_passed((quiz_doc0.to_dict() or {}).get("deadline")):
+        return {"success": False, "detail": "마감 시한이 지나 제출할 수 없습니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     doc_data = doc.to_dict() or {}
@@ -6043,7 +6023,9 @@ async def retry_info(req: RetryInfoReq):
         "retry_count": int(retry.get("count", 0) or 0),
         "still_wrong": sorted(int(w) for w in (retry.get("wrongs") or []) if _num(w) is not None),
         "fixed": sorted(int(w) for w in (retry.get("fixed") or []) if _num(w) is not None),
-        "explanations": {str(n): expl.get(str(n), "") for n in wrongs},
+        # 💡 해설에는 정답이 그대로 적혀 있다. 다시 풀기 전에 보내면 답을 보고 고치는
+        #    꼴이라 아예 보내지 않는다. 해설은 제출한 뒤 마이페이지에서 본다.
+        "has_explanation": any(expl.get(str(n), "") for n in wrongs),
     }
 
 
@@ -6110,7 +6092,22 @@ async def retry_submit(req: RetrySubmitReq):
         "wrongs": sorted(still),
         "fixed": sorted(fixed),
         "unsure": sorted(set(unsure)),
+        "rewarded": bool(prev.get("rewarded")),
     }
+
+    # 💡 틀린 것을 하나도 남김없이 고쳤을 때 포인트를 준다. 시험 하나당 한 번만 —
+    #    다시 내기만 반복해서 포인트를 쌓을 수 없게 한다.
+    lvl_up, xp_gain = None, 0
+    if was_wrong and not still and not retry_doc["rewarded"]:
+        retry_doc["rewarded"] = True
+        s_ref = db.collection("students").document(name)
+        s_doc = await asyncio.to_thread(s_ref.get)
+        old_xp = (s_doc.to_dict() or {}).get("xp", 0) if s_doc.exists else 0
+        lvl_up = level_up_info(old_xp, XP_REWARD_RETRY_CLEAR)
+        xp_gain = XP_REWARD_RETRY_CLEAR
+        await asyncio.to_thread(
+            lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_RETRY_CLEAR)}, merge=True))
+
     await asyncio.to_thread(
         lambda: db.collection("reports").document(rid).set({"retry": retry_doc}, merge=True))
 
@@ -6122,6 +6119,9 @@ async def retry_submit(req: RetrySubmitReq):
         "fixed_total": len(fixed),
         "wrong_total": len(was_wrong),
         "retry_count": retry_doc["count"],
+        "all_fixed": bool(was_wrong) and not still,
+        "xp_gain": xp_gain,
+        "level_up": lvl_up,
         "answers": {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
     }
 
@@ -6635,6 +6635,27 @@ SKIP_MARKS = {"-", "--", "x", "X", "없음", "패스", "제외", "생략"}
 def is_skip_slot(key_slot) -> bool:
     """이 자리가 '답을 안 내도 되는 문항'인지."""
     return str(key_slot or "").strip() in SKIP_MARKS
+
+
+def deadline_passed(deadline) -> bool:
+    """마감 시한이 지났는지. 시한을 안 정했으면(빈 값) 늘 열려 있다.
+
+    💡 마감 시각을 저장만 해두고 어디서도 확인하지 않아, 마감이 한참 지난 퀴즈도
+       계속 풀 수 있었다. 화면에서 가려도 주소를 직접 부르면 그만이라 서버에서 막는다.
+       '2026-10-05T18:00' / '2026-10-05 18:00' / '2026-10-05' 를 모두 읽는다."""
+    t = str(deadline or "").strip().replace("T", " ")
+    if not t:
+        return False
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            when = datetime.strptime(t, fmt)
+            # 날짜만 적었으면 그날 끝까지 열어 둔다
+            if fmt == "%Y-%m-%d":
+                when = when.replace(hour=23, minute=59, second=59)
+            return datetime.now() > when
+        except ValueError:
+            continue
+    return False            # 읽지 못한 값 때문에 못 풀게 막지는 않는다
 
 
 def answer_slots(key_slot) -> list:
