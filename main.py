@@ -1793,6 +1793,232 @@ def assign_subjects(req: AssignSubjectsReq, _: bool = Depends(verify_admin)):
     return {"success": True, "updated": count}
 
 
+# ─────────────────────────────────────────────────────────
+# 시험 일정(중간고사 등)과 클리닉 일정
+# 💡 학생이 가장 자주 궁금해하는 두 가지다 — "시험이 며칠 남았지?",
+#    "내 클리닉이 언제지?". 여태 둘 다 프로그램 밖(카톡·구두)에 있었다.
+# ─────────────────────────────────────────────────────────
+WEEKDAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def _today():
+    return datetime.now().date()
+
+
+def parse_ymd(s):
+    """'2026-10-13' → 날짜. 못 읽으면 None."""
+    t = re.sub(r"[./]", "-", str(s or "").strip())
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", t)
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+    except ValueError:
+        return None
+
+
+def days_until(d) -> Optional[int]:
+    """오늘부터 며칠 남았는지. 오늘이면 0, 지났으면 음수."""
+    day = parse_ymd(d)
+    return (day - _today()).days if day else None
+
+
+def dday_label(n) -> str:
+    """D-12 / D-DAY / D+3 — 시험지에서 보던 그 표기."""
+    if n is None:
+        return ""
+    if n == 0:
+        return "D-DAY"
+    return ("D-%d" % n) if n > 0 else ("D+%d" % (-n))
+
+
+def exam_dates_for(school: str, grade: str) -> list:
+    """그 학교 그 학년 학생에게 보여줄 시험 일정 — 아직 안 지난 것만, 가까운 순."""
+    if db is None:
+        return []
+    want_school = re.sub(r"\s+", "", str(school or ""))
+    want_grade = normalize_grade(grade)
+    out = []
+    for d in db.collection("exam_dates").stream():
+        r = d.to_dict() or {}
+        # 학교를 비워 둔 일정은 '학원 전체 공통'으로 본다
+        r_school = re.sub(r"\s+", "", str(r.get("school", "")))
+        if r_school and want_school and r_school != want_school:
+            continue
+        r_grade = normalize_grade(r.get("grade", ""))
+        if r_grade and want_grade and r_grade != want_grade:
+            continue
+        left = days_until(r.get("date"))
+        if left is None or left < 0:      # 이미 지난 시험은 빼고 보여준다
+            continue
+        out.append({"id": d.id, "title": r.get("title", "시험"),
+                    "date": r.get("date", ""), "school": r.get("school", ""),
+                    "grade": r.get("grade", ""), "memo": r.get("memo", ""),
+                    "d_left": left, "d_day": dday_label(left)})
+    out.sort(key=lambda x: x["d_left"])
+    return out
+
+
+def clinics_for(student_name: str) -> dict:
+    """그 학생의 클리닉 — 매주 고정과 날짜를 따로 잡은 보강을 함께 돌려준다."""
+    empty = {"weekly": [], "upcoming": []}
+    if db is None or not student_name:
+        return empty
+    weekly, upcoming = [], []
+    for d in db.collection("clinics").where("student_name", "==", student_name).stream():
+        r = d.to_dict() or {}
+        row = {"id": d.id, "time": r.get("time", ""), "memo": r.get("memo", ""),
+               "subject": r.get("subject", "")}
+        if str(r.get("kind", "")) == "once":
+            left = days_until(r.get("date"))
+            if left is None or left < 0:   # 지난 보강은 안 보여준다
+                continue
+            row.update({"date": r.get("date", ""), "d_left": left, "d_day": dday_label(left)})
+            upcoming.append(row)
+        else:
+            try:
+                wd = int(r.get("weekday", 0)) % 7
+            except (TypeError, ValueError):
+                wd = 0
+            row.update({"weekday": wd, "weekday_label": WEEKDAY_LABELS[wd]})
+            weekly.append(row)
+    weekly.sort(key=lambda x: (x["weekday"], x["time"]))
+    upcoming.sort(key=lambda x: (x["d_left"], x["time"]))
+    return {"weekly": weekly, "upcoming": upcoming}
+
+
+@app.get("/api/student/schedule")
+def get_student_schedule(student_name: str = ""):
+    """학생 화면 맨 위에 띄울 '내 시험 D-day'와 '내 전체 클리닉'."""
+    name = urllib.parse.unquote(student_name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생 이름이 없습니다."}
+    school = grade = ""
+    if db is not None:
+        doc = db.collection("students").document(name).get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            school, grade = data.get("school", ""), data.get("grade", "")
+    exams = exam_dates_for(school, grade)
+    return {"success": True, "student": name, "school": school, "grade": grade,
+            "exams": exams, "next_exam": exams[0] if exams else None,
+            "clinics": clinics_for(name)}
+
+
+class ExamDateReq(BaseModel):
+    id: str = ""
+    school: str = ""
+    grade: str = ""
+    title: str = "중간고사"
+    date: str = ""
+    memo: str = ""
+
+
+@app.get("/api/admin/exam_dates", dependencies=[Depends(verify_admin)])
+def list_exam_dates():
+    if db is None:
+        return {"success": False, "rows": []}
+    rows = []
+    for d in db.collection("exam_dates").stream():
+        r = d.to_dict() or {}
+        left = days_until(r.get("date"))
+        rows.append({"id": d.id, **r, "d_left": left, "d_day": dday_label(left)})
+    rows.sort(key=lambda x: str(x.get("date", "")))
+    return {"success": True, "rows": rows}
+
+
+@app.post("/api/admin/exam_date", dependencies=[Depends(verify_admin)])
+def save_exam_date(req: ExamDateReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if not parse_ymd(req.date):
+        return {"success": False, "detail": "날짜를 2026-10-13 형식으로 적어주세요."}
+    row = {"school": req.school.strip(), "grade": req.grade.strip(),
+           "title": (req.title or "시험").strip(), "date": req.date.strip(),
+           "memo": req.memo.strip()}
+    if req.id:
+        db.collection("exam_dates").document(req.id).set(row, merge=True)
+    else:
+        db.collection("exam_dates").add(row)
+    return {"success": True}
+
+
+@app.post("/api/admin/exam_date/delete", dependencies=[Depends(verify_admin)])
+def delete_exam_date(req: ExamDateReq):
+    if db is not None and req.id:
+        db.collection("exam_dates").document(req.id).delete()
+    return {"success": True}
+
+
+class ClinicReq(BaseModel):
+    id: str = ""
+    student_name: str = ""
+    student_names: list = []      # 여러 학생에게 한 번에 잡아줄 때
+    kind: str = "weekly"          # weekly(매주 고정) / once(날짜 하나)
+    weekday: int = 0              # 0=월 … 6=일
+    date: str = ""
+    time: str = ""
+    subject: str = ""
+    memo: str = ""
+
+
+@app.get("/api/admin/clinics", dependencies=[Depends(verify_admin)])
+def list_clinics(student_name: str = ""):
+    if db is None:
+        return {"success": False, "rows": []}
+    q = db.collection("clinics")
+    if student_name:
+        q = q.where("student_name", "==", student_name.strip())
+    rows = []
+    for d in q.stream():
+        r = d.to_dict() or {}
+        wd = r.get("weekday")
+        rows.append({"id": d.id, **r,
+                     "weekday_label": WEEKDAY_LABELS[int(wd) % 7] if wd is not None else ""})
+    rows.sort(key=lambda x: (str(x.get("student_name", "")), str(x.get("kind", "")),
+                             x.get("weekday", 0) or 0, str(x.get("date", "")),
+                             str(x.get("time", ""))))
+    return {"success": True, "rows": rows}
+
+
+@app.post("/api/admin/clinic", dependencies=[Depends(verify_admin)])
+def save_clinic(req: ClinicReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    kind = "once" if str(req.kind).strip() == "once" else "weekly"
+    if kind == "once" and not parse_ymd(req.date):
+        return {"success": False, "detail": "날짜를 2026-10-03 형식으로 적어주세요."}
+    names = [n.strip() for n in (req.student_names or []) if str(n).strip()]
+    if not names and req.student_name.strip():
+        names = [req.student_name.strip()]
+    if not names:
+        return {"success": False, "detail": "학생을 골라주세요."}
+
+    base = {"kind": kind, "time": req.time.strip(),
+            "subject": req.subject.strip(), "memo": req.memo.strip()}
+    if kind == "once":
+        base["date"] = req.date.strip()
+    else:
+        try:
+            base["weekday"] = int(req.weekday) % 7
+        except (TypeError, ValueError):
+            base["weekday"] = 0
+
+    if req.id and len(names) == 1:
+        db.collection("clinics").document(req.id).set({**base, "student_name": names[0]}, merge=True)
+        return {"success": True, "saved": 1}
+    for n in names:
+        db.collection("clinics").add({**base, "student_name": n})
+    return {"success": True, "saved": len(names)}
+
+
+@app.post("/api/admin/clinic/delete", dependencies=[Depends(verify_admin)])
+def delete_clinic(req: ClinicReq):
+    if db is not None and req.id:
+        db.collection("clinics").document(req.id).delete()
+    return {"success": True}
+
+
 @app.get("/api/admin/reports")
 def get_reports(_: bool = Depends(verify_admin)):
     if db is None:
