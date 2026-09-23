@@ -1981,38 +1981,77 @@ def with_subject_prefix(title: str, subject: str) -> str:
     return f"[{label}] {t}"
 
 
+# 💡 학생이 한 번 질문할 때마다 학원 자료를 통째로 실어 보내고 있었다. 자료가 50개면
+#    질문 한 줄에 수십만 글자가 따라붙어, 질문 한 번의 사용료가 자료 양에 그대로
+#    비례해 불어난다. 학생 수 × 질문 수만큼 곱해지므로 여기가 제일 크게 샌다.
+#    ① 글자 수에 상한을 둔다 ② 명단을 5분간 기억해 같은 자료를 계속 다시 읽지 않는다
+#    ③ 순서를 고정한다 — 앞부분이 매번 똑같아야 구글이 알아서 깎아 준다(프롬프트 캐시)
+KNOWLEDGE_CHAR_BUDGET = 12000      # 대략 A4 6~7쪽 분량
+KNOWLEDGE_CACHE_TTL = 300.0        # 5분
+_knowledge_cache = {}              # {과목: (읽은시각, 자료목록)}
+_guidelines_cache = {}             # {과목: (읽은시각, 원칙글)}
+
+
+def invalidate_knowledge_cache():
+    """자료나 답변 원칙을 고친 직후 — 다음 질문은 새로 읽어오게 한다."""
+    _knowledge_cache.clear()
+    _guidelines_cache.clear()
+
+
+def _knowledge_rows(subject: str) -> list:
+    now = time.time()
+    hit = _knowledge_cache.get(subject)
+    if hit and now - hit[0] < KNOWLEDGE_CACHE_TTL:
+        return hit[1]
+    rows = [d.to_dict() for d in db.collection("knowledge").stream()]
+    rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
+    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+    _knowledge_cache[subject] = (now, rows)
+    return rows
+
+
 def build_safe_knowledge_context(subject: str = "korean") -> str:
     """학생 챗봇에 노출해도 안전한 자료만, 그 과목 것만 모은다 (정답/해설 필드 제외)."""
     if db is None:
         return ""
     subject = normalize_subject(subject)
-    rows = [d.to_dict() for d in db.collection("knowledge").stream()]
-    # 과목 구분이 생기기 전에 올라간 예전 자료는 전부 국어 자료였다.
-    rows = [r for r in rows if normalize_subject(r.get("subject")) == subject]
-    # 💡 대부분 created_at을 문자열(strftime)로 저장하지만, 문서 하나라도 Firestore
-    # 콘솔 등에서 직접 만들어져 실제 타임스탬프(DatetimeWithNanoseconds) 타입으로 들어가
-    # 있으면 문자열과 비교할 수 없어("'<' not supported between instances of 'str' and
-    # 'DatetimeWithNanoseconds'") 이 함수를 부르는 모든 채팅 질문이 그대로 실패했다.
-    # 정렬 기준을 항상 문자열로 맞춰서 어떤 타입이 섞여 있어도 죽지 않게 한다.
-    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
-    knowledge_base = "\n".join([f"[{r.get('title')}] {r.get('content')}" for r in rows[:50]])
-    return knowledge_base
+    rows = _knowledge_rows(subject)
+    out, used = [], 0
+    for r in rows[:50]:
+        piece = f"[{r.get('title')}] {r.get('content')}"
+        if used + len(piece) > KNOWLEDGE_CHAR_BUDGET:
+            # 남은 자리에 들어갈 만큼만 넣고 멈춘다 (한 자료가 통째로 잘려 나가는 것보다 낫다)
+            room = KNOWLEDGE_CHAR_BUDGET - used
+            if room > 200:
+                out.append(piece[:room] + " …(이하 생략)")
+            break
+        out.append(piece)
+        used += len(piece) + 1
+    return "\n".join(out)
 
 
 def get_ai_guidelines(subject: str = "korean") -> str:
-    """원장님이 설정한 'AI 답변 원칙'(수업 방식/설명 스타일 지침)을 과목별로 가져온다."""
+    """원장님이 설정한 'AI 답변 원칙'(수업 방식/설명 스타일 지침)을 과목별로 가져온다.
+    💡 질문마다 다시 읽던 것을 5분간 기억한다 — 좀처럼 바뀌지 않는 글이다."""
     if db is None:
         return ""
     subject = normalize_subject(subject)
+    now = time.time()
+    hit = _guidelines_cache.get(subject)
+    if hit and now - hit[0] < KNOWLEDGE_CACHE_TTL:
+        return hit[1]
+
+    text = ""
     doc = db.collection("settings").document(f"ai_guidelines_{subject}").get()
     if doc.exists:
-        return doc.to_dict().get("text", "")
-    if subject == "korean":
+        text = doc.to_dict().get("text", "")
+    elif subject == "korean":
         # 과목 구분이 생기기 전에 적어둔 원칙은 국어 원칙으로 그대로 이어받는다.
         legacy = db.collection("settings").document("ai_guidelines").get()
         if legacy.exists:
-            return legacy.to_dict().get("text", "")
-    return ""
+            text = legacy.to_dict().get("text", "")
+    _guidelines_cache[subject] = (now, text)
+    return text
 
 
 def grant_chat_xp(student_name: str):
@@ -6696,6 +6735,7 @@ async def save_ai_guidelines(req: AIGuidelinesRequest):
         return {"success": False}
     subject = normalize_subject(req.subject)
     await asyncio.to_thread(lambda: db.collection("settings").document(f"ai_guidelines_{subject}").set({"text": req.text.strip()}))
+    invalidate_knowledge_cache()
     return {"success": True}
 
 @app.post("/api/admin/knowledge", dependencies=[Depends(verify_admin)])
@@ -6711,6 +6751,7 @@ async def add_knowledge_admin(title: str = Form(...), content: str = Form(""), s
                     final_content += f"\n\n[{file.filename} 분석]\n{res.text}"
                 except: pass
     await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": final_content, "subject": subject, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    invalidate_knowledge_cache()
     return {"success": True}
 
 @app.post("/api/admin/knowledge/bulk", dependencies=[Depends(verify_admin)])
@@ -6730,6 +6771,7 @@ async def add_knowledge_bulk_admin(files: List[UploadFile] = File(...), subject:
                 else: extracted_text = file_bytes.decode('utf-8', errors='ignore')
                 res = await asyncio.to_thread(safe_generate, [f"다음 문서의 핵심을 요약해줘.\n{extracted_text[:100000]}"], False)
                 await asyncio.to_thread(lambda: db.collection("knowledge").add({"title": title, "content": f"[{title} 요약]\n{res.text}", "subject": subject, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+                invalidate_knowledge_cache()
                 processed += 1
             except: pass
     return {"success": True, "count": processed}
@@ -6763,12 +6805,14 @@ def update_knowledge_admin(req: KnowledgeUpdateReq):
         "content": content,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }, merge=True)
+    invalidate_knowledge_cache()
     return {"success": True}
 
 
 @app.delete("/api/admin/knowledge/{k_id}", dependencies=[Depends(verify_admin)])
 def delete_knowledge_admin(k_id: str):
     if db: db.collection("knowledge").document(k_id).delete()
+    invalidate_knowledge_cache()
     return {"success": True}
 
 @app.get("/api/inquiries")
@@ -6804,11 +6848,13 @@ def sync_knowledge_from_source(doc_id: str, title: str, content: str, subject: s
         "title": title, "content": content, "subject": normalize_subject(subject),
         "source": source, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }, merge=True)
+    invalidate_knowledge_cache()
 
 
 def delete_synced_knowledge(doc_id: str):
     if db is not None:
         db.collection("knowledge").document(doc_id).delete()
+        invalidate_knowledge_cache()
 
 
 PROBLEM_NUM_RE = re.compile(r"^(\d{1,2})\.\s+", re.M)
