@@ -3308,6 +3308,157 @@ class QuizStartReq(BaseModel):
     title: str
 
 
+# ─────────────────────────────────────────────────────────
+# 퀴즈 재응시 요청
+#   제한 시간을 넘겼거나 마감이 지나 못 푼 학생이 원장님께 부탁하고,
+#   원장님이 허락하면 그 퀴즈를 한 번 더 볼 수 있다.
+#   허락은 한 번만 쓴다 — 내고 나면 다시 잠긴다.
+# ─────────────────────────────────────────────────────────
+RETRY_REQ_COLL = "quiz_retry_requests"
+RETRY_REASON_MAX = 200
+
+
+def retry_request_id(title: str, student_name: str) -> str:
+    return sanitize_doc_id(f"{title}__{student_name}")
+
+
+def retry_request_doc(title: str, student_name: str) -> dict:
+    """이 학생의 이 퀴즈에 대한 요청. 없으면 빈 딕셔너리."""
+    if db is None:
+        return {}
+    d = db.collection(RETRY_REQ_COLL).document(retry_request_id(title, student_name)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+def retry_allowed(title: str, student_name: str) -> bool:
+    """지금 이 학생이 허락을 받아 다시 볼 수 있는 상태인가."""
+    r = retry_request_doc(title, student_name)
+    return r.get("status") == "granted" and not r.get("used")
+
+
+def consume_retry_permission(title: str, student_name: str):
+    """제출까지 마쳤으면 허락을 다 쓴 것으로 표시한다."""
+    if db is None or not retry_allowed(title, student_name):
+        return
+    db.collection(RETRY_REQ_COLL).document(retry_request_id(title, student_name)).set(
+        {"used": True, "used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, merge=True)
+
+
+class RetryRequestReq(BaseModel):
+    student_name: str
+    title: str
+    reason: str = ""
+
+
+@app.post("/api/quiz/request_retry")
+async def request_quiz_retry(req: RetryRequestReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name, title = req.student_name.strip(), req.title.strip()
+    if not name or not title:
+        return {"success": False, "detail": "학생 이름과 퀴즈 이름이 필요합니다."}
+
+    quiz = await asyncio.to_thread(lambda: db.collection("quizzes").document(title).get())
+    if not quiz.exists:
+        return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
+
+    cur = await asyncio.to_thread(retry_request_doc, title, name)
+    if cur.get("status") == "granted" and not cur.get("used"):
+        return {"success": True, "status": "granted",
+                "detail": "이미 허락을 받았습니다. 바로 풀 수 있어요."}
+    if cur.get("status") == "pending":
+        return {"success": True, "status": "pending",
+                "detail": "이미 요청했습니다. 원장님이 확인하면 알려드릴게요."}
+
+    payload = {
+        "student_name": name, "title": title,
+        "reason": req.reason.strip()[:RETRY_REASON_MAX],
+        "requested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "pending", "used": False,
+    }
+    await asyncio.to_thread(
+        lambda: db.collection(RETRY_REQ_COLL).document(retry_request_id(title, name)).set(payload))
+    send_telegram_message(
+        f"🙋 [재응시 요청]\n{name} 학생이 '{title}' 퀴즈를 다시 보고 싶어합니다."
+        + (f"\n사유: {payload['reason']}" if payload["reason"] else ""))
+    return {"success": True, "status": "pending",
+            "detail": "원장님께 요청했습니다. 허락하시면 알림으로 알려드릴게요."}
+
+
+@app.get("/api/quiz/retry_status")
+async def quiz_retry_status(student_name: str, title: str):
+    """학생 화면이 '요청함 / 허락됨 / 거절됨' 을 보여주기 위해 묻는다."""
+    r = await asyncio.to_thread(retry_request_doc, title.strip(), student_name.strip())
+    if not r:
+        return {"success": True, "status": "none"}
+    return {"success": True, "status": r.get("status", "none"),
+            "used": bool(r.get("used")), "reason": r.get("reason", "")}
+
+
+@app.get("/api/admin/quiz_requests", dependencies=[Depends(verify_admin)])
+def list_quiz_requests(status: str = ""):
+    if db is None:
+        return {"success": False, "rows": []}
+    rows = []
+    for d in db.collection(RETRY_REQ_COLL).stream():
+        r = d.to_dict() or {}
+        if status and r.get("status") != status:
+            continue
+        rows.append({"id": d.id, **r})
+    # 아직 답을 안 준 요청이 맨 위로, 그다음은 최근 것부터
+    rows.sort(key=lambda x: (x.get("status") != "pending",
+                             -_retry_sort_key(x.get("requested_at", ""))))
+    return {"success": True, "rows": rows,
+            "pending": sum(1 for r in rows if r.get("status") == "pending")}
+
+
+def _retry_sort_key(when: str) -> float:
+    try:
+        return datetime.strptime(str(when), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return 0.0
+
+
+class RetryDecideReq(BaseModel):
+    id: str
+    approve: bool = True
+    admin_name: str = ""
+
+
+@app.post("/api/admin/quiz_request/decide", dependencies=[Depends(verify_admin)])
+async def decide_quiz_request(req: RetryDecideReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    ref = db.collection(RETRY_REQ_COLL).document(req.id.strip())
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "요청을 찾을 수 없습니다."}
+    cur = doc.to_dict() or {}
+    name, title = cur.get("student_name", ""), cur.get("title", "")
+
+    await asyncio.to_thread(lambda: ref.set({
+        "status": "granted" if req.approve else "denied",
+        "decided_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "decided_by": req.admin_name.strip() or "원장님",
+        "used": False,
+    }, merge=True))
+
+    if req.approve:
+        # 허락했으면 제한 시간을 처음부터 다시 준다 — 안 그러면 들어가자마자 끝난다
+        await asyncio.to_thread(
+            lambda: db.collection("quiz_attempts").document(
+                sanitize_doc_id(f"{title}__{name}")).delete())
+        send_push_to_student(name, "재응시 허락",
+                             f"'{title}' 퀴즈를 다시 풀 수 있어요. 지금 들어가 보세요!",
+                             tag="quiz-retry")
+    else:
+        send_push_to_student(name, "재응시 요청 결과",
+                             f"'{title}' 퀴즈 재응시가 이번에는 어렵다고 하십니다.",
+                             tag="quiz-retry")
+    return {"success": True, "granted": bool(req.approve),
+            "student_name": name, "title": title}
+
+
 @app.post("/api/quiz/start")
 async def start_quiz(req: QuizStartReq):
     """💡 '타임어택' 퀴즈인데 예전에는 제한 시간이 브라우저 안의 카운트다운 하나뿐이었다.
@@ -3322,7 +3473,10 @@ async def start_quiz(req: QuizStartReq):
     if not quiz_doc.exists:
         return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
     quiz_data = quiz_doc.to_dict()
-    if deadline_passed(quiz_data.get("deadline")) and not is_preview(req.student_name):
+    # 원장님이 재응시를 허락했으면 마감도 '이미 완료'도 한 번은 넘어간다
+    허락 = await asyncio.to_thread(retry_allowed, req.title, req.student_name)
+    free_pass = 허락 or is_preview(req.student_name)
+    if deadline_passed(quiz_data.get("deadline")) and not free_pass:
         return {"success": False, "detail": "마감 시한이 지난 퀴즈입니다."}
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
@@ -3340,7 +3494,7 @@ async def start_quiz(req: QuizStartReq):
             .stream()
         )
     )
-    if existing and not is_preview(req.student_name):
+    if existing and not free_pass:
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
@@ -3530,13 +3684,17 @@ async def submit_quiz(req: QuizSubmitReq):
             .stream()
         )
     )
-    if existing and not is_preview(req.student_name):
+    # 원장님이 허락한 재응시는 마감도 '이미 완료'도 한 번 넘어간다.
+    # 다 내고 나면 아래에서 허락을 써버린 것으로 표시해, 두 번은 못 쓰게 한다.
+    허락 = await asyncio.to_thread(retry_allowed, req.title, req.student_name)
+    free_pass = 허락 or is_preview(req.student_name)
+    if existing and not free_pass:
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     # 마감이 지난 뒤에는 내지도 못하게 한다 (시작만 미리 해두는 것을 막는다)
     quiz_doc0 = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     if (quiz_doc0.exists and deadline_passed((quiz_doc0.to_dict() or {}).get("deadline"))
-            and not is_preview(req.student_name)):
+            and not free_pass):
         return {"success": False, "detail": "마감 시한이 지나 제출할 수 없습니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
@@ -3655,6 +3813,10 @@ async def submit_quiz(req: QuizSubmitReq):
             }
         )
     )
+    # 재응시 허락을 받아 푼 것이면 여기서 그 허락을 다 쓴 것으로 표시한다.
+    # (제출까지 마쳐야 쓴 것이다 — 들어갔다 그냥 나온 것으로는 사라지지 않는다)
+    if 허락:
+        await asyncio.to_thread(consume_retry_permission, req.title, req.student_name)
     quiz_xp = XP_REWARD_QUIZ_BASE + actual_score // 2  # 💡 고득점자가 지나치게 빨리 레벨업하지 않도록 점수 반영 비중을 절반으로 축소
     s_ref = db.collection("students").document(req.student_name)
     s_doc = await asyncio.to_thread(s_ref.get)
