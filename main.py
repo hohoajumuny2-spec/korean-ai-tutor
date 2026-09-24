@@ -940,6 +940,11 @@ async def authenticate(req: AuthRequest):
     school = req.school.strip()
     grade = req.grade.strip()
 
+    # 원장님 체험 — 명부에 없어도 들어간다. 대신 출석 점수도, 로그인 기록도 남기지
+    # 않는다. 입구는 관리자 화면 버튼뿐이라, 학생이 이 이름을 알아도 의미가 없다.
+    if is_preview(student_name):
+        return {"success": True, "is_admin": False, "preview": True, "level_up": None}
+
     doc = await asyncio.to_thread(lambda: db.collection("students").document(student_name).get())
     if doc.exists:
         data = doc.to_dict()
@@ -1075,6 +1080,13 @@ def change_admin_password(req: AdminPasswordReq, name: str = Depends(current_adm
 def get_student_profile(student_name: str):
     if db is None:
         return {"success": False}
+    # 원장님 체험은 명부에 없다. 비어 있는 프로필을 돌려줘서 학생 바탕화면이
+    # 그대로 열리게 한다 — 기록이 없으니 화면도 새 학생처럼 보인다.
+    if is_preview(student_name):
+        profile = {"student_name": PREVIEW_NAME, "school": "체험", "grade": "-",
+                   "xp": 0, "subjects": list(SUBJECTS), "preview": True}
+        return {"success": True, "profile": profile, "reports": [],
+                "level_info": compute_level_info(0)}
     doc = db.collection("students").document(student_name).get()
     if not doc.exists:
         return {"success": False}
@@ -2235,14 +2247,55 @@ def student_targeting_info(student_name: str):
             "all_classes": [c for c in dict.fromkeys(classes.values()) if c]}
 
 
+# ─────────────────────────────────────────────────────────
+# 원장님 체험 모드
+#   원장님이 학생 화면에 직접 들어가 퀴즈·단어시험·모의고사·과제를 풀어보실 수
+#   있게 하는 신분이다. 학생과 똑같이 보이되 다음이 다르다.
+#     · 명부에 없어도 들어간다
+#     · 반·과목·마감 시한에 걸리지 않고, 몇 번이든 다시 푼다
+#     · 결과를 기록에 남기지 않는다 — 남기면 원장님 점수가 학생 통계와
+#       순위, 오답 목록에 섞여 들어간다
+# ─────────────────────────────────────────────────────────
+PREVIEW_NAME = "원장님(체험)"
+
+
+def is_preview(student_name) -> bool:
+    return str(student_name or "").strip() == PREVIEW_NAME
+
+
+def save_report(payload: dict):
+    """제출 기록을 남긴다.
+
+    원장님 체험으로 푼 것은 남기지 않는다. 남기면 학생 성적표·통계·순위·
+    오답 목록에 원장님 기록이 섞여 들어간다."""
+    if is_preview(payload.get("student_name")):
+        return None
+    return db.collection("reports").add(payload)
+
+def add_xp(student_name: str, amount: int):
+    """학생 점수를 올린다.
+
+    원장님 체험은 올리지 않는다. 레벨업 표시는 화면에 그대로 뜨는데,
+    원장님이 학생 눈에 무엇이 보이는지 확인하시려면 그게 보여야 한다.
+    다만 실제로 쌓이면 순위표가 뒤집히므로 저장만 건너뛴다."""
+    if is_preview(student_name):
+        return
+    db.collection("students").document(student_name).set(
+        {"xp": firestore.Increment(amount)}, merge=True)
+
+
+
 def task_visible_to_student(subject: str, target_class, student_name: str) -> bool:
     """이 자료가 이 학생에게 보여도 되는지.
 
+    - 원장님 체험 신분은 전부 본다 (점검하려면 다 보여야 한다).
     - 과목을 지정한 자료(퀴즈·모의고사·단어시험)는 그 과목을 듣는 학생만 본다.
     - 과목이 없는 자료(과제·공지)는 과목을 따지지 않고, 학생이 속한 어느 반이든
       대상에 들어 있으면 본다.
     - 대상 반을 하나도 안 고르면 전체 공개다.
     """
+    if is_preview(student_name):
+        return True
     info = student_targeting_info(student_name)
     subj_key = normalize_subject(subject) if subject else ""
     if subj_key and info is not None and subj_key not in info["subjects"]:
@@ -2841,7 +2894,7 @@ async def submit_exam(req: ExamSubmitRequest):
             .stream()
         )
     )
-    if existing:
+    if existing and not is_preview(req.student_name):
         return {"success": False, "detail": "이미 제출한 시험입니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("exams").document(req.title).get())
@@ -2891,7 +2944,7 @@ async def submit_exam(req: ExamSubmitRequest):
             })
 
     await asyncio.to_thread(
-        lambda: db.collection("reports").add(
+        lambda: save_report(
             {
                 "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "student_name": req.student_name,
@@ -2915,7 +2968,7 @@ async def submit_exam(req: ExamSubmitRequest):
     old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
     lvl_up = level_up_info(old_xp, exam_xp)
     await asyncio.to_thread(
-        lambda: s_ref.set({"xp": firestore.Increment(exam_xp)}, merge=True)
+        lambda: add_xp(req.student_name, exam_xp)
     )
     return {
         "success": True,
@@ -3269,7 +3322,7 @@ async def start_quiz(req: QuizStartReq):
     if not quiz_doc.exists:
         return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
     quiz_data = quiz_doc.to_dict()
-    if deadline_passed(quiz_data.get("deadline")):
+    if deadline_passed(quiz_data.get("deadline")) and not is_preview(req.student_name):
         return {"success": False, "detail": "마감 시한이 지난 퀴즈입니다."}
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
@@ -3287,7 +3340,7 @@ async def start_quiz(req: QuizStartReq):
             .stream()
         )
     )
-    if existing:
+    if existing and not is_preview(req.student_name):
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     attempt_id = sanitize_doc_id(f"{req.title}__{req.student_name}")
@@ -3477,12 +3530,13 @@ async def submit_quiz(req: QuizSubmitReq):
             .stream()
         )
     )
-    if existing:
+    if existing and not is_preview(req.student_name):
         return {"success": False, "detail": "이미 완료한 퀴즈입니다."}
 
     # 마감이 지난 뒤에는 내지도 못하게 한다 (시작만 미리 해두는 것을 막는다)
     quiz_doc0 = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
-    if quiz_doc0.exists and deadline_passed((quiz_doc0.to_dict() or {}).get("deadline")):
+    if (quiz_doc0.exists and deadline_passed((quiz_doc0.to_dict() or {}).get("deadline"))
+            and not is_preview(req.student_name)):
         return {"success": False, "detail": "마감 시한이 지나 제출할 수 없습니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
@@ -3581,7 +3635,7 @@ async def submit_quiz(req: QuizSubmitReq):
             d["ok"] = False
 
     await asyncio.to_thread(
-        lambda: db.collection("reports").add(
+        lambda: save_report(
             {
                 "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "student_name": req.student_name,
@@ -3607,7 +3661,7 @@ async def submit_quiz(req: QuizSubmitReq):
     old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
     lvl_up = level_up_info(old_xp, quiz_xp)
     await asyncio.to_thread(
-        lambda: s_ref.set({"xp": firestore.Increment(quiz_xp)}, merge=True)
+        lambda: add_xp(req.student_name, quiz_xp)
     )
     send_telegram_message(f"⏱️ [퀴즈 완료]\n{req.student_name} 학생이 '{req.title}' 퀴즈를 완료했습니다. (점수: {actual_score}점)")
     rank = await asyncio.to_thread(
@@ -4252,7 +4306,7 @@ async def submit_vocab_test(req: VocabTestSubmitReq):
             s["correct"] += 1
 
     await asyncio.to_thread(
-        lambda: db.collection("reports").add({
+        lambda: save_report({
             "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "student_name": req.student_name, "school": req.school, "grade": req.grade,
             "task_name": req.title, "type": "영어 단어 시험",
@@ -4266,7 +4320,7 @@ async def submit_vocab_test(req: VocabTestSubmitReq):
     s_doc = await asyncio.to_thread(s_ref.get)
     old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
     lvl_up = level_up_info(old_xp, vocab_xp)
-    await asyncio.to_thread(lambda: s_ref.set({"xp": firestore.Increment(vocab_xp)}, merge=True))
+    await asyncio.to_thread(lambda: add_xp(req.student_name, vocab_xp))
     send_telegram_message(f"🔤 [영어 단어 시험 완료]\n{req.student_name} 학생이 '{req.title}' 시험을 완료했습니다. (점수: {actual_score}점)")
 
     return {
@@ -5848,7 +5902,7 @@ def grade_question_bank(name: str, profile: dict, title: str, content: str, answ
             wrongs.append(i + 1)
 
     percent = round(correct / scored * 100) if scored else 0
-    db.collection("reports").add({
+    save_report({
         "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "student_name": name,
         "school": profile.get("school", ""),
@@ -6106,7 +6160,7 @@ async def retry_submit(req: RetrySubmitReq):
         lvl_up = level_up_info(old_xp, XP_REWARD_RETRY_CLEAR)
         xp_gain = XP_REWARD_RETRY_CLEAR
         await asyncio.to_thread(
-            lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_RETRY_CLEAR)}, merge=True))
+            lambda: add_xp(name, XP_REWARD_RETRY_CLEAR))
 
     await asyncio.to_thread(
         lambda: db.collection("reports").document(rid).set({"retry": retry_doc}, merge=True))
@@ -6987,7 +7041,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     score = round(correct / total * 100) if total else 0
     kind_label = HOMEWORK_KINDS.get(normalize_homework_kind(data.get("kind")), "수업 과제")
     await asyncio.to_thread(
-        lambda: db.collection("reports").add({
+        lambda: save_report({
             "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "student_name": name, "school": req.school, "grade": req.grade,
             "task_name": req.title, "type": "과제 제출",
@@ -7044,7 +7098,7 @@ async def submit_homework(
             file_urls.append(await asyncio.to_thread(save_bytes, file_bytes, f.filename, "homeworks", f.content_type))
 
     await asyncio.to_thread(
-        lambda: db.collection("reports").add(
+        lambda: save_report(
             {
                 "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "student_name": student_name,
@@ -7065,7 +7119,7 @@ async def submit_homework(
         old_xp = s_doc.to_dict().get("xp", 0) if s_doc.exists else 0
         lvl_up = level_up_info(old_xp, XP_REWARD_HOMEWORK)
         await asyncio.to_thread(
-            lambda: s_ref.set({"xp": firestore.Increment(XP_REWARD_HOMEWORK)}, merge=True)
+            lambda: add_xp(student_name, XP_REWARD_HOMEWORK)
         )
 
     doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(title).get())
