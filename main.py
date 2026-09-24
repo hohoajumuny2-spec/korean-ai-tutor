@@ -1256,14 +1256,17 @@ def task_source_questions(kind: str, title: str) -> list:
             for q in ((d.to_dict() or {}).get("questions") or []) if d.exists else []:
                 opts = q.get("options") or []
                 ans = q.get("answer", "")
-                # 💡 복수 정답("1/3")이면 각 보기 글을 모아 "가 또는 다"처럼 보여준다
-                nums = answer_slots(ans)
-                labels = []
-                for n in nums:
-                    ni = _num(n)
-                    if ni and 1 <= int(ni) <= len(opts) and opts[int(ni) - 1]:
-                        labels.append(opts[int(ni) - 1])
-                label = " 또는 ".join(labels) if labels else str(ans)
+                # 💡 "1/3"(둘 중 아무거나)이면 "가 또는 다", "1+3"(둘 다)이면 "가와 다".
+                groups = []
+                for slot in answer_slots(ans):
+                    texts = []
+                    for n in answer_picks(slot):
+                        ni = _num(n)
+                        if ni and 1 <= int(ni) <= len(opts) and opts[int(ni) - 1]:
+                            texts.append(opts[int(ni) - 1])
+                    if texts:
+                        groups.append("와 ".join(texts))
+                label = " 또는 ".join(groups) if groups else str(ans)
                 out.append({"text": q.get("q_text", ""), "answer": str(ans), "answer_text": label,
                             "options": opts, "bogi": q.get("bogi", ""), "image": q.get("image", ""),
                             "qtype": str(q.get("qtype", "choice") or "choice"),
@@ -3276,6 +3279,9 @@ def strip_quiz_answers(quiz: dict) -> dict:
     qs = []
     for q in (quiz.get("questions") or []):
         qc = dict(q)
+        # 답이 둘인 문항은 '몇 개를 골라야 하는지'를 남겨야 학생이 답을 낼 수 있다.
+        # 개수만 알려주므로 정답이 무엇인지는 드러나지 않는다.
+        qc["pick"] = slot_pick_count(q.get("answer", ""))
         qc.pop("answer", None)
         qc.pop("explanation", None)   # 해설도 정답을 드러낼 수 있어 함께 지운다
         qs.append(qc)
@@ -6910,42 +6916,80 @@ def answer_slots(key_slot) -> list:
     return [p.strip() for p in raw.split("/") if p.strip()]
 
 
+def answer_picks(one_slot) -> list:
+    """한 가지 정답 안에서 '둘 다 골라야 하는' 보기들을 나눈다.
+
+    두 가지를 구분해서 적는다.
+      3/5   — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
+      3+5   — 원래 답이 둘인 문항. 3과 5를 모두 골라야 맞다 (여기)
+    섞어서도 쓴다. 1+2/3+4 = {1,2} 이거나 {3,4}.
+    """
+    return [p.strip() for p in str(one_slot or "").split("+") if p.strip()]
+
+
+def _answer_key_sets(key_slot) -> list:
+    """정답표 한 자리를 '인정되는 답 묶음' 목록으로 편다. 각 묶음은 정렬된 튜플."""
+    return [tuple(sorted(_norm_answer_text(x) for x in answer_picks(p)))
+            for p in answer_slots(key_slot)]
+
+
 def _norm_answer_text(s) -> str:
     """단답형 비교용 — 대소문자·띄어쓰기 차이는 봐준다. 숫자 답에는 영향이 없다."""
     return re.sub(r"\s+", "", str(s or "")).casefold()
 
 
 def answer_matches(mine, key_slot) -> bool:
-    """학생이 고른 답이, 그 자리에 정답으로 인정된 보기 중 하나와 같은지.
-    먼저 그대로 비교하고(선택지 번호는 이걸로 충분), 안 맞으면 띄어쓰기·대소문자를
-    무시하고 한 번 더 본다(단답형 주관식 답을 너그럽게 채점하기 위해)."""
+    """학생이 낸 답이 정답으로 인정되는지.
+
+    답이 둘인 문항(3+5)은 학생도 '3+5' 처럼 두 개를 내고, 순서는 상관없이
+    묶음이 똑같아야 맞다. 하나만 내면 틀린다.
+    띄어쓰기·대소문자는 무시한다(단답형을 너그럽게 채점하려고)."""
     mine = str(mine or "").strip()
     if not mine:
         return False
-    slots = answer_slots(key_slot)
-    if mine in slots:
-        return True
-    mine_norm = _norm_answer_text(mine)
-    return any(_norm_answer_text(p) == mine_norm for p in slots)
+    mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
+    if not mine_set:
+        return False
+    return mine_set in _answer_key_sets(key_slot)
 
 
 def answer_label(key_slot) -> str:
-    """정답을 사람이 읽기 좋은 문구로 — 복수 정답이면 '1번 또는 3번'처럼."""
+    """정답을 사람이 읽기 좋은 문구로.
+    3/5 → '3번 또는 5번',  3+5 → '3번과 5번',  1+2/3+4 → '1번과 2번 또는 3번과 4번'."""
     parts = answer_slots(key_slot)
     if not parts:
         return str(key_slot or "").strip()
-    return " 또는 ".join(f"{p}번" for p in parts)
+    return " 또는 ".join("과 ".join(f"{x}번" for x in answer_picks(p)) for p in parts)
 
 
 def slot_kind(key_slot) -> str:
-    """정답 한 자리가 '1~5번 중 고르기'인지 '글자로 직접 쓰기'인지 — 정답 내용은
-    드러내지 않고 이 구분만 학생 화면에 보내, OMR 버튼판과 입력칸을 알맞게 그린다."""
+    """정답 한 자리를 학생 화면이 어떻게 그려야 하는지.
+
+      none    답을 안 내도 되는 문항
+      choice  1~5번 중 하나 고르기
+      multi2  1~5번 중 두 개 고르기 (multi3, multi4 … 도 같은 규칙)
+      short   글자로 직접 쓰기
+
+    정답이 무엇인지는 드러내지 않는다. 다만 '몇 개를 골라야 하는지'는 알려준다 —
+    문항에도 '두 개를 고르시오' 라고 적혀 있고, 모르면 학생이 답을 낼 수가 없다."""
     if is_skip_slot(key_slot):
-        return "none"                # 답을 안 내도 되는 문항
+        return "none"
     parts = answer_slots(key_slot)
-    if parts and all(p in "12345" for p in parts):
-        return "choice"
-    return "short"
+    if not parts:
+        return "short"
+    picks = [answer_picks(p) for p in parts]
+    if not all(all(x in "12345" for x in g) for g in picks):
+        return "short"
+    n = max(len(g) for g in picks)
+    return "choice" if n <= 1 else f"multi{n}"
+
+
+def slot_pick_count(key_slot) -> int:
+    """그 문항에서 골라야 하는 보기 개수. 객관식이 아니면 0."""
+    kind = slot_kind(key_slot)
+    if kind == "choice":
+        return 1
+    return int(kind[5:]) if kind.startswith("multi") else 0
 
 
 UNSURE_MARK = "?"      # 학생이 '모름'을 고른 문항
