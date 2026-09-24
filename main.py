@@ -1412,7 +1412,10 @@ def get_wrong_questions(student_name: str, limit: int = 30):
             "unsure_count": len(unsure),
             # 다시 풀어 고친 문항은 표시해 준다 (원래 점수는 그대로 둔다)
             "retry": r.get("retry") or {},
-            "can_retry": kind in RETRY_TARGETS,
+            # 💡 '다시 풀 수 있는 종류'(RETRY_KINDS)와 '재응시를 부탁할 수 있는
+            #    종류'(RETRY_TARGETS)는 다른 표다. 여기는 전자를 봐야 한다.
+            #    한때 후자를 보게 되어 모의고사·출제문제의 '다시 풀기'가 사라졌었다.
+            "can_retry": kind in RETRY_KINDS,
             "submitted_at": r.get("submitted_at", ""),
             "score": r.get("score", ""),
             "subject": r.get("subject", ""),
