@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문제지 만들기</title>
+<!--
+  문제지 만들기 — 문제를 붙여 넣으면 바로 A4 시험지 모양으로 편집해 PDF로 저장한다.
+  ● 인터넷이 없어도 된다. 이 파일 하나를 브라우저(크롬·엣지·사파리)로 열면 끝.
+  ● 외부 라이브러리·서버·AI를 쓰지 않는다. 쓴 내용은 이 브라우저에만 저장된다.
+  ● PDF는 브라우저 인쇄 → 'PDF로 저장' 으로 만든다 (글자가 선명한 벡터 PDF).
+-->
+<style>
+  :root{
+    --bg:#f3f4f6; --panel:#fff; --ink:#1f2937; --sub:#6b7280; --line:#d1d5db;
+    --accent:#2563eb; --accent-ink:#fff; --warn:#dc2626;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#111827; --panel:#1f2937; --ink:#e5e7eb; --sub:#9ca3af; --line:#374151;
+           --accent:#3b82f6; --accent-ink:#fff; --warn:#f87171; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);
+       font-family:"Noto Sans KR","Malgun Gothic","맑은 고딕","Apple SD Gothic Neo",sans-serif;font-size:14px}
+
+  /* ── 상단 도구줄 ── */
+  .bar{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+       padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .bar h1{font-size:17px;margin:0 12px 0 0;white-space:nowrap}
+  .bar .sp{flex:1}
+  button,.btn{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);
+       padding:7px 12px;border-radius:8px;cursor:pointer;white-space:nowrap}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+
+  /* ── 본문: 왼쪽 입력 / 오른쪽 미리보기 ── */
+  .main{display:grid;grid-template-columns:minmax(320px,440px) 1fr;height:calc(100% - 55px)}
+  .left{overflow:auto;padding:14px 16px;border-right:1px solid var(--line);background:var(--panel)}
+  .right{overflow:auto;padding:16px}
+  @media (max-width:900px){
+    .main{grid-template-columns:1fr;height:auto}
+    .left{border-right:0;border-bottom:1px solid var(--line)}
+  }
+
+  details{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:12px}
+  summary{cursor:pointer;font-weight:700}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin-top:10px}
+  .grid label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--sub)}
+  .grid label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--ink);font-size:13px}
+  .grid .full{grid-column:1/-1}
+  input[type=text],input[type=number],select,textarea{font:inherit;color:var(--ink);background:var(--bg);
+       border:1px solid var(--line);border-radius:7px;padding:6px 8px;width:100%}
+  textarea#src{height:52vh;min-height:280px;resize:vertical;line-height:1.55;
+       font-family:ui-monospace,"D2Coding","Consolas","Malgun Gothic",monospace;font-size:13.5px}
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
+  .hint{font-size:12px;color:var(--sub);line-height:1.6}
+  .hint code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  .imgs{display:flex;flex-wrap:wrap;gap:6px}
+  .imgs span{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:12px}
+  .imgs img{height:22px}
+  .imgs b{cursor:pointer;color:var(--warn)}
+  #msg{font-size:12px;color:var(--warn);min-height:1em}
+
+  /* ── 시험지(A4) — 화면·인쇄 공통 ── */
+  #pages{--fs:10.5pt;--lh:1.6;--gap:6mm;--solve:0mm;margin:0 auto;width:210mm;
+         font-family:"Noto Sans KR","Malgun Gothic","맑은 고딕","Apple SD Gothic Neo",sans-serif}
+  .page{width:210mm;height:297mm;padding:13mm 14mm 9mm;background:#fff;color:#111;
+        display:flex;flex-direction:column;overflow:hidden;margin:0 auto 8mm;
+        box-shadow:0 2px 10px rgba(0,0,0,.25);font-size:var(--fs);line-height:var(--lh)}
+  .head{border:.5mm solid #222;padding:2.5mm 4mm 2mm;margin-bottom:5mm;flex:0 0 auto}
+  .head .top{display:flex;justify-content:space-between;font-size:9pt;color:#333}
+  .head .ttl{font-size:19pt;font-weight:800;text-align:center;line-height:1.3;margin:.5mm 0 2mm}
+  .head .meta{display:flex;gap:6mm;align-items:flex-end;border-top:.3mm solid #222;padding-top:2mm;font-size:10pt}
+  .head .meta .grow{flex:1}
+  .head .blank{display:inline-block;min-width:26mm;border-bottom:.3mm solid #222;margin-left:2mm}
+  .rhead{display:flex;justify-content:space-between;font-size:9pt;color:#333;
+         border-bottom:.3mm solid #222;padding-bottom:1.2mm;margin-bottom:4mm;flex:0 0 auto}
+  .cols{flex:1 1 auto;min-height:0;display:flex}
+  .col{flex:1 1 0;min-width:0;height:100%;overflow:hidden}
+  .cols.two .col:first-child{padding-right:4mm}
+  .cols.two .col+.col{padding-left:4mm;border-left:.3mm solid #888}
+  .foot{flex:0 0 auto;text-align:center;font-size:9pt;color:#444;padding-top:2mm}
+
+  .q,.g{display:flex;padding-bottom:var(--gap)}
+  .qn{flex:0 0 auto;min-width:1.7em;font-weight:800}
+  .q.cont>.qn{visibility:hidden}
+  .qb{flex:1 1 auto;min-width:0}
+  .qb p{margin:0;overflow-wrap:anywhere}
+  .qb p.pg{margin-top:.55em}
+  .g .qb p.gt{font-weight:700}
+  .box{border:.3mm solid #333;padding:2mm 3mm;margin:1.6mm 0}
+  .box.lb{position:relative;margin-top:3.2mm;padding-top:2.8mm}
+  .box .lbl{position:absolute;top:-.75em;left:50%;transform:translateX(-50%);background:#fff;padding:0 2mm;line-height:1.4}
+  .ch{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:.6mm 3mm;margin-top:1.4mm}
+  .ch>div{display:flex;gap:1mm;min-width:0;overflow-wrap:anywhere}
+  .solve{height:var(--solve)}
+  .qb img{max-width:100%;vertical-align:middle}
+  .sect{font-size:13pt;font-weight:800;padding-bottom:3mm}
+  table.ak{border-collapse:collapse;width:100%;margin-bottom:5mm;table-layout:fixed}
+  table.ak th,table.ak td{border:.3mm solid #444;padding:.8mm 1mm;text-align:center;font-size:.95em}
+  table.ak th{background:#f0f0f0;font-weight:700}
+  .missing{color:#c00}
+  .tall{outline:2px dashed #e11;outline-offset:1mm}
+
+  @page{size:A4;margin:0}
+  @media print{
+    html,body{background:#fff;height:auto}
+    .bar,.left,.noprint{display:none!important}
+    .main{display:block;height:auto}
+    .right{padding:0;overflow:visible}
+    #pages{zoom:1!important;margin:0}
+    .page{margin:0;box-shadow:none;break-after:page}
+    .page:last-child{break-after:auto}
+    .tall{outline:none}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <h1>📝 문제지 만들기</h1>
+  <button class="primary" id="btnPrint" title="인쇄 창에서 대상(프린터)을 'PDF로 저장'으로 고르세요">PDF로 저장 / 인쇄</button>
+  <span class="sp"></span>
+  <button id="btnSave" title="지금 문제지를 파일로 보관">파일로 보관</button>
+  <button id="btnLoad" title="보관해 둔 파일 열기">열기</button>
+  <button id="btnSample">예시 넣기</button>
+  <button id="btnNew">새로 만들기</button>
+  <input type="file" id="fileLoad" accept=".json,application/json" hidden>
+</div>
+
+<div class="main">
+  <div class="left">
+    <details id="optBox" open>
+      <summary>시험지 설정</summary>
+      <div class="grid">
+        <label class="full">시험 이름<input type="text" data-k="title" placeholder="예: 3월 월말평가"></label>
+        <label>학원·학교 이름<input type="text" data-k="org" placeholder="예: ○○학원"></label>
+        <label>과목·범위<input type="text" data-k="subject" placeholder="예: 중2 수학 1단원"></label>
+        <label>날짜<input type="text" data-k="date" placeholder="예: 2026. 9. 25."></label>
+        <label>단 나누기
+          <select data-k="cols" data-num="1"><option value="2">2단 (시험지형)</option><option value="1">1단</option></select></label>
+        <label>글꼴
+          <select data-k="font"><option value="gothic">고딕</option><option value="myeongjo">명조 (바탕)</option></select></label>
+        <label>글자 크기 (pt)<input type="number" data-k="fs" data-num="1" min="7" max="16" step="0.5"></label>
+        <label>줄 간격<input type="number" data-k="lh" data-num="1" min="1.1" max="2.4" step="0.1"></label>
+        <label>문제 사이 간격 (mm)<input type="number" data-k="gap" data-num="1" min="0" max="40" step="1"></label>
+        <label>풀이 공간 (mm)<input type="number" data-k="solve" data-num="1" min="0" max="120" step="5"></label>
+        <label class="chk"><input type="checkbox" data-k="nameBox"> 이름 칸</label>
+        <label class="chk"><input type="checkbox" data-k="scoreBox"> 점수 칸</label>
+        <label class="chk"><input type="checkbox" data-k="renum"> 번호 자동으로 다시 매기기</label>
+        <label class="chk"><input type="checkbox" data-k="pageNo"> 쪽 번호</label>
+        <label class="chk"><input type="checkbox" data-k="answers"> 맨 뒤에 정답지 붙이기</label>
+        <label class="chk"><input type="checkbox" data-k="explain"> 정답지에 해설 넣기</label>
+      </div>
+    </details>
+
+    <div class="row" style="justify-content:space-between">
+      <b>문제 넣기</b>
+      <span>
+        <button id="btnImg" title="그림 파일을 골라 커서 자리에 넣기">🖼 그림 넣기</button>
+        <input type="file" id="fileImg" accept="image/*" multiple hidden>
+      </span>
+    </div>
+    <textarea id="src" spellcheck="false" placeholder="여기에 문제를 붙여 넣으세요.&#10;&#10;1. 문제 내용&#10;① 보기 ② 보기 ③ 보기 ④ 보기 ⑤ 보기&#10;정답: 3"></textarea>
+    <div id="msg"></div>
+    <div class="imgs" id="imgList"></div>
+
+    <details style="margin-top:12px">
+      <summary>쓰는 법</summary>
+      <div class="hint">
+        <p>한글·워드·PDF·카톡에서 복사해 그대로 붙여 넣으면 됩니다. 오른쪽에 바로 시험지 모양으로 나옵니다.</p>
+        <p><b>문제 번호</b> — 줄 맨 앞에 <code>1.</code> <code>2.</code> 또는 <code>3번</code> <code>문제 4</code><br>
+           번호가 하나도 없으면 빈 줄을 기준으로 문제를 나눕니다.</p>
+        <p><b>선택지</b> — <code>①</code>~<code>⑤</code>, <code>(1)</code>~<code>(5)</code>, <code>1)</code>~<code>5)</code>로 시작하는 줄.
+           한 줄에 여러 개 써도 되고, 짧으면 자동으로 한 줄·두 줄로 배치합니다.</p>
+        <p><b>정답·해설</b> — <code>정답: 3</code> <code>해설: …</code> 줄은 문제지에서 빠지고 맨 뒤 정답지로 갑니다.</p>
+        <p><b>&lt;보기&gt; 상자</b> — <code>&lt;보기&gt;</code> 줄 다음부터 선택지 전까지 상자로 묶습니다.<br>
+           <b>지문 상자</b> — <code>[지문]</code> … <code>[/지문]</code></p>
+        <p><b>묶음 지문</b> — <code>[1~3] 다음 글을 읽고 물음에 답하시오.</code></p>
+        <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>x^{2}</code>(위첨자) <code>a_{1}</code>(아래첨자)</p>
+        <p><b>그림</b> — 그림을 복사해 입력칸에 붙여 넣거나 [🖼 그림 넣기]. <code>[그림:그림1 50%]</code>처럼 쓰면 폭을 줄일 수 있습니다.</p>
+        <p><b>PDF 만들기</b> — [PDF로 저장 / 인쇄] → 대상(프린터)을 <b>'PDF로 저장'</b>으로 고르고 저장.
+           (휴대폰: 공유 → 인쇄 → PDF 저장)</p>
+        <p>쓴 내용은 이 브라우저에 자동 저장됩니다. 다른 컴퓨터로 옮길 때는 [파일로 보관] → [열기].</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="right" id="preview">
+    <div id="pages"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const CIRC = '①②③④⑤⑥⑦⑧⑨⑩';
+const STORE = 'munjeji.v1';
+
+const DEF = {
+  title:'', org:'', subject:'', date:'', cols:2, font:'gothic', fs:10.5, lh:1.6, gap:6, solve:0,
+  nameBox:true, scoreBox:true, renum:true, pageNo:true, answers:true, explain:true,
+};
+const FONTS = {
+  gothic:'"Noto Sans KR","Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Nanum Gothic",sans-serif',
+  myeongjo:'"Noto Serif KR","Batang","바탕","AppleMyungjo","Nanum Myeongjo",serif',
+};
+const SAMPLE = `[1~2] 다음 글을 읽고 물음에 답하시오.
+[지문]
+봄이 오면 산과 들에 꽃이 핀다. 겨우내 얼어 있던 땅이 녹고, 따뜻한 햇볕을 받은 나무들은 새싹을 틔운다.
+사람들은 두꺼운 옷을 벗고 가벼운 차림으로 나들이를 떠난다. 이처럼 계절의 변화는 자연과 사람의 모습을 함께 바꾸어 놓는다.
+[/지문]
+
+1. 윗글의 중심 내용으로 가장 알맞은 것은?
+① 봄의 날씨  ② 꽃이 피는 까닭  ③ 계절의 변화  ④ 사람들의 나들이  ⑤ 산과 들의 모습
+정답: 3
+해설: 자연과 사람의 모습이 계절에 따라 바뀐다는 것이 글 전체의 내용이다.
+
+2. 윗글에서 알 수 있는 내용을 <보기>에서 있는 대로 고른 것은?
+<보기>
+ㄱ. 봄에는 땅이 녹는다.
+ㄴ. 봄이 되면 사람들의 옷차림이 가벼워진다.
+ㄷ. 나무는 겨울에 새싹을 틔운다.
+① ㄱ ② ㄷ ③ ㄱ, ㄴ ④ ㄴ, ㄷ ⑤ ㄱ, ㄴ, ㄷ
+정답: 3
+
+3. 이차방정식 x^{2} - 5x + 6 = 0 의 두 근의 합은? [3점]
+① 1  ② 2  ③ 5  ④ 6  ⑤ 11
+정답: 3
+해설: 근과 계수의 관계에 의해 두 근의 합은 -(-5)/1 = 5 이다.
+
+4. 다음 문장에서 **어색한** 부분을 찾아 __바르게__ 고쳐 쓰시오.
+나는 어제 친구와 함께 도서관에 갈 것이다.
+정답: 갈 것이다 → 갔다
+`;
+
+let S = { opt:{...DEF}, text:SAMPLE, images:{} };
+
+// ─────────────────────────────────────────────
+// 저장 / 불러오기 (브라우저에만 저장; 막혀 있어도 동작은 한다)
+// ─────────────────────────────────────────────
+let warnedQuota = false;
+function save(){
+  try { localStorage.setItem(STORE, JSON.stringify(S)); }
+  catch(e){
+    if(!warnedQuota){ warnedQuota = true;
+      msg('그림이 커서 브라우저 자동 저장이 안 됩니다. [파일로 보관]으로 따로 보관하세요.'); }
+  }
+}
+function load(){
+  try {
+    const raw = localStorage.getItem(STORE);
+    if(raw){ const d = JSON.parse(raw); adopt(d); }
+  } catch(e){}
+}
+function adopt(d){
+  S = { opt:{...DEF, ...(d.opt||{})}, text: typeof d.text==='string' ? d.text : '', images: d.images||{} };
+}
+function msg(t){ $('#msg').textContent = t || ''; }
+
+// ─────────────────────────────────────────────
+// 글 → 문항 구조
+// ─────────────────────────────────────────────
+const RE_Q     = /^\s*(?:(?:문제|Q)\s*(\d{1,3})\s*[.．:)]?|(\d{1,3})\s*[.．]|(\d{1,3})\s*번\s*[.．)]?)(?=\s|$)\s*(.*)$/;
+const RE_GROUP = /^\s*\[\s*(\d{1,3})\s*[~∼～\-–]\s*(\d{1,3})\s*\]\s*(.*)$/;
+const RE_ANS   = /^\s*(?:\[정답\]|(?:정답|답)\s*[:：])\s*(.*)$/;
+const RE_EXP   = /^\s*(?:\[해설\]|(?:해설|풀이)\s*[:：])\s*(.*)$/;
+const RE_BOGI  = /^\s*[<〈《＜\[【(]\s*보\s*기\s*[>〉》＞\]】)]\s*$/;
+const RE_BOX   = /^\s*\[(지문|박스|상자)\]\s*$/;
+const RE_BOXEND= /^\s*\[\/(보기|지문|박스|상자)\]\s*$/;
+const RE_CHOICE= /^\s*(?:[①-⑩]|\(\d{1,2}\)|[1-9]\)\s)/;
+
+function splitChoices(line){
+  const s = line.trim();
+  if(/^[①-⑩]/.test(s))
+    return s.split(/(?=[①-⑩])/).map(x => ({m:x[0], t:x.slice(1).trim()}));
+  if(/^\(\d{1,2}\)/.test(s))
+    return s.split(/(?=\(\d{1,2}\))/).map(x => {
+      const m = x.match(/^\((\d{1,2})\)\s*(.*)$/s);
+      const n = +m[1];
+      return {m: n>=1 && n<=10 ? CIRC[n-1] : `(${n})`, t:m[2].trim()};
+    });
+  return s.split(/\s+(?=[1-9]\)\s)/).map(x => {       // 1) 가  2) 나  처럼 한 줄에 여러 개
+    const m = x.match(/^([1-9])\)\s*(.*)$/s);
+    return {m:CIRC[+m[1]-1], t:m[2].trim()};
+  });
+}
+
+function parse(src){
+  const lines = src.replace(/\r\n?/g,'\n').split('\n');
+  const numbered = lines.some(l => RE_Q.test(l));
+  const items = [];
+  let cur = null, state = 'body', box = null, blank = false;
+
+  const newQ = num => ({type:'q', num, parts:[], choices:[], answer:'', explain:[], gap:false});
+  const flush = () => { if(cur) items.push(cur); cur = null; state = 'body'; box = null; };
+
+  for(const raw of lines){
+    const line = raw.replace(/\s+$/,'');
+    const empty = !line.trim();
+    let m;
+
+    if((m = line.match(RE_GROUP))){
+      flush();
+      cur = {type:'g', from:+m[1], to:+m[2], title:m[3], parts:[], choices:[], gap:false};
+      blank = false; continue;
+    }
+    if(numbered && (m = line.match(RE_Q)) && state !== 'box-x'){
+      flush();
+      cur = newQ(m[1]||m[2]||m[3]);
+      if(m[4].trim()) cur.parts.push({t:'ln', s:m[4], pg:false});
+      blank = false; continue;
+    }
+    if(!numbered && !empty){
+      const special = RE_ANS.test(line) || RE_EXP.test(line) || RE_CHOICE.test(line)
+                   || RE_BOGI.test(line) || RE_BOX.test(line) || RE_BOXEND.test(line);
+      if(!cur || (blank && !special && state !== 'box-x')){ flush(); cur = newQ(null); }
+    }
+    if(empty){ blank = true; } else { blank = false; }
+
+    if(!cur){
+      if(empty) continue;
+      cur = {type:'g', title:'', parts:[], choices:[], gap:false};   // 첫 번호 앞의 안내 글
+    }
+
+    if(!empty && (m = line.match(RE_ANS))){ if(cur.type==='q'){ cur.answer = m[1].trim(); } state = 'after'; continue; }
+    if(!empty && (m = line.match(RE_EXP))){ state = 'explain'; if(cur.type==='q' && m[1].trim()) cur.explain.push(m[1]); continue; }
+    if(state === 'explain'){ if(cur.type==='q' && (cur.explain.length || !empty)) cur.explain.push(line); continue; }
+
+    if(RE_BOGI.test(line)){ box = {t:'box', label:'보기', lines:[], gap:false}; cur.parts.push(box); state = 'box'; continue; }
+    if(RE_BOX.test(line)){  box = {t:'box', label:'', lines:[], gap:false};     cur.parts.push(box); state = 'box-x'; continue; }
+    if(RE_BOXEND.test(line)){ state = 'body'; box = null; continue; }
+
+    if(state !== 'box-x' && RE_CHOICE.test(line) && cur.type === 'q'){
+      state = 'body'; box = null;
+      cur.choices.push(...splitChoices(line));
+      continue;
+    }
+    if(state === 'box' || state === 'box-x'){
+      if(empty){ if(box.lines.length) box.gap = true; continue; }
+      box.lines.push({s:line, pg:box.gap}); box.gap = false; continue;
+    }
+    if(empty){ if(cur.parts.length) cur.gap = true; continue; }
+    if(cur.choices.length){                       // 선택지 다음 줄은 마지막 선택지의 이어진 글
+      const c = cur.choices[cur.choices.length-1]; c.t += ' ' + line.trim(); continue;
+    }
+    cur.parts.push({t:'ln', s:line, pg:cur.gap}); cur.gap = false;
+  }
+  flush();
+  for(const it of items) if(it.explain) while(it.explain.length && !it.explain[it.explain.length-1].trim()) it.explain.pop();
+  return items;
+}
+
+// ─────────────────────────────────────────────
+// 문항 → HTML
+// ─────────────────────────────────────────────
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function fmt(s){
+  let h = esc(s);
+  h = h.replace(/\[그림:([^\]\s]+)(?:\s+(\d{1,3})%)?\]/g, (_, k, w) =>
+        S.images[k] ? `<img src="${S.images[k]}" alt=""${w ? ` style="width:${w}%"` : ''}>`
+                    : `<span class="missing">[그림 없음: ${k}]</span>`);
+  h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+       .replace(/__(.+?)__/g, '<u>$1</u>')
+       .replace(/\^\{(.+?)\}/g, '<sup>$1</sup>')
+       .replace(/_\{(.+?)\}/g, '<sub>$1</sub>')
+       .replace(/^ +/, m => '&nbsp;'.repeat(m.length));
+  return h;
+}
+const lnHTML = (l, cls='') => `<p class="${(l.pg?'pg ':'') + cls}">${fmt(l.s) || '&nbsp;'}</p>`;
+function partsHTML(parts){
+  return parts.map(p => p.t === 'ln' ? lnHTML(p)
+    : `<div class="box${p.label?' lb':''}">${p.label?`<span class="lbl">&lt;${p.label}&gt;</span>`:''}${p.lines.map(l=>lnHTML(l)).join('')}</div>`
+  ).join('');
+}
+// 한글은 1, 영문·숫자는 약 0.55, 빈칸·쉼표는 0.3 칸으로 어림
+const vlen = s => { let n = 0; for(const ch of s) n += /[ᄀ-ᇿ①-⓿　-鿿가-힯＀-￯]/.test(ch) ? 1 : /[\s,.·]/.test(ch) ? .3 : .55; return n; };
+function choicesHTML(ch){
+  if(!ch.length) return '';
+  const o = S.opt;
+  const widthMM = (o.cols == 2 ? 86 : 180) - 7;
+  const perLine = widthMM / (o.fs * 0.3528);
+  const need = Math.max(...ch.map(c => /\[그림:/.test(c.t) ? 999 : vlen(c.t) + 2));
+  const cands = [ch.length, ...(ch.length >= 5 ? [3] : []), 2, 1].filter((v,i,a) => v <= ch.length && a.indexOf(v) === i);
+  const n = cands.find(k => need * k <= perLine * .98) || 1;
+  return `<div class="ch" style="--n:${n}">${ch.map(c => `<div><span>${c.m}</span><span>${fmt(c.t)}</span></div>`).join('')}</div>`;
+}
+function el(html){ const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
+
+function answerText(it){
+  let a = it.answer.trim();
+  if(it.choices.length) a = a.replace(/(^|[\s,/·])(\d{1,2})(?=$|[\s,/·])/g, (m, p, d) => (+d >= 1 && +d <= 10) ? p + CIRC[d-1] : m);
+  return a;
+}
+
+// ─────────────────────────────────────────────
+// 쪽 나누기 — 실제 A4 크기로 채워 보며 넘친 문항을 다음 단·쪽으로 보낸다
+// ─────────────────────────────────────────────
+function Pager(root){
+  const o = S.opt;
+  let page, cols, ci, first = true, section = '';
+  const pages = [];
+  const over = c => c.scrollHeight > c.clientHeight + 1;
+
+  function newPage(){
+    page = document.createElement('div'); page.className = 'page';
+    let head;
+    if(first){
+      const meta = [];
+      meta.push(`<span class="grow">${esc(o.subject)}</span>`);
+      if(o.nameBox)  meta.push(`<span>이름<span class="blank"></span></span>`);
+      if(o.scoreBox) meta.push(`<span>점수<span class="blank" style="min-width:18mm"></span></span>`);
+      head = `<div class="head"><div class="top"><span>${esc(o.org)}</span><span>${esc(o.date)}</span></div>
+              <div class="ttl">${esc(o.title || '문제지')}</div><div class="meta">${meta.join('')}</div></div>`;
+      first = false;
+    } else {
+      head = `<div class="rhead"><span>${esc(o.title || '문제지')}</span><span>${esc(section || o.subject)}</span></div>`;
+    }
+    page.innerHTML = head + `<div class="cols${o.cols == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(o.cols == 2 ? 2 : 1)}</div><div class="foot"></div>`;
+    root.appendChild(page); pages.push(page);
+    cols = [...page.querySelectorAll('.col')]; ci = 0;
+  }
+  const col = () => cols[ci];
+  function next(){ if(++ci >= cols.length) newPage(); }
+  const used = () => col().children.length > 0;
+
+  function place(b){
+    col().appendChild(b);
+    if(!over(col())) return;
+    const tooBig = b.offsetHeight > col().clientHeight;
+    col().removeChild(b);
+    if(!tooBig){ next(); col().appendChild(b); return; }
+    split(b);                         // 한 단보다 긴 문항·지문은 줄 단위로 이어서 싣는다
+  }
+  function split(b){
+    const qn = b.querySelector(':scope>.qn');
+    let rest = [...b.querySelector(':scope>.qb').children];
+    let firstPart = true;
+    while(rest.length){
+      const part = b.cloneNode(false);
+      if(!firstPart) part.classList.add('cont');
+      if(qn) part.appendChild(qn.cloneNode(true));
+      const body = document.createElement('div'); body.className = 'qb'; part.appendChild(body);
+      col().appendChild(part);
+      let placed = 0;
+      while(rest.length){
+        body.appendChild(rest[0]);
+        if(!over(col())){ rest.shift(); placed++; continue; }
+        body.removeChild(rest[0]);
+        const piece = rest[0].classList.contains('box') && splitBox(rest[0], body);
+        if(piece){ rest[0] = piece; placed++; }   // 긴 지문 상자는 남는 자리만큼 잘라 싣고 나머지는 다음 단으로
+        break;
+      }
+      if(!placed){
+        if(col().children.length > 1){ col().removeChild(part); next(); continue; }
+        body.appendChild(rest.shift()); part.classList.add('tall');  // 한 덩어리가 한 단보다 크다
+        tall++;
+      }
+      firstPart = false;
+      if(rest.length) next();
+    }
+  }
+  // 상자를 줄 단위로 나눠 body 에 들어가는 만큼만 싣는다. 나머지 상자를 돌려준다(두 줄도 못 실으면 null).
+  function splitBox(bx, body){
+    const lines = [...bx.children].filter(c => c.tagName === 'P');
+    if(lines.length < 3) return null;
+    const head = bx.cloneNode(false);
+    const lbl = bx.querySelector(':scope>.lbl'); if(lbl) head.appendChild(lbl.cloneNode(true));
+    body.appendChild(head);
+    let k = 0;
+    while(k < lines.length - 1){
+      head.appendChild(lines[k]);
+      if(over(col())){ bx.insertBefore(lines[k], lines[k+1]); break; }
+      k++;
+    }
+    if(k < 2){ while(head.lastChild && head.lastChild.tagName === 'P') bx.insertBefore(head.lastChild, bx.querySelector(':scope>p')); body.removeChild(head); return null; }
+    head.style.borderBottomStyle = 'dashed';
+    const restBox = bx.cloneNode(false); restBox.classList.remove('lb');
+    restBox.style.borderTopStyle = 'dashed';
+    lines.slice(k).forEach(l => restBox.appendChild(l));
+    return restBox;
+  }
+  let tall = 0;
+  return {
+    start(title){ section = title || ''; if(!page || used() || ci > 0) newPage(); },
+    place, pages, get tall(){ return tall; },
+  };
+}
+
+function render(){
+  const o = S.opt;
+  const root = $('#pages');
+  root.style.zoom = 1;
+  root.style.setProperty('--fs', o.fs + 'pt');
+  root.style.setProperty('--lh', o.lh);
+  root.style.setProperty('--gap', o.gap + 'mm');
+  root.style.setProperty('--solve', o.solve + 'mm');
+  root.style.fontFamily = FONTS[o.font] || FONTS.gothic;
+  root.innerHTML = '';
+
+  const items = parse(S.text);
+  const pager = Pager(root);
+  pager.start();
+
+  let n = 0; const withAns = [];
+  items.forEach((it, i) => {
+    if(it.type === 'g'){
+      let title = it.title;
+      if(it.from != null){
+        let a = it.from, b = it.to;
+        if(o.renum){ a = n + 1; b = n + Math.max(1, it.to - it.from + 1); }
+        title = `[${a}~${b}] ` + title;
+      }
+      const html = (title ? lnHTML({s:title}, 'gt') : '') + partsHTML(it.parts);
+      if(html) pager.place(el(`<div class="g"><div class="qb">${html}</div></div>`));
+      return;
+    }
+    n++;
+    it.label = o.renum ? n : (it.num || n);
+    if(it.answer || it.explain.length) withAns.push(it);
+    const body = partsHTML(it.parts) + choicesHTML(it.choices) + (o.solve > 0 ? '<div class="solve"></div>' : '');
+    pager.place(el(`<div class="q"><div class="qn">${it.label}.</div><div class="qb">${body || '<p>&nbsp;</p>'}</div></div>`));
+  });
+
+  if(o.answers && withAns.length){
+    pager.start('정답 및 해설');
+    pager.place(el(`<div class="sect">정답 및 해설</div>`));
+    const list = withAns.filter(it => it.answer);
+    if(list.length){
+      const short = list.every(it => vlen(answerText(it)) <= 4);
+      const per = o.cols == 2 ? (short ? 5 : 2) : (short ? 10 : 4);
+      let rows = '';
+      for(let i = 0; i < list.length; i += per){
+        const chunk = list.slice(i, i + per);
+        rows += '<tr>' + chunk.map(it => `<th>${it.label}</th><td>${fmt(answerText(it))}</td>`).join('')
+              + '<th></th><td></td>'.repeat(per - chunk.length) + '</tr>';
+      }
+      pager.place(el(`<table class="ak"><colgroup>${'<col style="width:7mm"><col>'.repeat(per)}</colgroup>${rows}</table>`));
+    }
+    if(o.explain) withAns.filter(it => it.explain.length).forEach(it => {
+      const lines = it.explain.map((s, i) => lnHTML({s, pg: !s.trim() ? false : (i > 0 && !it.explain[i-1].trim())})).join('');
+      const head = it.answer ? `<p><b>정답</b> ${fmt(answerText(it))}</p>` : '';
+      pager.place(el(`<div class="q"><div class="qn">${it.label}.</div><div class="qb">${head}${lines}</div></div>`));
+    });
+  }
+
+  const N = pager.pages.length;
+  pager.pages.forEach((p, i) => { p.querySelector('.foot').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
+  msg(pager.tall ? '빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.' : '');
+  fitZoom();
+  save();
+}
+
+function fitZoom(){
+  const avail = $('#preview').clientWidth - 32;
+  const pw = $('.page') ? $('.page').offsetWidth : 794;
+  $('#pages').style.zoom = Math.min(1, Math.max(.3, avail / pw));
+}
+
+// ─────────────────────────────────────────────
+// 화면 연결
+// ─────────────────────────────────────────────
+let timer = 0;
+const later = () => { clearTimeout(timer); timer = setTimeout(render, 250); };
+
+function bindOptions(){
+  document.querySelectorAll('[data-k]').forEach(inp => {
+    const k = inp.dataset.k;
+    if(inp.type === 'checkbox') inp.checked = !!S.opt[k]; else inp.value = S.opt[k];
+    inp.oninput = inp.onchange = () => {
+      let v = inp.type === 'checkbox' ? inp.checked : inp.value;
+      if(inp.dataset.num){ v = parseFloat(v); if(!isFinite(v)) return; }
+      S.opt[k] = v; later();
+    };
+  });
+  $('#src').value = S.text;
+  refreshImgList();
+}
+
+$('#src').addEventListener('input', e => { S.text = e.target.value; later(); });
+
+function insertAtCursor(t){
+  const ta = $('#src');
+  ta.focus();
+  ta.setRangeText(t, ta.selectionStart, ta.selectionEnd, 'end');
+  S.text = ta.value; later();
+}
+function nextImgName(){ let i = 1; while(S.images['그림' + i]) i++; return '그림' + i; }
+function addImage(file){
+  return new Promise(res => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let url = fr.result;
+        const MAX = 1600;                  // 너무 큰 사진은 줄여서 저장 공간을 아낀다
+        if(Math.max(img.width, img.height) > MAX){
+          const r = MAX / Math.max(img.width, img.height);
+          const c = document.createElement('canvas');
+          c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          url = file.type === 'image/png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', .9);
+        }
+        const name = nextImgName();
+        S.images[name] = url;
+        insertAtCursor(`[그림:${name}]`);
+        refreshImgList(); res();
+      };
+      img.onerror = () => { msg('그림을 읽지 못했습니다.'); res(); };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+function refreshImgList(){
+  const box = $('#imgList'); box.innerHTML = '';
+  Object.keys(S.images).forEach(k => {
+    const s = document.createElement('span');
+    s.innerHTML = `<img src="${S.images[k]}" alt="">${esc(k)} <b title="지우기">✕</b>`;
+    s.querySelector('b').onclick = () => { delete S.images[k]; refreshImgList(); later(); };
+    box.appendChild(s);
+  });
+}
+$('#btnImg').onclick = () => $('#fileImg').click();
+$('#fileImg').onchange = async e => { for(const f of e.target.files) await addImage(f); e.target.value = ''; };
+$('#src').addEventListener('paste', async e => {
+  const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+  if(!files.length) return;
+  e.preventDefault();
+  for(const f of files) await addImage(f);
+});
+
+$('#btnPrint').onclick = () => { clearTimeout(timer); render(); window.print(); };
+const docTitle = document.title;
+window.addEventListener('beforeprint', () => { document.title = S.opt.title || '문제지'; }); // PDF 파일 이름
+window.addEventListener('afterprint',  () => { document.title = docTitle; });
+
+$('#btnSave').onclick = () => {
+  const blob = new Blob([JSON.stringify(S)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (S.opt.title || '문제지') + '.json';
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$('#btnLoad').onclick = () => $('#fileLoad').click();
+$('#fileLoad').onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    try { adopt(JSON.parse(fr.result)); bindOptions(); render(); }
+    catch(err){ msg('이 파일은 열 수 없습니다.'); }
+  };
+  fr.readAsText(f); e.target.value = '';
+};
+$('#btnSample').onclick = () => {
+  if(S.text.trim() && !confirm('지금 쓴 내용을 지우고 예시를 넣을까요?')) return;
+  S.text = SAMPLE; $('#src').value = SAMPLE; render();
+};
+$('#btnNew').onclick = () => {
+  if(!confirm('문제와 그림을 모두 지우고 새로 시작할까요? (설정은 그대로 둡니다)')) return;
+  S.text = ''; S.images = {}; bindOptions(); render(); $('#src').focus();
+};
+window.addEventListener('resize', fitZoom);
+
+load();
+bindOptions();
+render();
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(render);  // 글꼴이 늦게 오면 다시 맞춘다
+})();
+</script>
+</body>
+</html>
