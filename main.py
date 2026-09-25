@@ -1284,12 +1284,52 @@ def task_source_questions(kind: str, title: str) -> list:
             for a in ((d.to_dict() or {}).get("answers") or []) if d.exists else []:
                 out.append({"text": "", "answer": str(a), "answer_text": "", "options": [], "bogi": "", "image": "",
                             "qtype": slot_kind(a)})
+        elif kind == "영어 단어 시험":
+            # 단어시험은 제출할 때 document(title) 그대로 읽는다 — 같은 열쇠를 쓴다
+            d = db.collection("vocab_tests").document(title).get()
+            qs = ((d.to_dict() or {}).get("questions") or []) if d.exists else []
+            for q in sorted(qs, key=lambda q: _num(q.get("no")) or 0):
+                ans = str(q.get("answer", ""))
+                out.append({"text": str(q.get("prompt", "")), "answer": ans, "answer_text": ans,
+                            "options": [], "bogi": "", "image": "", "qtype": "short"})
+        elif kind == "출제 문제":
+            # 출제본은 제목으로만 이어져 있다(채점 때 본문을 화면에서 받는다). 같은 제목의 첫 출제본.
+            for d in db.collection("questions").stream():
+                row = d.to_dict() or {}
+                if str(row.get("title", "")).strip() != str(title).strip():
+                    continue
+                parsed = parse_question_bank_content(row.get("content", ""))
+                last = max(list(parsed["answers"].keys()) + list(parsed["problems"].keys()) or [0])
+                for no in range(1, last + 1):
+                    raw = str(parsed["answers"].get(no, "")).strip()
+                    num = _extract_option_number(raw)
+                    out.append({"text": parsed["problems"].get(no, ""), "answer": str(num) if num else raw,
+                                "answer_text": raw, "options": [], "bogi": "", "image": "", "qtype": "choice"})
+                break
     except Exception as e:
         print("문항 되짚기 실패:", kind, title, e)
     return out
 
 
-VIEW_RESULT_KINDS = {"과제 제출", "모의고사", "타임어택 퀴즈"}
+VIEW_RESULT_KINDS = {"과제 제출", "모의고사", "타임어택 퀴즈", "영어 단어 시험", "출제 문제"}
+
+
+@app.get("/api/admin/student_reports/{student_name}", dependencies=[Depends(verify_admin)])
+def admin_student_reports(student_name: str):
+    """관리자 학생 명단 → 한 학생의 기록.
+
+    💡 예전에는 '전체 학생의 최근 300건' 을 받아 화면에서 이름으로 걸렀다.
+       학생이 많아지면 한 학생의 기록이 300건 밖으로 밀려나 안 보였다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name or "").strip()
+    try:
+        rows = [r.to_dict() for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream()]
+    except Exception as e:
+        print("학생 기록 조회 실패:", name, repr(e))
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+    rows.sort(key=lambda r: str(r.get("submitted_at", "")), reverse=True)
+    return {"success": True, "reports": rows[:600]}
 
 
 @app.get("/api/student/view_result")
@@ -4508,6 +4548,8 @@ async def submit_vocab_test(req: VocabTestSubmitReq):
             "task_name": req.title, "type": "영어 단어 시험",
             "score": actual_score, "question_count": len(results), "correct_count": correct_count,
             "wrongs": [r["no"] for r in results if not r["ok"]],
+            # 원장님이 학생 기록에서 '무엇을 뭐라고 써서 틀렸는지' 보려면 학생 답이 있어야 한다
+            "mine": [r["my"] for r in results],
         })
     )
 
@@ -6113,6 +6155,7 @@ def grade_question_bank(name: str, profile: dict, title: str, content: str, answ
         "unsure": unsure,
         "question_count": scored,
         "correct_count": correct,
+        "mine": [mine[i] if i < len(mine) else "" for i in range(len(key))],
     })
     return {"success": True, "correct": correct, "total": scored, "score": percent,
             "wrongs": wrongs, "unsure": unsure, "answers": key}
