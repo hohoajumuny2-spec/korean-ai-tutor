@@ -80,10 +80,15 @@
   .col{flex:1 1 0;min-width:0;height:100%;overflow:hidden}
   .cols.two .col:first-child{padding-right:4mm}
   .cols.two .col+.col{padding-left:4mm;border-left:.3mm solid #888}
-  .foot{flex:0 0 auto;text-align:center;font-size:9pt;color:#444;padding-top:2mm}
+  .band{display:flex;justify-content:space-between;align-items:baseline;gap:6mm;flex:0 0 auto;
+         border-bottom:.4mm solid #222;padding-bottom:1.2mm;margin-bottom:4mm;font-size:9.5pt;color:#222}
+  .band .bl{font-weight:800;letter-spacing:.06em}
+  .band .br{font-weight:700}
+  .foot{flex:0 0 auto;text-align:center;font-size:9pt;color:#444;padding-top:2mm;line-height:1.5}
+  .foot .motto{font-size:9pt;color:#333;letter-spacing:.02em}
 
   .q,.g{display:flex;padding-bottom:var(--gap)}
-  .qn{flex:0 0 auto;min-width:1.7em;font-weight:800}
+  .qn{flex:0 0 auto;min-width:2.1em;font-weight:800}
   .q.cont>.qn{visibility:hidden}
   .qb{flex:1 1 auto;min-width:0}
   .qb p{margin:0;overflow-wrap:anywhere}
@@ -136,6 +141,9 @@
       <summary>시험지 설정</summary>
       <div class="grid">
         <label class="full">시험 이름<input type="text" data-k="title" placeholder="예: 3월 월말평가"></label>
+        <label>머리말 왼쪽 (모든 쪽)<input type="text" data-k="bandL" placeholder="예: LOGYEDU"></label>
+        <label>머리말 오른쪽 (모든 쪽)<input type="text" data-k="bandR" placeholder="예: 로지에듀 최준용 국어"></label>
+        <label class="full">꼬리말 가운데 (모든 쪽, 쪽 번호 위)<input type="text" data-k="motto" placeholder="예: 좋아하는 글귀"></label>
         <label>학원·학교 이름<input type="text" data-k="org" placeholder="예: ○○학원"></label>
         <label>과목·범위<input type="text" data-k="subject" placeholder="예: 중2 수학 1단원"></label>
         <label>날짜<input type="text" data-k="date" placeholder="예: 2026. 9. 25."></label>
@@ -202,6 +210,8 @@ const STORE = 'munjeji.v1';
 
 const DEF = {
   title:'', org:'', subject:'', date:'', cols:2, font:'gothic', fs:10.5, lh:1.6, gap:6, solve:0,
+  bandL:'LOGYEDU', bandR:'로지에듀 최준용 국어',
+  motto:'파도의 방향은 바꿀 수 없어도 노를 젓는 방향은 바꿀 수 있다',
   nameBox:true, scoreBox:true, renum:true, pageNo:true, answers:true, explain:true,
 };
 const FONTS = {
@@ -407,19 +417,20 @@ function Pager(root){
 
   function newPage(){
     page = document.createElement('div'); page.className = 'page';
-    let head;
+    const hasBand = !!(o.bandL || o.bandR);
+    let head = hasBand ? `<div class="band"><span class="bl">${esc(o.bandL)}</span><span class="br">${esc(o.bandR)}</span></div>` : '';
     if(first){
       const meta = [];
       meta.push(`<span class="grow">${esc(o.subject)}</span>`);
       if(o.nameBox)  meta.push(`<span>이름<span class="blank"></span></span>`);
       if(o.scoreBox) meta.push(`<span>점수<span class="blank" style="min-width:18mm"></span></span>`);
-      head = `<div class="head"><div class="top"><span>${esc(o.org)}</span><span>${esc(o.date)}</span></div>
+      head += `<div class="head"><div class="top"><span>${esc(o.org)}</span><span>${esc(o.date)}</span></div>
               <div class="ttl">${esc(o.title || '문제지')}</div><div class="meta">${meta.join('')}</div></div>`;
       first = false;
-    } else {
+    } else if(!hasBand){
       head = `<div class="rhead"><span>${esc(o.title || '문제지')}</span><span>${esc(section || o.subject)}</span></div>`;
     }
-    page.innerHTML = head + `<div class="cols${o.cols == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(o.cols == 2 ? 2 : 1)}</div><div class="foot"></div>`;
+    page.innerHTML = head + `<div class="cols${o.cols == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(o.cols == 2 ? 2 : 1)}</div><div class="foot">${o.motto ? `<div class="motto">${esc(o.motto)}</div>` : ''}<div class="pno"></div></div>`;
     root.appendChild(page); pages.push(page);
     cols = [...page.querySelectorAll('.col')]; ci = 0;
   }
@@ -548,7 +559,7 @@ function render(){
   }
 
   const N = pager.pages.length;
-  pager.pages.forEach((p, i) => { p.querySelector('.foot').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
+  pager.pages.forEach((p, i) => { p.querySelector('.pno').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
   msg(pager.tall ? '빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.' : '');
   fitZoom();
   save();
