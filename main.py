@@ -6112,6 +6112,28 @@ async def push_test(student_name: str = Form(...)):
     return {"success": True, "sent": n}
 
 
+def push_status_by_student() -> dict:
+    """학생마다 알림을 켠 기기가 몇 대인지, 마지막으로 켠 때가 언제인지 모은다."""
+    out = {}
+    if db is None:
+        return out
+    for d in db.collection("push_subs").stream():
+        row = d.to_dict() or {}
+        name = row.get("student_name", "")
+        if not name:
+            continue
+        cur = out.setdefault(name, {"devices": 0, "updated_at": ""})
+        cur["devices"] += 1
+        cur["updated_at"] = max(cur["updated_at"], row.get("updated_at", ""))
+    return out
+
+
+@app.get("/api/admin/push_status", dependencies=[Depends(verify_admin)])
+async def push_status():
+    """원장님 학생 명단에 '알림 켬' 표시를 붙이려고, 알림을 켠 학생 목록을 준다."""
+    return {"success": True, "students": await asyncio.to_thread(push_status_by_student)}
+
+
 GRADE_KINDS = {
     "homework": ("과제 제출", "과제"),
     "exam": ("모의고사", "모의고사"),
