@@ -198,6 +198,8 @@
         <label class="chk"><input type="checkbox" data-k="nameBox"> 이름 칸</label>
         <label class="chk"><input type="checkbox" data-k="scoreBox"> 점수 칸</label>
         <label class="chk"><input type="checkbox" data-k="renum"> 번호 자동으로 다시 매기기</label>
+        <label>'않은 것' 밑줄
+          <select data-k="negUl"><option value="word">'않은'에만 (수능식)</option><option value="phrase">'적절하지 않은' 전체</option><option value="off">밑줄 없음</option></select></label>
         <label class="chk"><input type="checkbox" data-k="pageNo"> 쪽 번호</label>
         <label class="chk"><input type="checkbox" data-k="answers"> 맨 뒤에 정답지 붙이기</label>
         <label class="chk"><input type="checkbox" data-k="explain"> 정답지에 해설 넣기</label>
@@ -232,7 +234,8 @@
         <p><b>&lt;보기&gt; 상자</b> — <code>&lt;보기&gt;</code> 줄 다음부터 선택지 전까지 상자로 묶습니다.<br>
            <b>지문 상자</b> — <code>[지문]</code> … <code>[/지문]</code></p>
         <p><b>묶음 지문</b> — <code>[1~3] 다음 글을 읽고 물음에 답하시오.</code></p>
-        <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>x^{2}</code>(위첨자) <code>a_{1}</code>(아래첨자)</p>
+        <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>x^{2}</code>(위첨자) <code>a_{1}</code>(아래첨자)<br>
+           발문의 <code>적절하지 않은</code> · <code>옳지 않은</code> · <code>없는 것</code> · <code>아닌 것</code> · <code>틀린 것</code> · <code>거리가 먼 것</code>에는 저절로 밑줄이 쳐집니다.</p>
         <p><b>그림</b> — 그림을 복사해 입력칸에 붙여 넣거나 [🖼 그림 넣기]. <code>[그림:그림1 50%]</code>처럼 쓰면 폭을 줄일 수 있습니다.</p>
         <p><b>PDF 만들기</b> — [PDF로 저장 / 인쇄] → 대상(프린터)을 <b>'PDF로 저장'</b>으로 고르고 저장.
            (휴대폰: 공유 → 인쇄 → PDF 저장)</p>
@@ -257,7 +260,7 @@ const DEF = {
   title:'', org:'', subject:'', date:'', cols:2, font:'gothic', fs:10.5, lh:1.6, gap:6, solve:0, ansBox:true, essayRows:5,
   theme:'ocean', bandL:'LOGYEDU', bandR:'로지에듀 최준용 국어',
   motto:'파도의 방향은 바꿀 수 없어도 노를 젓는 방향은 바꿀 수 있다',
-  nameBox:true, scoreBox:true, renum:true, pageNo:true, answers:true, explain:true, ansSheet:true,
+  nameBox:true, scoreBox:true, renum:true, negUl:'word', pageNo:true, answers:true, explain:true, ansSheet:true,
 };
 const FONTS = {
   gothic:'"Noto Sans KR","Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Nanum Gothic",sans-serif',
@@ -459,13 +462,24 @@ function fmt(s){
        .replace(/^ +/, m => '&nbsp;'.repeat(m.length));
   return h;
 }
-const lnHTML = (l, cls='') => {
+// 발문의 부정어에 밑줄: "적절하지 않은 것은?" → 적절하지 <u>않은</u> (수능식) / <u>적절하지 않은</u> (전체)
+//   이미 __밑줄__ 을 직접 친 줄은 건드리지 않는다.
+function underlineNeg(h){
+  const mode = S.opt.negUl;
+  if(mode === 'off' || /<u>/.test(h)) return h;
+  const neg = mode === 'phrase'
+    ? /(\S+지\s+(?:않은|않는|못한)|(?:없는|아닌|틀린|거리가\s먼)(?=\s*것))/g
+    : /((?<=지\s)(?:않은|않는|못한)|(?:없는|아닌|틀린|거리가\s먼)(?=\s*것))/g;
+  return h.replace(neg, '<u>$1</u>');
+}
+const lnHTML = (l, cls='', stem=false) => {
+  const f = t => stem ? underlineNeg(fmt(t)) : fmt(t);
   const h = !cls && l.s.match(RE_HANG);
-  if(h) return `<p class="hang${l.pg?' pg':''}"><span class="mk">${esc(h[1])}</span><span>${fmt(h[2])}</span></p>`;
-  return `<p class="${(l.pg?'pg ':'') + cls}">${fmt(l.s) || '&nbsp;'}</p>`;
+  if(h) return `<p class="hang${l.pg?' pg':''}"><span class="mk">${esc(h[1])}</span><span>${f(h[2])}</span></p>`;
+  return `<p class="${(l.pg?'pg ':'') + cls}">${f(l.s) || '&nbsp;'}</p>`;
 };
-function partsHTML(parts){
-  return parts.map(p => p.t === 'ln' ? lnHTML(p)
+function partsHTML(parts, stem=false){
+  return parts.map(p => p.t === 'ln' ? lnHTML(p, '', stem)
     : `<div class="box${p.label?' lb':''}">${p.label?`<span class="lbl">&lt;${p.label}&gt;</span>`:''}${p.lines.map(l=>lnHTML(l)).join('')}</div>`
   ).join('');
 }
@@ -689,7 +703,7 @@ function render(){
     }
     if(it.answer || it.explain.length) withAns.push(it);
     const solve = o.solve > 0 && (kind === 'mc' || !kind) ? '<div class="solve"></div>' : '';
-    const body = partsHTML(it.parts) + choicesHTML(it.choices) + answerSpace(kind) + solve;
+    const body = partsHTML(it.parts, true) + choicesHTML(it.choices) + answerSpace(kind) + solve;
     pager.place(el(it.sep
       ? `<div class="q sq"><div class="qb"><p class="sqh"><span class="badge">${esc(it.label)}</span></p>${body || '<p>&nbsp;</p>'}</div></div>`
       : `<div class="q"><div class="qn">${it.label}.</div><div class="qb">${body || '<p>&nbsp;</p>'}</div></div>`));
