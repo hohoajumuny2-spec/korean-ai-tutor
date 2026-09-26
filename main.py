@@ -99,7 +99,8 @@ LEVELS = [
 #   갈래(slot)마다 따로 고를 수 있어 조합이 많아진다.
 #   level은 그 항목이 열리는 레벨. 1이면 처음부터 쓸 수 있다.
 AVATAR_SLOTS = [
-    {"key": "face",   "name": "캐릭터",  "icon": "🙂"},
+    {"key": "animal", "name": "동물",    "icon": "🐾"},
+    {"key": "face",   "name": "표정·소품", "icon": "🙂"},
     {"key": "color",  "name": "색깔",    "icon": "🎨"},
     {"key": "outfit", "name": "옷",      "icon": "👕"},
     {"key": "hat",    "name": "머리",    "icon": "🎩"},
@@ -112,6 +113,17 @@ AVATAR_SLOTS = [
 PHOTO_UNLOCK_LEVEL = 3
 
 AVATAR_ITEMS = {
+    # 💡 여우 한 가지만 있던 캐릭터를 동물 여러 종에서 고르게 한다. 모두 처음부터 열려 있다.
+    "animal": [
+        {"id": "fox",     "emoji": "🦊", "label": "여우",   "level": 1},
+        {"id": "cat",     "emoji": "🐱", "label": "고양이", "level": 1},
+        {"id": "dog",     "emoji": "🐶", "label": "강아지", "level": 1},
+        {"id": "bunny",   "emoji": "🐰", "label": "토끼",   "level": 1},
+        {"id": "bear",    "emoji": "🐻", "label": "곰",     "level": 1},
+        {"id": "panda",   "emoji": "🐼", "label": "판다",   "level": 1},
+        {"id": "hamster", "emoji": "🐹", "label": "햄스터", "level": 1},
+        {"id": "tiger",   "emoji": "🐯", "label": "호랑이", "level": 1},
+    ],
     "face": [
         {"id": "boy",      "emoji": "👦", "label": "남학생",   "level": 1},
         {"id": "girl",     "emoji": "👧", "label": "여학생",   "level": 1},
@@ -194,7 +206,7 @@ AVATAR_ITEMS = {
     ],
 }
 
-AVATAR_DEFAULTS = {"face": "boy", "color": "blue", "outfit": "none", "hat": "none",
+AVATAR_DEFAULTS = {"animal": "fox", "face": "boy", "color": "blue", "outfit": "none", "hat": "none",
                    "pet": "none", "badge": "none", "effect": "none"}
 
 
