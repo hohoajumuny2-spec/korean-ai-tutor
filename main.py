@@ -1332,8 +1332,20 @@ def admin_student_reports(student_name: str):
     return {"success": True, "reports": rows[:600]}
 
 
+def is_admin_request(x_admin_token: Optional[str]) -> bool:
+    """관리자 토큰이 실려 온 요청인지 (학생 화면과 같은 주소를 원장님도 쓸 때 가른다)."""
+    return bool(x_admin_token) and _resolve_admin_token(x_admin_token) is not None
+
+
+def hide_answers_for_student(kind: str, x_admin_token: Optional[str] = None) -> bool:
+    """💡 과제는 학생에게 정답을 보여주지 않고 해설만 보여준다. 답을 고쳐 다시 낼
+    수 있으므로, 정답이 보이면 베껴서 고치는 꼴이 된다. 원장님은 그대로 본다."""
+    return kind == "과제 제출" and not is_admin_request(x_admin_token)
+
+
 @app.get("/api/student/view_result")
-def view_result(student_name: str, title: str, kind: str):
+def view_result(student_name: str, title: str, kind: str,
+                x_admin_token: Optional[str] = Header(None)):
     """제출한 뒤 나갔다 와도, 채점 직후 봤던 문항별 결과를 그대로 다시 본다.
 
     💡 나중에 원장님이 정답표를 고쳐도 이 학생이 실제로 맞고 틀렸던 결과는
@@ -1352,6 +1364,9 @@ def view_result(student_name: str, title: str, kind: str):
         return {"success": False, "detail": "이 항목을 제출한 기록이 없습니다."}
 
     qs = task_source_questions(k, task)
+    hide = hide_answers_for_student(k, x_admin_token)
+    if hide:
+        qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
     expl = explanations_for(k, task)
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
     unsure = {int(u) for u in (rep.get("unsure") or []) if _num(u) is not None}
@@ -1380,6 +1395,10 @@ def view_result(student_name: str, title: str, kind: str):
         "score": rep.get("score", ""), "total_score": rep.get("total_score", ""),
         "correct_count": rep.get("correct_count", ""), "question_count": len(items),
         "retry": rep.get("retry") or {},
+        "answers_hidden": hide,
+        "first_score": rep.get("first_score", ""),
+        "updated_at": rep.get("updated_at", ""),
+        "edit_count": rep.get("edit_count", 0),
         "items": items,
     }
 
@@ -1430,6 +1449,8 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         if not wrongs and not expl:
             continue
         qs = task_source_questions(kind, title)
+        if kind == "과제 제출":   # 과제는 정답 없이 해설만
+            qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
         def make_item(no):
             q = qs[no - 1] if 0 < no <= len(qs) else {}
             return {"no": no, "text": q.get("text", ""),
@@ -6387,7 +6408,7 @@ async def retry_submit(req: RetrySubmitReq):
         "wrongs": sorted(still),
         "fixed": sorted(fixed),
         "unsure": sorted(set(unsure)),
-        "rewarded": bool(prev.get("rewarded")),
+        "rewarded": bool(prev.get("rewarded") or rep.get("retry_rewarded")),
     }
 
     # 💡 틀린 것을 하나도 남김없이 고쳤을 때 포인트를 준다. 시험 하나당 한 번만 —
@@ -6417,7 +6438,8 @@ async def retry_submit(req: RetrySubmitReq):
         "all_fixed": bool(was_wrong) and not still,
         "xp_gain": xp_gain,
         "level_up": lvl_up,
-        "answers": {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
+        # 과제는 정답을 보여주지 않는다 (해설만)
+        "answers": {} if kind == "과제 제출" else {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
     }
 
 
@@ -6895,7 +6917,7 @@ def strip_homework_answers(hw: dict) -> dict:
 
 
 @app.get("/api/homeworks")
-def get_homeworks(student_name: str = ""):
+def get_homeworks(student_name: str = "", x_admin_token: Optional[str] = Header(None)):
     if db is None:
         return {"success": False, "homeworks": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
@@ -6906,6 +6928,10 @@ def get_homeworks(student_name: str = ""):
                 if task_visible_to_student("", task_target_classes(h), student_name)]
         # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
         #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
+        rows = [strip_homework_answers(h) for h in rows]
+    elif not is_admin_request(x_admin_token):
+        # 💡 이름 없이 주소만 열어도 정답표가 통째로 보이던 구멍을 막는다.
+        #    정답은 관리자 토큰이 있을 때(원장님 과제 관리 화면)만 보낸다.
         rows = [strip_homework_answers(h) for h in rows]
     return {"success": True, "homeworks": rows}
 
@@ -7285,19 +7311,11 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     if not key:
         return {"success": False, "detail": "이 과제에는 정답이 등록되어 있지 않아 자동 채점을 할 수 없습니다. 선생님께 알려주세요."}
 
-    existing = await asyncio.to_thread(
-        lambda: list(
-            db.collection("reports")
-            .where("student_name", "==", name)
-            .where("task_name", "==", req.title)
-            .where("type", "==", "과제 제출")
-            .limit(1)
-            .stream()
-        )
-    )
-    허락 = await asyncio.to_thread(retry_allowed, "과제 제출", req.title, name)
-    if existing and not (허락 or is_preview(name)):
-        return {"success": False, "detail": "이미 제출한 과제입니다."}
+    # 💡 과제는 한 번 내고 끝이 아니라 답을 고쳐 다시 낼 수 있다. 채점 결과에
+    #    정답은 보여주지 않으므로(해설만 보인다) 다시 내도 답을 베껴 고치는 꼴이
+    #    되지 않는다. 다시 내면 가장 나중 기록을 새 채점으로 바꾸고, 처음 점수는
+    #    first_* 로 남겨 원장님이 처음 실력과 고친 결과를 함께 볼 수 있게 한다.
+    prev_id, prev = await asyncio.to_thread(find_report, name, req.title, "과제 제출")
 
     # 💡 학생 답안은 자리(문항 번호)가 생명이라 parse_answer_slots 로 읽는다.
     #    예전에는 parse_answer_list 를 써서, 한 문항만 비워도 그 뒤가 전부 밀려
@@ -7320,27 +7338,50 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     total = scored
     score = round(correct / total * 100) if total else 0
     kind_label = HOMEWORK_KINDS.get(normalize_homework_kind(data.get("kind")), "수업 과제")
-    await asyncio.to_thread(
-        lambda: save_report({
-            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "student_name": name, "school": req.school, "grade": req.grade,
-            "task_name": req.title, "type": "과제 제출",
-            "homework_kind": data.get("kind", "class"),
-            "score": f"{correct}/{total}",
-            "percent": score, "wrongs": wrongs,
-            # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
-            "unsure": unsure,
-            # 나중에 결과를 다시 볼 수 있으려면 실제로 고른 답도 남아 있어야 한다
-            "mine": mine,
-        })
-    )
-    send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
-    if 허락:
-        await asyncio.to_thread(consume_retry_permission, "과제 제출", req.title, name)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result = {
+        "score": f"{correct}/{total}",
+        "percent": score, "wrongs": wrongs,
+        # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
+        "unsure": unsure,
+        # 나중에 결과를 다시 볼 수 있으려면 실제로 고른 답도 남아 있어야 한다
+        "mine": mine,
+    }
+    edited = bool(prev_id) and not is_preview(name)
+    if edited:
+        upd = dict(result)
+        upd["updated_at"] = now
+        upd["edit_count"] = int(prev.get("edit_count") or 0) + 1
+        if "first_score" not in prev:
+            upd["first_score"] = prev.get("score", "")
+            upd["first_percent"] = prev.get("percent", "")
+            upd["first_wrongs"] = prev.get("wrongs") or []
+        # 틀린 문항이 바뀌었으니 '틀린 문항 다시 풀기' 기록은 새로 시작한다.
+        # 다 고쳐서 받은 포인트는 다시 받지 못하게 표시만 남긴다.
+        old_retry = prev.get("retry") or {}
+        upd["retry"] = firestore.DELETE_FIELD
+        if old_retry.get("rewarded") or prev.get("retry_rewarded"):
+            upd["retry_rewarded"] = True
+        await asyncio.to_thread(lambda: db.collection("reports").document(prev_id).update(upd))
+        first = prev.get("first_score") or prev.get("score", "")
+        send_telegram_message(f"✏️ [{kind_label} 수정 제출]\n{name} 학생이 '{req.title}' 답을 고쳐 다시 냈습니다. ({correct}/{total}, 처음 {first})")
+    else:
+        await asyncio.to_thread(
+            lambda: save_report({
+                "submitted_at": now,
+                "student_name": name, "school": req.school, "grade": req.grade,
+                "task_name": req.title, "type": "과제 제출",
+                "homework_kind": data.get("kind", "class"),
+                **result,
+            })
+        )
+        send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
     # 💡 채점 직후가 가장 잘 기억나는 때다. 번호를 눌러 바로 해설을 볼 수 있게 함께 보낸다.
+    #    정답(answers)은 보내지 않는다 — 과제는 정답 없이 해설만 보여주고,
+    #    틀린 문항은 학생이 답을 고쳐 다시 내게 한다.
     return {"success": True, "correct": correct, "total": total, "score": score,
-            "wrongs": wrongs, "unsure": unsure, "mine": mine,
-            "answers": key, "kind": data.get("kind", "class"),
+            "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
+            "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "explanations": parse_explanation_map(data.get("explanations"))}
 
 
