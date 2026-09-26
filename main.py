@@ -7379,20 +7379,48 @@ async def submit_homework(
             file_bytes = await f.read()
             file_urls.append(await asyncio.to_thread(save_bytes, file_bytes, f.filename, "homeworks", f.content_type))
 
-    await asyncio.to_thread(
-        lambda: save_report(
-            {
-                "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "student_name": student_name,
-                "school": school,
-                "grade": grade,
-                "task_name": title,
-                "type": "과제 제출",
-                "score": "제출완료",
+    if not file_urls:
+        return {"success": False, "detail": "제출할 파일을 하나 이상 첨부해주세요."}
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if existing and not is_preview(student_name):
+        old = existing[0].to_dict() or {}
+        # OMR로 채점된 과제는 정답을 이미 봤으므로 여기서 덮어쓰지 않는다
+        # (다시 내려면 지금처럼 원장님 재응시 허락을 받는다)
+        if "percent" in old:
+            return {"success": False, "detail": "OMR로 채점된 과제는 다시 낼 수 없습니다. 원장님께 재응시를 부탁하세요."}
+        # 💡 파일 과제는 한 번 내고 끝이 아니라 고쳐서 다시 낼 수 있다.
+        #    기록을 하나 더 쌓으면 원장님 화면에 같은 과제가 여러 줄 뜨므로,
+        #    처음 기록을 새 파일로 바꾸고 예전 파일은 이력으로만 남긴다.
+        #    처음 낸 시각(submitted_at)은 그대로 두어 제출 순서가 뒤바뀌지 않게 한다.
+        history = list(old.get("file_history") or [])
+        if old.get("file_url"):
+            history.append({"file_url": old.get("file_url"),
+                            "submitted_at": old.get("updated_at") or old.get("submitted_at", "")})
+        await asyncio.to_thread(
+            lambda: existing[0].reference.update({
                 "file_url": ",".join(file_urls),
-            }
+                "updated_at": now,
+                "edit_count": int(old.get("edit_count") or 0) + 1,
+                "file_history": history[-10:],
+            })
         )
-    )
+        send_telegram_message(f"✏️ [과제 수정 제출]\n{student_name} 학생이 '{title}' 과제를 고쳐서 다시 냈습니다. (파일 {len(file_urls)}개)")
+    else:
+        await asyncio.to_thread(
+            lambda: save_report(
+                {
+                    "submitted_at": now,
+                    "student_name": student_name,
+                    "school": school,
+                    "grade": grade,
+                    "task_name": title,
+                    "type": "과제 제출",
+                    "score": "제출완료",
+                    "file_url": ",".join(file_urls),
+                }
+            )
+        )
 
     lvl_up = None
     if not existing:
