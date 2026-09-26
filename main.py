@@ -1314,6 +1314,21 @@ def task_source_questions(kind: str, title: str) -> list:
 VIEW_RESULT_KINDS = {"과제 제출", "모의고사", "타임어택 퀴즈", "영어 단어 시험", "출제 문제"}
 
 
+def exam_paper_files(kind: str, title: str) -> dict:
+    """모의고사는 문제 글이 PDF 로만 있어 답안지에 문제 내용을 못 보여준다.
+    대신 시험지·해답지 PDF 주소를 같이 내려 '시험지에서 n번 보기'로 잇는다.
+    (둘 다 시험 화면에서 이미 학생에게 보여주는 파일이라 새로 드러나는 것은 없다.)"""
+    if db is None or kind != "모의고사":
+        return {}
+    try:
+        d = db.collection("exams").document(sanitize_doc_id(title)).get()
+        row = (d.to_dict() or {}) if d.exists else {}
+        return {"pdf_url": row.get("pdf_url", "") or "", "ans_pdf_url": row.get("ans_pdf_url", "") or ""}
+    except Exception as e:
+        print("시험지 파일 찾기 실패:", title, e)
+        return {}
+
+
 @app.get("/api/admin/student_reports/{student_name}", dependencies=[Depends(verify_admin)])
 def admin_student_reports(student_name: str):
     """관리자 학생 명단 → 한 학생의 기록.
@@ -1380,6 +1395,7 @@ def view_result(student_name: str, title: str, kind: str):
         "score": rep.get("score", ""), "total_score": rep.get("total_score", ""),
         "correct_count": rep.get("correct_count", ""), "question_count": len(items),
         "retry": rep.get("retry") or {},
+        "files": exam_paper_files(k, task),
         "items": items,
     }
 
