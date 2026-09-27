@@ -31,6 +31,15 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
 from datetime import datetime, timedelta, timezone
+
+# 💡 서버 컴퓨터(클라우드)의 시계는 영국 표준시라, datetime.now()로 적은 제출·등록 시각이
+#    전부 9시간 이르게 저장되고 있었다(오후 1시 35분 공지가 '04:35'). 프로그램이 뜨자마자
+#    이 프로세스의 시간대를 한국 시각으로 바꿔, 모든 datetime.now()가 한국 시각이 되게 한다.
+#    'KST-9'는 시간대 자료 파일 없이도 되는 표기다(한국은 서머타임이 없다).
+os.environ["TZ"] = "KST-9"
+if hasattr(time, "tzset"):      # 윈도우에는 없다 — 윈도우 PC는 원래 한국 시각이다
+    time.tzset()
+
 import fitz
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
@@ -916,7 +925,8 @@ class AuthRequest(BaseModel):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok"}
+    # 서버가 한국 시각으로 도는지 바로 확인할 수 있게 지금 시각도 함께 준다
+    return {"status": "ok", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
 @app.post("/api/auth")
