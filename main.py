@@ -1171,14 +1171,34 @@ def parse_explanation_map(raw) -> dict:
     return out
 
 
-def explanations_for(kind: str, title: str) -> dict:
-    """그 과제·시험·퀴즈에 저장해둔 문항별 해설을 꺼낸다. 없으면 빈 묶음."""
+def homework_expl_locked(hw: dict) -> bool:
+    """과제 해설·해답지를 아직 학생에게 잠가 둘 때인지.
+
+    💡 해설에는 보통 정답이 적혀 있다('따라서 ③이 적절하다'). 제출하자마자 해설을 보면
+       답을 고쳐 다시 낼 수 있으므로, 기한이 있는 과제는 마감이 지난 뒤에 연다.
+       기한이 없는 과제는 원장님 뜻에 따라 지금처럼 바로 보여준다."""
+    dl = str((hw or {}).get("deadline") or "").strip()
+    return bool(dl) and not deadline_passed(dl)
+
+
+def homework_doc(title: str) -> dict:
+    if db is None or not title:
+        return {}
+    d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+def explanations_for(kind: str, title: str, for_student: bool = False) -> dict:
+    """그 과제·시험·퀴즈에 저장해둔 문항별 해설을 꺼낸다. 없으면 빈 묶음.
+    for_student 면 마감 전인 과제의 해설은 비워서 준다 (homework_expl_locked)."""
     if db is None or not title:
         return {}
     try:
         if kind in ("과제 제출", "homework"):
-            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
-            return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
+            hw = homework_doc(title)
+            if for_student and homework_expl_locked(hw):
+                return {}
+            return parse_explanation_map(hw.get("explanations"))
         if kind in ("모의고사", "exam"):
             d = db.collection("exams").document(sanitize_doc_id(title)).get()
             return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
@@ -1389,7 +1409,9 @@ def view_result(student_name: str, title: str, kind: str,
     hide = hide_answers_for_student(k, x_admin_token)
     if hide:
         qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
-    expl = explanations_for(k, task)
+    expl = explanations_for(k, task, for_student=hide)
+    hw_for_lock = homework_doc(task) if (hide and k == "과제 제출") else {}
+    expl_locked = bool(hw_for_lock) and homework_expl_locked(hw_for_lock)
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
     unsure = {int(u) for u in (rep.get("unsure") or []) if _num(u) is not None}
     mine = rep.get("mine") or []
@@ -1423,6 +1445,8 @@ def view_result(student_name: str, title: str, kind: str,
         "edit_count": rep.get("edit_count", 0),
         "late": bool(rep.get("late")), "late_edit": bool(rep.get("late_edit")),
         "deadline": rep.get("deadline", ""),
+        # 마감 전이라 해설을 잠가 둔 과제 — 화면에 '마감 후 공개'라고 알려준다
+        "expl_locked": expl_locked, "expl_open_at": hw_for_lock.get("deadline", "") if expl_locked else "",
         "items": items,
     }
 
@@ -1467,7 +1491,7 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         title = r.get("task_name", "")
         # 💡 번호만 알려주면 왜 틀렸는지 알 수 없다. 저장해둔 문항별 해설을 같이 붙여
         #    학생이 눌러서 바로 확인할 수 있게 한다.
-        expl = explanations_for(kind, title)
+        expl = explanations_for(kind, title, for_student=True)
         # 💡 전부 맞힌 시험도 해설이 있으면 남겨 둔다 — 찍어서 맞힌 걸 되짚어 보려면
         #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
         if not wrongs and not expl:
@@ -6524,7 +6548,7 @@ async def retry_info(req: RetryInfoReq):
 
     wrongs = sorted(int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None)
     retry = rep.get("retry") or {}
-    expl = await asyncio.to_thread(explanations_for, kind, title)
+    expl = await asyncio.to_thread(explanations_for, kind, title, True)
     # 💡 문항마다 1~5번 중 고르는지, 글자로 직접 쓰는지, 정해진 정답이 없는
     #    서술형인지가 달라 다시 풀기 화면도 그에 맞게 그려야 한다.
     qs = await asyncio.to_thread(task_source_questions, kind, title)
@@ -7132,10 +7156,28 @@ def get_homeworks(student_name: str = "", x_admin_token: Optional[str] = Header(
         # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
         #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
         rows = [strip_homework_answers(h) for h in rows]
+        # 💡 해답지 파일도 정답이다. 주소가 응답에 실려 있으면 화면에서 가려도 열어볼 수
+        #    있으므로, 낸 과제에만 — 기한이 있으면 마감이 지난 뒤에만 — 실어 보낸다.
+        name = student_name.strip()
+        submitted = set()
+        if not is_preview(name):
+            submitted = {(r.to_dict() or {}).get("task_name", "") for r in
+                         db.collection("reports").where("student_name", "==", name)
+                         .where("type", "==", "과제 제출").stream()}
+        for h in rows:
+            locked = homework_expl_locked(h)
+            h["expl_locked"] = locked
+            h["expl_open_at"] = h.get("deadline", "") if locked else ""
+            hold = locked or (h.get("title") not in submitted and not is_preview(name))
+            if hold:
+                # 파일이 있다는 것만 알려준다 — 낸 뒤(기한이 있으면 마감 뒤) 열린다
+                h["answer_file_waiting"] = bool(h.get("answer_file"))
+                h["answer_file"] = ""
+                h["answer_text"] = ""
     elif not is_admin_request(x_admin_token):
         # 💡 이름 없이 주소만 열어도 정답표가 통째로 보이던 구멍을 막는다.
         #    정답은 관리자 토큰이 있을 때(원장님 과제 관리 화면)만 보낸다.
-        rows = [strip_homework_answers(h) for h in rows]
+        rows = [{**strip_homework_answers(h), "answer_file": "", "answer_text": ""} for h in rows]
     return {"success": True, "homeworks": rows}
 
 
@@ -7627,11 +7669,14 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     # 💡 채점 직후가 가장 잘 기억나는 때다. 번호를 눌러 바로 해설을 볼 수 있게 함께 보낸다.
     #    정답(answers)은 보내지 않는다 — 과제는 정답 없이 해설만 보여주고,
     #    틀린 문항은 학생이 답을 고쳐 다시 내게 한다.
+    #    기한이 있는 과제는 해설에 적힌 답을 보고 고쳐 내지 못하게, 마감 전에는 점수와
+    #    틀린 번호만 주고 해설은 마감 뒤에 연다.
     return {"success": True, "correct": correct, "total": total, "score": score,
             "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
             "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
-            "explanations": parse_explanation_map(data.get("explanations"))}
+            "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
+            "expl_locked": homework_expl_locked(data), "expl_open_at": data.get("deadline", "") if homework_expl_locked(data) else ""}
 
 
 @app.delete("/api/admin/homework/{title}")
@@ -7731,7 +7776,8 @@ async def submit_homework(
             lambda: add_xp(student_name, XP_REWARD_HOMEWORK)
         )
 
-    return {"success": True, "answer_file": hw_data.get("answer_file", ""), "level_up": lvl_up,
+    return {"success": True, "answer_file": "" if homework_expl_locked(hw_data) else hw_data.get("answer_file", ""),
+            "level_up": lvl_up,
             "late": bool(late_info.get("late") or late_info.get("late_edit"))}
 
 @app.get("/api/board")
