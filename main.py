@@ -7913,6 +7913,390 @@ def student_todo(student_name: str):
 
     return {"success": True, "homeworks": homeworks, "notices": notices, "quizzes": quizzes, "exams": exams}
 
+
+# ─────────────────────────────────────────────────────────
+# 스터디룸 — 온라인 표시 · 학습 시간 재기
+#   · 앱이 열려 있는 동안 학생 화면이 1분마다 '여기 있어요'(beat)를 보낸다.
+#   · 학습 시간은 서버가 beat 사이 간격으로 센다. 휴대폰 시계를 바꿔도 늘지 않는다.
+#   · 앱을 벗어나도 5분까지는 계속 센다. 그보다 오래 비우면 벗어난 순간에 멈춘 것으로 한다.
+#   · '온라인'은 서버 메모리에만 둔다(저장소 쓰기를 줄이려고). 학습 시간은 학생마다
+#     문서 하나(study_state)에 날짜별로 쌓는다 — 공부 중일 때만 1분에 한 번 쓴다.
+#   · 30분마다 포인트, 하루 최대 8번(4시간).
+# ─────────────────────────────────────────────────────────
+STUDY_BEAT_SEC = 60
+STUDY_GRACE_SEC = 300            # 앱을 벗어나도 봐주는 시간
+STUDY_ONLINE_SEC = 150           # beat 가 이 안에 왔으면 '온라인'
+STUDY_XP_BLOCK_SEC = 1800
+STUDY_XP_PER_BLOCK = 20
+STUDY_XP_MAX_BLOCKS = 8
+STUDY_DAY_MAX_SEC = 16 * 3600
+STUDY_COLL = "study_state"
+
+_study_lock = threading.Lock()
+_study_mem = {}                  # 학생 이름 → 상태 (Firestore study_state 와 같은 모양 + last_seen, info)
+_study_all_cache = {"at": 0.0, "rows": {}}
+
+
+def _study_today() -> str:
+    return now_kst().strftime("%Y-%m-%d")
+
+
+def _study_load(name: str) -> dict:
+    """메모리에 없으면(서버가 다시 켜진 뒤 등) 저장소에서 읽어 온다. _study_lock 안에서 부른다."""
+    st = _study_mem.get(name)
+    if st is not None:
+        return st
+    st = {"active": False, "session_start": 0.0, "last_beat": 0.0, "days": {}, "xp_days": {},
+          "last_seen": 0.0, "info": {}}
+    if db is not None:
+        d = db.collection(STUDY_COLL).document(sanitize_doc_id(name)).get()
+        if d.exists:
+            row = d.to_dict() or {}
+            for k in ("active", "session_start", "last_beat", "days", "xp_days"):
+                if k in row:
+                    st[k] = row[k]
+        s = db.collection("students").document(name).get()
+        if s.exists:
+            sd = s.to_dict() or {}
+            st["info"] = {"school": sd.get("school", ""), "grade": sd.get("grade", ""),
+                          "class_name": sd.get("class_name", "")}
+    _study_mem[name] = st
+    return st
+
+
+def _study_credit(name: str, st: dict, now: float) -> dict:
+    """마지막 beat 이후 시간을 오늘 학습 시간에 더한다. 너무 오래 비웠으면 멈춘다.
+    저장소에 쓸 내용과 알려줄 것을 돌려준다. _study_lock 안에서 부른다."""
+    out = {"stopped_away": False, "xp": 0}
+    if not st.get("active"):
+        return out
+    gap = now - float(st.get("last_beat") or now)
+    if gap > STUDY_GRACE_SEC + STUDY_BEAT_SEC:
+        # 오래 비웠다 — 떠난 순간(마지막 beat)에 멈춘 것으로 친다
+        st["active"] = False
+        out["stopped_away"] = True
+        return out
+    today = _study_today()
+    days = st.setdefault("days", {})
+    before = int(days.get(today, 0))
+    after = min(STUDY_DAY_MAX_SEC, before + max(0, int(round(gap))))
+    days[today] = after
+    st["last_beat"] = now
+    xp_days = st.setdefault("xp_days", {})
+    earned = min(STUDY_XP_MAX_BLOCKS, after // STUDY_XP_BLOCK_SEC)
+    new_blocks = earned - int(xp_days.get(today, 0))
+    if new_blocks > 0:
+        xp_days[today] = earned
+        out["xp"] = new_blocks * STUDY_XP_PER_BLOCK
+    return out
+
+
+def _study_save(name: str, st: dict):
+    if db is None or is_preview(name):
+        return
+    db.collection(STUDY_COLL).document(sanitize_doc_id(name)).set({
+        "student_name": name, "active": bool(st.get("active")),
+        "session_start": st.get("session_start", 0.0), "last_beat": st.get("last_beat", 0.0),
+        "days": st.get("days", {}), "xp_days": st.get("xp_days", {}),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, merge=True)
+    _study_all_cache["at"] = 0.0          # 순위표를 다음에 새로 읽게 한다
+
+
+def _study_me(name: str, st: dict, now: float) -> dict:
+    return {"active": bool(st.get("active")), "today_seconds": int((st.get("days") or {}).get(_study_today(), 0)),
+            "session_start": st.get("session_start", 0.0), "last_beat": st.get("last_beat", 0.0),
+            "server_now": now, "beat_sec": STUDY_BEAT_SEC, "grace_sec": STUDY_GRACE_SEC}
+
+
+class StudyReq(BaseModel):
+    student_name: str
+
+
+def _study_action(name: str, action: str) -> dict:
+    name = (name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+    now = time.time()
+    xp = 0
+    with _study_lock:
+        st = _study_load(name)
+        st["last_seen"] = now
+        was_active = bool(st.get("active"))
+        res = _study_credit(name, st, now)
+        xp = res["xp"]
+        if action == "start" and not st.get("active"):
+            st["active"] = True
+            st["session_start"] = now
+            st["last_beat"] = now
+        elif action == "stop" and st.get("active"):
+            st["active"] = False
+        changed = was_active or bool(st.get("active"))
+        me = _study_me(name, st, now)
+        snapshot = {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items() if k not in ("info",)}
+    if changed:
+        _study_save(name, snapshot)
+    if xp:
+        add_xp(name, xp)
+    return {"success": True, "me": me, "stopped_away": res["stopped_away"], "xp": xp}
+
+
+@app.post("/api/study/beat")
+def study_beat(req: StudyReq):
+    return _study_action(req.student_name, "beat")
+
+
+@app.post("/api/study/start")
+def study_start(req: StudyReq):
+    return _study_action(req.student_name, "start")
+
+
+@app.post("/api/study/stop")
+def study_stop(req: StudyReq):
+    return _study_action(req.student_name, "stop")
+
+
+def _study_all_rows() -> dict:
+    """모든 학생의 학습 기록(저장소). 1분 동안은 읽어 둔 것을 쓴다."""
+    now = time.time()
+    if now - _study_all_cache["at"] < 60 and _study_all_cache["rows"]:
+        return _study_all_cache["rows"]
+    rows = {}
+    if db is not None:
+        for d in db.collection(STUDY_COLL).stream():
+            r = d.to_dict() or {}
+            if r.get("student_name"):
+                rows[r["student_name"]] = r
+    _study_all_cache.update({"at": now, "rows": rows})
+    return rows
+
+
+def _study_status(st: dict, now: float) -> str:
+    seen = now - float(st.get("last_seen") or 0)
+    if st.get("active"):
+        if seen <= STUDY_ONLINE_SEC:
+            return "studying"
+        if now - float(st.get("last_beat") or 0) <= STUDY_GRACE_SEC + STUDY_BEAT_SEC:
+            return "away"                  # 공부 중이다가 잠깐 자리를 비움
+    return "online" if seen <= STUDY_ONLINE_SEC else "offline"
+
+
+@app.get("/api/study/room")
+def study_room(student_name: str = ""):
+    """스터디룸 화면: 지금 공부 중 · 온라인 학생과 오늘 학습 시간 순위. 학원 학생 전체가 본다."""
+    now = time.time()
+    today = _study_today()
+    stored = _study_all_rows()
+    with _study_lock:
+        mem = {n: {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items()} for n, st in _study_mem.items()}
+    people = {}
+    for n, r in stored.items():
+        people[n] = {"name": n, "today": int((r.get("days") or {}).get(today, 0)), "status": "offline", "info": {}}
+    for n, st in mem.items():
+        if is_preview(n):
+            continue
+        p = people.setdefault(n, {"name": n, "today": 0, "status": "offline", "info": {}})
+        p["today"] = int((st.get("days") or {}).get(today, 0))
+        p["status"] = _study_status(st, now)
+        p["info"] = st.get("info") or {}
+        if st.get("active"):
+            p["session_start"] = st.get("session_start", 0.0)
+    listed = [p for p in people.values() if p["status"] != "offline"]
+    order = {"studying": 0, "away": 1, "online": 2}
+    listed.sort(key=lambda p: (order.get(p["status"], 3), -p["today"]))
+    ranking = sorted([p for p in people.values() if p["today"] > 0], key=lambda p: -p["today"])[:50]
+    me = None
+    name = (student_name or "").strip()
+    if name:
+        with _study_lock:
+            st = _study_mem.get(name)
+            if st is not None:
+                me = _study_me(name, st, now)
+    return {"success": True, "server_now": now, "live": listed, "ranking": ranking, "me": me,
+            "counts": {"studying": sum(1 for p in listed if p["status"] == "studying"),
+                       "online": len(listed)}}
+
+
+@app.get("/api/admin/study/report", dependencies=[Depends(verify_admin)])
+def study_report(days: int = 7):
+    """원장님: 학생마다 오늘 · 최근 N일 · 전체 학습 시간과 지금 상태."""
+    days = max(1, min(int(days or 7), 90))
+    now = time.time()
+    today = now_kst().date()
+    keys = {(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)}
+    _study_all_cache["at"] = 0.0
+    stored = _study_all_rows()
+    with _study_lock:
+        mem = {n: {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items()} for n, st in _study_mem.items()}
+    rows = []
+    for n in set(stored) | set(mem):
+        if is_preview(n):
+            continue
+        src = mem.get(n) or stored.get(n) or {}
+        d = src.get("days") or {}
+        rows.append({
+            "name": n,
+            "today": int(d.get(today.strftime("%Y-%m-%d"), 0)),
+            "recent": sum(int(v) for k, v in d.items() if k in keys),
+            "total": sum(int(v) for v in d.values()),
+            "status": _study_status(mem[n], now) if n in mem else "offline",
+            "last_day": max(d) if d else "",
+        })
+    rows.sort(key=lambda r: -r["recent"])
+    return {"success": True, "days": days, "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────
+# 질문 게시판 — 학생끼리 묻고 답한다
+#   · 사진(카메라·캡처)을 붙여 올릴 수 있고, 학원 학생 전체와 원장님이 본다.
+#   · 답은 누구나 달 수 있다. 원장님 답은 따로 표시한다.
+#   · 질문한 학생은 '해결됨'으로 바꿀 수 있고, 답이 달리면 알림이 간다.
+#   · 글은 쓴 사람과 원장님만 지운다.
+# ─────────────────────────────────────────────────────────
+QNA_COLL = "qna_posts"
+QNA_MAX_IMAGES = 4
+QNA_TEXT_MAX = 2000
+QNA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif"}
+
+
+async def _qna_save_images(files) -> list:
+    urls = []
+    for f in (files or [])[:QNA_MAX_IMAGES]:
+        if not f or not f.filename:
+            continue
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in QNA_IMAGE_EXT:
+            raise HTTPException(status_code=400, detail="사진(jpg·png)만 올릴 수 있습니다.")
+        data = await f.read()
+        if data:
+            urls.append(await asyncio.to_thread(save_bytes, data, f.filename, "qna", f.content_type or "image/jpeg"))
+    return urls
+
+
+def _qna_author(name: str, x_admin_token: Optional[str]) -> dict:
+    admin_name = _resolve_admin_token(x_admin_token) if x_admin_token else None
+    if admin_name:
+        return {"author": admin_name if admin_name != "원장님" else "원장님", "is_admin": True}
+    return {"author": (name or "").strip(), "is_admin": False}
+
+
+def _qna_public(p: dict, pid: str) -> dict:
+    answers = sorted(p.get("answers") or [], key=lambda a: a.get("created_at", ""))
+    return {"id": pid, "author": p.get("author", ""), "is_admin": bool(p.get("is_admin")),
+            "school": p.get("school", ""), "grade": p.get("grade", ""),
+            "subject": p.get("subject", ""), "text": p.get("text", ""), "images": p.get("images") or [],
+            "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
+            "answers": answers, "answer_count": len(answers)}
+
+
+@app.get("/api/qna")
+def qna_list(limit: int = 60):
+    if db is None:
+        return {"success": False, "posts": []}
+    rows = [_qna_public(d.to_dict() or {}, d.id) for d in
+            db.collection(QNA_COLL).order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(max(1, min(int(limit or 60), 200))).stream()]
+    return {"success": True, "posts": rows}
+
+
+@app.post("/api/qna")
+async def qna_create(student_name: str = Form(""), school: str = Form(""), grade: str = Form(""),
+                     subject: str = Form(""), text: str = Form(""),
+                     images: List[UploadFile] = File(None),
+                     x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    who = _qna_author(student_name, x_admin_token)
+    text = (text or "").strip()[:QNA_TEXT_MAX]
+    if not who["author"]:
+        return {"success": False, "detail": "로그인 정보가 없습니다."}
+    urls = await _qna_save_images(images)
+    if not text and not urls:
+        return {"success": False, "detail": "질문 내용이나 사진을 넣어주세요."}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ref = db.collection(QNA_COLL).document()
+    row = {**who, "school": school, "grade": grade, "subject": (subject or "").strip()[:20],
+           "text": text, "images": urls, "solved": False, "answers": [], "created_at": now}
+    await asyncio.to_thread(ref.set, row)
+    if not who["is_admin"]:
+        send_telegram_message(f"❓ [질문 게시판]\n{who['author']} 학생이 질문을 올렸습니다.\n{text[:80]}")
+    return {"success": True, "post": _qna_public(row, ref.id)}
+
+
+@app.post("/api/qna/{post_id}/answer")
+async def qna_answer(post_id: str, student_name: str = Form(""), text: str = Form(""),
+                     images: List[UploadFile] = File(None),
+                     x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    who = _qna_author(student_name, x_admin_token)
+    text = (text or "").strip()[:QNA_TEXT_MAX]
+    if not who["author"]:
+        return {"success": False, "detail": "로그인 정보가 없습니다."}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    urls = await _qna_save_images(images)
+    if not text and not urls:
+        return {"success": False, "detail": "답 내용이나 사진을 넣어주세요."}
+    ans = {**who, "id": uuid.uuid4().hex[:12], "text": text, "images": urls,
+           "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    await asyncio.to_thread(ref.update, {"answers": firestore.ArrayUnion([ans])})
+    asker = (doc.to_dict() or {}).get("author", "")
+    if asker and asker != who["author"]:
+        label = "원장님" if who["is_admin"] else who["author"]
+        await asyncio.to_thread(send_push_to_student, asker, "내 질문에 답이 달렸어요",
+                                f"{label}: {(text or '사진')[:80]}", "/#prog-qna", "qna")
+    return {"success": True, "answer": ans}
+
+
+class QnaOwnerReq(BaseModel):
+    student_name: str = ""
+    solved: bool = True
+
+
+@app.post("/api/qna/{post_id}/solved")
+def qna_solved(post_id: str, req: QnaOwnerReq, x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    who = _qna_author(req.student_name, x_admin_token)
+    if not who["is_admin"] and (doc.to_dict() or {}).get("author") != who["author"]:
+        return {"success": False, "detail": "질문한 학생만 바꿀 수 있습니다."}
+    ref.update({"solved": bool(req.solved)})
+    return {"success": True}
+
+
+@app.post("/api/qna/{post_id}/delete")
+def qna_delete(post_id: str, req: QnaOwnerReq, answer_id: str = "",
+               x_admin_token: Optional[str] = Header(None)):
+    """글(또는 답 하나)을 지운다. 쓴 사람과 원장님만."""
+    if db is None:
+        return {"success": False}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": True}
+    who = _qna_author(req.student_name, x_admin_token)
+    row = doc.to_dict() or {}
+    if answer_id:
+        answers = row.get("answers") or []
+        target = next((a for a in answers if a.get("id") == answer_id), None)
+        if target is None:
+            return {"success": True}
+        if not who["is_admin"] and target.get("author") != who["author"]:
+            return {"success": False, "detail": "쓴 사람만 지울 수 있습니다."}
+        ref.update({"answers": [a for a in answers if a.get("id") != answer_id]})
+        return {"success": True}
+    if not who["is_admin"] and row.get("author") != who["author"]:
+        return {"success": False, "detail": "쓴 사람만 지울 수 있습니다."}
+    ref.delete()
+    return {"success": True}
+
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
