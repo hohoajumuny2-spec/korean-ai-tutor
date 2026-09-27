@@ -2366,7 +2366,10 @@ def add_xp(student_name: str, amount: int):
 
 
 
-def task_visible_to_student(subject: str, target_class, student_name: str) -> bool:
+_NO_INFO = object()
+
+
+def task_visible_to_student(subject: str, target_class, student_name: str, info=_NO_INFO) -> bool:
     """이 자료가 이 학생에게 보여도 되는지.
 
     - 원장님 체험 신분은 전부 본다 (점검하려면 다 보여야 한다).
@@ -2377,7 +2380,9 @@ def task_visible_to_student(subject: str, target_class, student_name: str) -> bo
     """
     if is_preview(student_name):
         return True
-    info = student_targeting_info(student_name)
+    # 💡 여러 자료를 한꺼번에 따질 때는 명단을 한 번만 읽어 넘겨받는다 (info)
+    if info is _NO_INFO:
+        info = student_targeting_info(student_name)
     subj_key = normalize_subject(subject) if subject else ""
     if subj_key and info is not None and subj_key not in info["subjects"]:
         return False
@@ -7576,7 +7581,129 @@ def get_board(student_name: str = ""):
         #    공지(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
         rows = [r for r in rows
                 if task_visible_to_student("", task_target_classes(r), student_name)]
+        # 💡 누가 읽었는지(read_by)는 학생에게 보낼 필요가 없다 — 나만 읽었는지 알려준다.
+        name = student_name.strip()
+        for r in rows:
+            r["is_read"] = name in (r.pop("read_by", None) or [])
+    else:
+        for r in rows:
+            r["read_count"] = len(r.pop("read_by", None) or [])
     return {"success": True, "posts": rows}
+
+
+class BoardReadReq(BaseModel):
+    student_name: str
+    post_ids: list = []
+
+
+@app.post("/api/board/read")
+def mark_board_read(req: BoardReadReq):
+    """학생이 공지 목록을 열어 본 공지를 '읽음'으로 남긴다. 로그인할 때 '확인 안 한 공지'를
+    알려주고, 원장님은 공지마다 몇 명이 읽었는지 볼 수 있다."""
+    name = (req.student_name or "").strip()
+    if db is None or not name or is_preview(name):
+        return {"success": True}
+    for pid in [str(p) for p in (req.post_ids or [])][:100]:
+        try:
+            db.collection("board").document(pid).update({"read_by": firestore.ArrayUnion([name])})
+        except Exception:
+            pass            # 그사이 지워진 공지는 건너뛴다
+    return {"success": True}
+
+
+# 로그인했을 때 알려줄 '아직 안 한 것'. 너무 오래된 것까지 쌓이면 알림이 소음이 되므로
+# 기한이 없는 과제·모의고사는 최근 것만, 공지는 더 짧게 본다.
+TODO_RECENT_DAYS = 30
+TODO_NOTICE_DAYS = 14
+TODO_OVERDUE_DAYS = 14      # 기한이 지난 과제도 이만큼은 '아직 안 냄'으로 알려준다
+
+
+def _created_within(row: dict, days: int) -> bool:
+    try:
+        return datetime.strptime(str(row.get("created_at", ""))[:19], "%Y-%m-%d %H:%M:%S") >= datetime.now() - timedelta(days=days)
+    except ValueError:
+        return False
+
+
+def _deadline_dt(deadline):
+    t = str(deadline or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(t[:16] if "%M" in fmt else t[:10], fmt)
+            return d.replace(hour=23, minute=59) if fmt == "%Y-%m-%d" else d
+        except ValueError:
+            continue
+    return None
+
+
+@app.get("/api/student/todo")
+def student_todo(student_name: str):
+    """학생이 들어왔을 때 알려줄 할 일 — 안 낸 과제, 안 본 공지, 안 푼 퀴즈, 안 본 모의고사."""
+    name = (student_name or "").strip()
+    empty = {"success": True, "homeworks": [], "notices": [], "quizzes": [], "exams": []}
+    if db is None or not name:
+        return empty
+
+    done = defaultdict(set)
+    for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream():
+        d = r.to_dict() or {}
+        done[d.get("type", "")].add(d.get("task_name", ""))
+
+    now = now_kst()
+    info = student_targeting_info(name)
+
+    homeworks = []
+    for d in db.collection("homeworks").stream():
+        h = d.to_dict() or {}
+        title = h.get("title", "")
+        if not title or title in done["과제 제출"]:
+            continue
+        if not task_visible_to_student("", task_target_classes(h), name, info):
+            continue
+        due = _deadline_dt(h.get("deadline"))
+        if due is not None:
+            if now - due > timedelta(days=TODO_OVERDUE_DAYS):
+                continue
+        elif not _created_within(h, TODO_RECENT_DAYS):
+            continue
+        homeworks.append({"title": title, "deadline": h.get("deadline", ""),
+                          "overdue": bool(due and now > due), "kind": h.get("kind", "class")})
+    # 마감이 급한 것부터, 기한 없는 것은 뒤로
+    homeworks.sort(key=lambda x: (_deadline_dt(x["deadline"]) is None, _deadline_dt(x["deadline"]) or datetime.max))
+
+    quizzes = []
+    for d in db.collection("quizzes").stream():
+        q = d.to_dict() or {}
+        title = q.get("title", "")
+        if not title or title in done["타임어택 퀴즈"] or deadline_passed(q.get("deadline")):
+            continue
+        if not q.get("deadline") and not _created_within(q, TODO_RECENT_DAYS):
+            continue
+        if not task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), name, info):
+            continue
+        quizzes.append({"title": title, "deadline": q.get("deadline", ""), "time_limit": q.get("time_limit", "")})
+
+    exams = []
+    for d in db.collection("exams").stream():
+        e = d.to_dict() or {}
+        title = e.get("title", "")
+        if not title or title in done["모의고사"] or not _created_within(e, TODO_RECENT_DAYS):
+            continue
+        if not task_visible_to_student(e.get("subject", "korean"), task_target_classes(e), name, info):
+            continue
+        exams.append({"title": title})
+
+    notices = []
+    for d in db.collection("board").stream():
+        p = d.to_dict() or {}
+        if name in (p.get("read_by") or []) or not _created_within(p, TODO_NOTICE_DAYS):
+            continue
+        if not task_visible_to_student("", task_target_classes(p), name, info):
+            continue
+        notices.append({"id": d.id, "title": p.get("title", ""), "created_at": p.get("created_at", "")})
+    notices.sort(key=lambda x: x["created_at"], reverse=True)
+
+    return {"success": True, "homeworks": homeworks, "notices": notices, "quizzes": quizzes, "exams": exams}
 
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
