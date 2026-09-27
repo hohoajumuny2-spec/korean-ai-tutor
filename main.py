@@ -6003,11 +6003,35 @@ def remove_push_subscription(endpoint: str):
     db.collection("push_subs").document(doc_id).delete()
 
 
-def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> bool:
-    """구독 하나에 실제로 쏜다. 기기가 사라졌으면(410/404) False를 돌려줘 정리하게 한다."""
+_vapid_signer_cache = None
+LAST_PUSH_ERROR = ""        # 원장님 '테스트' 단추가 실패 까닭을 보여줄 수 있게 남겨 둔다
+
+
+def get_vapid_signer():
+    """저장해 둔 개인키(PEM 글자)를 서명용 키 객체로 바꾼다.
+
+    💡 예전에는 PEM 글자를 pywebpush 에 그대로 넘겼다. pywebpush 는 그 글자를 PEM으로
+       읽지 못해('Could not deserialize key data') 보내기 전에 매번 실패했고, 그 실패를
+       '보냄'으로 세고 있어서 알림이 한 번도 가지 않았는데도 아무도 몰랐다."""
+    global _vapid_signer_cache
+    if _vapid_signer_cache is None:
+        keys = get_vapid_keys()
+        pem = keys.get("private_pem", "") if keys else ""
+        if not pem:
+            return None
+        _vapid_signer_cache = Vapid01.from_pem(pem.encode() if isinstance(pem, str) else pem)
+    return _vapid_signer_cache
+
+
+def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> str:
+    """구독 하나에 실제로 쏜다.
+    'sent' 보냄 / 'gone' 기기가 사라짐(410·404, 정리한다) / 'error' 그 밖의 실패(구독은 남긴다)."""
+    global LAST_PUSH_ERROR
     keys = get_vapid_keys()
-    if not keys:
-        return True
+    signer = get_vapid_signer()
+    if not keys or signer is None:
+        LAST_PUSH_ERROR = "알림 키를 불러오지 못했습니다."
+        return "error"
     payload = json.dumps({"title": title, "body": body, "url": url or "/", "tag": tag or "logyedu"})
     subscription_info = {
         "endpoint": sub_doc["endpoint"],
@@ -6016,20 +6040,25 @@ def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> bool:
     try:
         pywebpush.webpush(
             subscription_info=subscription_info, data=payload,
-            vapid_private_key=keys["private_pem"],
+            vapid_private_key=signer,
             vapid_claims={"sub": keys.get("subject", "mailto:owner@logyedu.co.kr")},
+            # 휴대폰이 꺼져 있어도 하루 동안은 기다렸다 켜지면 전한다
+            ttl=86400,
             timeout=6,
         )
-        return True
+        return "sent"
     except pywebpush.WebPushException as e:
         status = getattr(e.response, "status_code", None)
         if status in (404, 410):
-            return False   # 기기에서 알림을 껐거나 앱을 지웠다 — 조용히 정리한다
-        print("푸시 전송 실패:", e)
-        return True
+            return "gone"   # 기기에서 알림을 껐거나 앱을 지웠다 — 조용히 정리한다
+        body_txt = e.response.text[:200] if getattr(e, "response", None) is not None else ""
+        LAST_PUSH_ERROR = f"{status or ''} {body_txt or e}".strip()
+        print("푸시 전송 실패:", LAST_PUSH_ERROR)
+        return "error"
     except Exception as e:
-        print("푸시 전송 실패:", e)
-        return True
+        LAST_PUSH_ERROR = f"{type(e).__name__}: {e}"[:300]
+        print("푸시 전송 실패:", LAST_PUSH_ERROR)
+        return "error"
 
 
 def _push_to_docs(docs, title: str, body: str, url: str, tag: str) -> int:
@@ -6038,9 +6067,10 @@ def _push_to_docs(docs, title: str, body: str, url: str, tag: str) -> int:
         row = d.to_dict() or {}
         if not row.get("endpoint"):
             continue
-        if _push_one(row, title, body, url, tag):
+        result = _push_one(row, title, body, url, tag)
+        if result == "sent":
             sent += 1
-        else:
+        elif result == "gone":
             db.collection("push_subs").document(d.id).delete()
     return sent
 
@@ -6082,9 +6112,10 @@ def send_push_to_audience(subject: str, target_class, title: str, body: str, url
         name = row.get("student_name", "")
         if not seen_students.get(name):
             continue
-        if _push_one(row, title, body, url, tag):
+        result = _push_one(row, title, body, url, tag)
+        if result == "sent":
             sent += 1
-        else:
+        elif result == "gone":
             db.collection("push_subs").document(d.id).delete()
     return sent
 
@@ -6123,9 +6154,14 @@ async def push_unsubscribe(req: PushUnsubscribeReq):
 @app.post("/api/admin/push_test", dependencies=[Depends(verify_admin)])
 async def push_test(student_name: str = Form(...)):
     """원장님이 알림이 실제로 뜨는지 시험 삼아 한 번 보내본다."""
+    global LAST_PUSH_ERROR
+    LAST_PUSH_ERROR = ""
     n = await asyncio.to_thread(
         send_push_to_student, student_name.strip(), "로지에듀",
         "테스트 알림입니다. 이게 보이면 정상 동작 중이에요!", "/", "test")
+    # 💡 보내다 실패한 것을 '보냄'으로 세지 않는다 — 실패하면 까닭을 그대로 알려준다
+    if n == 0 and LAST_PUSH_ERROR:
+        return {"success": False, "sent": 0, "detail": LAST_PUSH_ERROR}
     return {"success": True, "sent": n}
 
 
