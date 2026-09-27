@@ -8297,6 +8297,139 @@ def qna_delete(post_id: str, req: QnaOwnerReq, answer_id: str = "",
     ref.delete()
     return {"success": True}
 
+
+# ─────────────────────────────────────────────────────────
+# 원장님 톡 — 원장님과 학생 한 명의 1:1 대화
+#   · 학생마다 대화방 문서 하나(dm_threads). 최근 200개 말만 남긴다.
+#   · 화면은 10초마다 '새 말 있어요?'를 묻는다(poll). 답은 서버 메모리의 번호표만 보고
+#     하므로 저장소를 읽지 않는다. 번호가 바뀌었을 때만 대화를 읽어 간다.
+#   · 원장님이 말을 걸면 학생 휴대폰으로도 알림이 가고, 학생이 답하면 텔레그램으로 알린다.
+# ─────────────────────────────────────────────────────────
+DM_COLL = "dm_threads"
+DM_KEEP = 200
+DM_TEXT_MAX = 1000
+_dm_lock = threading.Lock()
+_dm_ver = {}                     # 학생 이름 → 번호표 (대화가 바뀔 때마다 오른다)
+_dm_admin_ver = [0]              # 원장님 쪽 번호표 (어느 학생이든 새 말이 오면 오른다)
+_DM_BOOT = int(time.time())      # 서버가 다시 켜지면 번호표가 새로 시작하므로 화면이 알아채게 한다
+
+
+def _dm_bump(name: str, admin_too: bool = False):
+    with _dm_lock:
+        _dm_ver[name] = _dm_ver.get(name, 0) + 1
+        if admin_too:
+            _dm_admin_ver[0] += 1
+
+
+def _dm_version(name: str = "") -> str:
+    with _dm_lock:
+        n = _dm_ver.get(name, 0) if name else _dm_admin_ver[0]
+    return f"{_DM_BOOT}.{n}"
+
+
+def _dm_append(name: str, msg: dict, unread_field: str):
+    ref = db.collection(DM_COLL).document(sanitize_doc_id(name))
+    doc = ref.get()
+    row = (doc.to_dict() or {}) if doc.exists else {}
+    msgs = (row.get("messages") or []) + [msg]
+    ref.set({"student_name": name, "messages": msgs[-DM_KEEP:], "last_at": msg["at"],
+             "last_text": msg["text"][:80], "last_from": msg["from"],
+             unread_field: int(row.get(unread_field) or 0) + 1}, merge=True)
+
+
+class DmSendReq(BaseModel):
+    student_name: str
+    text: str
+
+
+@app.post("/api/admin/dm/send")
+def dm_admin_send(req: DmSendReq, admin_name: str = Depends(current_admin_name)):
+    name, text = (req.student_name or "").strip(), (req.text or "").strip()[:DM_TEXT_MAX]
+    if db is None or not name or not text:
+        return {"success": False, "detail": "받는 학생과 말을 넣어주세요."}
+    msg = {"id": uuid.uuid4().hex[:12], "from": "admin", "admin_name": admin_name, "text": text,
+           "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    _dm_append(name, msg, "unread_student")
+    _dm_bump(name, admin_too=True)
+    # 앱을 보고 있지 않아도 알 수 있게 휴대폰 알림도 보낸다
+    send_push_to_student(name, f"{admin_name if admin_name != '원장님' else '원장님'}의 메시지",
+                         text[:120], "/#dm", "dm")
+    return {"success": True, "message": msg}
+
+
+@app.post("/api/dm/send")
+def dm_student_send(req: DmSendReq):
+    name, text = (req.student_name or "").strip(), (req.text or "").strip()[:DM_TEXT_MAX]
+    if db is None or not name or not text:
+        return {"success": False, "detail": "보낼 말을 넣어주세요."}
+    msg = {"id": uuid.uuid4().hex[:12], "from": "student", "text": text,
+           "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    _dm_append(name, msg, "unread_admin")
+    _dm_bump(name, admin_too=True)
+    if not is_preview(name):
+        send_telegram_message(f"💬 [원장님 톡]\n{name}: {text[:200]}")
+    return {"success": True, "message": msg}
+
+
+@app.get("/api/dm/poll")
+def dm_poll(student_name: str = ""):
+    """번호표만 돌려준다. 화면은 번호가 바뀌었을 때만 대화를 새로 읽는다 (저장소를 안 읽는다)."""
+    return {"success": True, "v": _dm_version((student_name or "").strip())}
+
+
+@app.get("/api/admin/dm/poll", dependencies=[Depends(verify_admin)])
+def dm_admin_poll():
+    return {"success": True, "v": _dm_version("")}
+
+
+def _dm_thread(name: str) -> dict:
+    d = db.collection(DM_COLL).document(sanitize_doc_id(name)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+@app.get("/api/dm/thread")
+def dm_thread(student_name: str, mark_read: bool = False):
+    """학생 화면: 내 대화. mark_read 면 원장님 말을 읽은 것으로 한다."""
+    name = (student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "messages": []}
+    row = _dm_thread(name)
+    unread = int(row.get("unread_student") or 0)
+    if mark_read and unread:
+        db.collection(DM_COLL).document(sanitize_doc_id(name)).set({"unread_student": 0}, merge=True)
+        _dm_bump(name, admin_too=True)      # 원장님 화면에 '읽음'이 보이게
+    return {"success": True, "messages": row.get("messages") or [], "unread": unread,
+            "admin_unread": int(row.get("unread_admin") or 0), "v": _dm_version(name)}
+
+
+@app.get("/api/admin/dm/thread", dependencies=[Depends(verify_admin)])
+def dm_admin_thread(student_name: str, mark_read: bool = True):
+    name = (student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "messages": []}
+    row = _dm_thread(name)
+    if mark_read and int(row.get("unread_admin") or 0):
+        db.collection(DM_COLL).document(sanitize_doc_id(name)).set({"unread_admin": 0}, merge=True)
+        _dm_bump(name, admin_too=True)
+    return {"success": True, "messages": row.get("messages") or [],
+            "student_unread": int(row.get("unread_student") or 0), "v": _dm_version(name)}
+
+
+@app.get("/api/admin/dm/threads", dependencies=[Depends(verify_admin)])
+def dm_admin_threads():
+    """원장님: 대화방 목록 (최근 말 순, 안 읽은 수)."""
+    if db is None:
+        return {"success": False, "threads": []}
+    rows = []
+    for d in db.collection(DM_COLL).stream():
+        r = d.to_dict() or {}
+        rows.append({"student_name": r.get("student_name", ""), "last_at": r.get("last_at", ""),
+                     "last_text": r.get("last_text", ""), "last_from": r.get("last_from", ""),
+                     "unread": int(r.get("unread_admin") or 0)})
+    rows.sort(key=lambda x: x["last_at"], reverse=True)
+    return {"success": True, "threads": rows, "unread_total": sum(r["unread"] for r in rows),
+            "v": _dm_version("")}
+
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
