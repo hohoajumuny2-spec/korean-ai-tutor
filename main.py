@@ -6151,6 +6151,122 @@ async def push_status():
     return {"success": True, "students": await asyncio.to_thread(push_status_by_student)}
 
 
+# ─────────────────────────────────────────────────────────
+# 예전 기록의 시각 바로잡기 (한 번만 쓰는 작업)
+#   2026-09-27 오전까지 서버 시계가 영국 표준시라, 그때까지 저장된 시각이 전부
+#   9시간 이르다. 서버가 스스로 적은 시각 칸만 골라 9시간을 더한다.
+#   · 원장님이 직접 적은 값(과제 마감 '2026-10-05T18:00', 시험 날짜 등)은 모양이 달라 건드리지 않는다
+#   · 바꾸기 전 문서를 통째로 backup_tz_fix 에 남긴다. 백업이 있는 문서는 이미 고친 것이라
+#     다시 돌려도 두 번 더해지지 않는다(백업과 수정을 한 묶음으로 저장한다).
+# ─────────────────────────────────────────────────────────
+TZ_FIX_KEYS = {"created_at", "updated_at", "submitted_at", "uploaded_at", "used_at",
+               "requested_at", "decided_at", "last_at", "at", "record_eval_at"}
+TZ_FIX_CUTOFF = "2026-09-27 06:00"      # 이보다 이른 값은 옛 서버(영국 표준시)가 적은 것
+TZ_FIX_BACKUP = "backup_tz_fix"
+TZ_FIX_SKIP = {TZ_FIX_BACKUP, "admin_sessions", "chat_logs"}
+_TZ_FIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$")
+
+
+def _tz_shift(value, key=None):
+    """(고친 값, 고친 칸 수). 사전·목록 안쪽(제출 파일 이력 등)까지 따라 들어간다."""
+    if isinstance(value, dict):
+        out, n = {}, 0
+        for k, v in value.items():
+            out[k], c = _tz_shift(v, k)
+            n += c
+        return out, n
+    if isinstance(value, list):
+        out, n = [], 0
+        for v in value:
+            nv, c = _tz_shift(v, None)
+            out.append(nv)
+            n += c
+        return out, n
+    if (key in TZ_FIX_KEYS and isinstance(value, str) and _TZ_FIX_RE.match(value)
+            and value[:16] < TZ_FIX_CUTOFF):
+        fmt = "%Y-%m-%d %H:%M:%S" if len(value) == 19 else "%Y-%m-%d %H:%M"
+        return (datetime.strptime(value, fmt) + timedelta(hours=9)).strftime(fmt), 1
+    return value, 0
+
+
+def _tz_backup_id(coll: str, doc_id: str) -> str:
+    return hashlib.sha1(f"{coll}/{doc_id}".encode("utf-8")).hexdigest()
+
+
+def run_tz_fix(apply: bool) -> dict:
+    done_ids = {d.id for d in db.collection(TZ_FIX_BACKUP).select(["collection"]).stream()}
+    per_coll, samples = {}, []
+    docs_changed = fields_changed = 0
+    batch, pending = db.batch(), 0
+    for coll_ref in db.collections():
+        coll = coll_ref.id
+        if coll in TZ_FIX_SKIP:
+            continue
+        for d in coll_ref.stream():
+            bid = _tz_backup_id(coll, d.id)
+            if bid in done_ids:
+                continue
+            data = d.to_dict() or {}
+            changes, n = {}, 0
+            for k, v in data.items():
+                nv, c = _tz_shift(v, k)
+                if c:
+                    changes[k] = nv
+                    n += c
+            if not n:
+                continue
+            docs_changed += 1
+            fields_changed += n
+            per_coll[coll] = per_coll.get(coll, 0) + 1
+            if len(samples) < 5:
+                k0 = next(iter(changes))
+                if isinstance(data[k0], str):
+                    samples.append({"collection": coll, "field": k0, "before": data[k0], "after": changes[k0]})
+            if apply:
+                batch.set(db.collection(TZ_FIX_BACKUP).document(bid),
+                          {"collection": coll, "doc_id": d.id, "data": data,
+                           "fixed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                batch.set(d.reference, changes, merge=True)
+                pending += 1
+                if pending >= 200:
+                    batch.commit()
+                    batch, pending = db.batch(), 0
+    if apply and pending:
+        batch.commit()
+    if apply and docs_changed:
+        db.collection("settings").document("tz_fix").set({
+            "done": True, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "docs": docs_changed, "fields": fields_changed})
+    return {"success": True, "applied": apply, "docs": docs_changed, "fields": fields_changed,
+            "collections": per_coll, "samples": samples}
+
+
+@app.get("/api/admin/tz_fix/status", dependencies=[Depends(verify_admin)])
+def tz_fix_status():
+    """이미 바로잡았는지만 본다. 관리자 화면을 열 때마다 전체를 훑지 않으려고 따로 둔다."""
+    if db is None:
+        return {"success": False}
+    doc = db.collection("settings").document("tz_fix").get()
+    row = (doc.to_dict() or {}) if doc.exists else {}
+    return {"success": True, "done": bool(row.get("done")),
+            "at": row.get("at", ""), "docs": row.get("docs", 0), "fields": row.get("fields", 0)}
+
+
+@app.get("/api/admin/tz_fix/preview", dependencies=[Depends(verify_admin)])
+async def tz_fix_preview():
+    """바꾸지 않고, 몇 건이 어떻게 바뀔지만 세어 본다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    return await asyncio.to_thread(run_tz_fix, False)
+
+
+@app.post("/api/admin/tz_fix/apply", dependencies=[Depends(verify_admin)])
+async def tz_fix_apply():
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    return await asyncio.to_thread(run_tz_fix, True)
+
+
 GRADE_KINDS = {
     "homework": ("과제 제출", "과제"),
     "exam": ("모의고사", "모의고사"),
