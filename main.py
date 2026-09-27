@@ -30,7 +30,7 @@ from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import fitz
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
@@ -1411,6 +1411,8 @@ def view_result(student_name: str, title: str, kind: str,
         "first_score": rep.get("first_score", ""),
         "updated_at": rep.get("updated_at", ""),
         "edit_count": rep.get("edit_count", 0),
+        "late": bool(rep.get("late")), "late_edit": bool(rep.get("late_edit")),
+        "deadline": rep.get("deadline", ""),
         "items": items,
     }
 
@@ -6992,6 +6994,12 @@ def is_skip_slot(key_slot) -> bool:
     return str(key_slot or "").strip() in SKIP_MARKS
 
 
+def now_kst() -> datetime:
+    """한국 시각. 원장님이 적는 마감 시각은 한국 시각인데, 서버 컴퓨터의 시계는
+    나라가 다를 수 있다(클라우드 서버는 보통 영국 표준시). 마감을 따질 때는 이걸 쓴다."""
+    return datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+
+
 def deadline_passed(deadline) -> bool:
     """마감 시한이 지났는지. 시한을 안 정했으면(빈 값) 늘 열려 있다.
 
@@ -7007,10 +7015,40 @@ def deadline_passed(deadline) -> bool:
             # 날짜만 적었으면 그날 끝까지 열어 둔다
             if fmt == "%Y-%m-%d":
                 when = when.replace(hour=23, minute=59, second=59)
-            return datetime.now() > when
+            return now_kst() > when
         except ValueError:
             continue
     return False            # 읽지 못한 값 때문에 못 풀게 막지는 않는다
+
+
+def deadline_label(deadline) -> str:
+    """'2026-10-05T18:00' → '10/5(일) 18:00' — 알림 글에 넣기 좋게 짧게."""
+    t = str(deadline or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(t[:16] if fmt.endswith("%M") else t[:10], fmt)
+        except ValueError:
+            continue
+        day = f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})"
+        return day if fmt == "%Y-%m-%d" else f"{day} {d.strftime('%H:%M')}"
+    return t
+
+
+def homework_late_fields(hw: dict, prev: Optional[dict]) -> dict:
+    """과제는 마감이 지나도 낼 수 있다. 대신 늦게 냈다는 사실을 기록에 남긴다.
+
+    · 처음 낸 것이 마감 뒤면 late=True ('기한 후 제출')
+    · 마감 안에 냈다가 마감 뒤에 고쳐 낸 것은 late_edit=True ('기한 후 수정') —
+      처음 제출은 제때였으니 '기한 후 제출'로 바꾸지는 않는다."""
+    dl = str((hw or {}).get("deadline") or "").strip()
+    if not dl:
+        return {}
+    passed = deadline_passed(dl)
+    if prev is None:
+        return {"deadline": dl, "late": passed}
+    if passed and not prev.get("late"):
+        return {"late_edit": True}
+    return {}
 
 
 def answer_slots(key_slot) -> list:
@@ -7241,6 +7279,8 @@ async def create_homework(
     old_title: str = Form(""),
     # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 대상.
     target_classes: str = Form(""),
+    # 💡 제출 기한 ('2026-10-05T18:00'). 비우면 기한 없음. 지나도 낼 수는 있고 '기한 후 제출'로 남는다.
+    deadline: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -7250,6 +7290,7 @@ async def create_homework(
     answer_list = parse_answer_list(answers)
     safe_title = sanitize_doc_id(title)
     kind_norm = normalize_homework_kind(kind)
+    deadline_str = str(deadline or "").strip().replace(" ", "T")[:16]
     old_title = (old_title or "").strip()
 
     # 💡 같은 제목이면 그 문서에서, 제목을 바꿔 고친 경우엔 '예전 제목' 문서에서
@@ -7288,15 +7329,17 @@ async def create_homework(
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
+                "deadline": deadline_str,
                 "created_at": created_at,
             }
         )
     )
     if is_new:
         kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
+        due = f" 마감 {deadline_label(deadline_str)}." if deadline_str else ""
         await asyncio.to_thread(
             send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
-            f"'{title}' {kind_label}가 올라왔어요. 확인해보세요!", "/#prog-classroom", "homework")
+            f"'{title}' {kind_label}가 올라왔어요.{due} 확인해보세요!", "/#prog-classroom", "homework")
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
@@ -7382,8 +7425,10 @@ async def submit_homework_omr(req: HomeworkOmrReq):
         "mine": mine,
     }
     edited = bool(prev_id) and not is_preview(name)
+    late_info = homework_late_fields(data, prev if edited else None)
     if edited:
         upd = dict(result)
+        upd.update(late_info)
         upd["updated_at"] = now
         upd["edit_count"] = int(prev.get("edit_count") or 0) + 1
         if "first_score" not in prev:
@@ -7407,14 +7452,17 @@ async def submit_homework_omr(req: HomeworkOmrReq):
                 "task_name": req.title, "type": "과제 제출",
                 "homework_kind": data.get("kind", "class"),
                 **result,
+                **late_info,
             })
         )
-        send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
+        late_tag = " ⏰기한 후 제출" if late_info.get("late") else ""
+        send_telegram_message(f"📘 [{kind_label}]{late_tag}\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
     # 💡 채점 직후가 가장 잘 기억나는 때다. 번호를 눌러 바로 해설을 볼 수 있게 함께 보낸다.
     #    정답(answers)은 보내지 않는다 — 과제는 정답 없이 해설만 보여주고,
     #    틀린 문항은 학생이 답을 고쳐 다시 내게 한다.
     return {"success": True, "correct": correct, "total": total, "score": score,
             "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
+            "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "explanations": parse_explanation_map(data.get("explanations"))}
 
@@ -7458,12 +7506,16 @@ async def submit_homework(
         return {"success": False, "detail": "제출할 파일을 하나 이상 첨부해주세요."}
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    hw_doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(sanitize_doc_id(title)).get())
+    hw_data = (hw_doc.to_dict() or {}) if hw_doc.exists else {}
+    late_info = {}
     if existing and not is_preview(student_name):
         old = existing[0].to_dict() or {}
         # OMR로 채점된 과제는 정답을 이미 봤으므로 여기서 덮어쓰지 않는다
         # (다시 내려면 지금처럼 원장님 재응시 허락을 받는다)
         if "percent" in old:
             return {"success": False, "detail": "OMR로 채점된 과제는 다시 낼 수 없습니다. 원장님께 재응시를 부탁하세요."}
+        late_info = homework_late_fields(hw_data, old)
         # 💡 파일 과제는 한 번 내고 끝이 아니라 고쳐서 다시 낼 수 있다.
         #    기록을 하나 더 쌓으면 원장님 화면에 같은 과제가 여러 줄 뜨므로,
         #    처음 기록을 새 파일로 바꾸고 예전 파일은 이력으로만 남긴다.
@@ -7478,10 +7530,14 @@ async def submit_homework(
                 "updated_at": now,
                 "edit_count": int(old.get("edit_count") or 0) + 1,
                 "file_history": history[-10:],
+                **late_info,
             })
         )
         send_telegram_message(f"✏️ [과제 수정 제출]\n{student_name} 학생이 '{title}' 과제를 고쳐서 다시 냈습니다. (파일 {len(file_urls)}개)")
     else:
+        late_info = homework_late_fields(hw_data, None)
+        if late_info.get("late"):
+            send_telegram_message(f"⏰ [기한 후 제출]\n{student_name} 학생이 '{title}' 과제를 마감({deadline_label(late_info.get('deadline'))}) 뒤에 냈습니다.")
         await asyncio.to_thread(
             lambda: save_report(
                 {
@@ -7493,6 +7549,7 @@ async def submit_homework(
                     "type": "과제 제출",
                     "score": "제출완료",
                     "file_url": ",".join(file_urls),
+                    **late_info,
                 }
             )
         )
@@ -7507,8 +7564,8 @@ async def submit_homework(
             lambda: add_xp(student_name, XP_REWARD_HOMEWORK)
         )
 
-    doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(title).get())
-    return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else "", "level_up": lvl_up}
+    return {"success": True, "answer_file": hw_data.get("answer_file", ""), "level_up": lvl_up,
+            "late": bool(late_info.get("late") or late_info.get("late_edit"))}
 
 @app.get("/api/board")
 def get_board(student_name: str = ""):
