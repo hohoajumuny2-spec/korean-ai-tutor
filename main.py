@@ -8430,6 +8430,94 @@ def dm_admin_threads():
     return {"success": True, "threads": rows, "unread_total": sum(r["unread"] for r in rows),
             "v": _dm_version("")}
 
+
+# ─────────────────────────────────────────────────────────
+# 자습 감독 — 교실 태블릿 카메라가 딴짓(휴대폰 · 엎드림 · 자리 비움)을 보면 원장님께 알린다
+#   · 영상 판단은 태블릿 안에서 한다. 서버는 경고 순간의 사진 한 장을 텔레그램으로
+#     원장님께 넘겨주기만 하고 저장하지 않는다.
+#   · 교실 태블릿에 관리자 로그인을 해 두면 학생이 관리자 화면을 열 수 있으므로,
+#     원장님이 6자리 '감독 코드'를 만들어 태블릿에 넣는다. 코드는 12시간 뒤 끝난다.
+# ─────────────────────────────────────────────────────────
+PROCTOR_COLL = "proctor_codes"
+PROCTOR_HOURS = 12
+PROCTOR_MIN_GAP_SEC = 20          # 알림이 쏟아지지 않게 한 코드당 20초에 한 번
+_proctor_last = {}
+
+
+def send_telegram_photo(image: bytes, caption: str) -> bool:
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Telegram 사진 건너뜀: TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID 가 없습니다.")
+        return False
+    try:
+        res = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                            data={"chat_id": chat_id, "caption": caption[:1000]},
+                            files={"photo": ("alert.jpg", image, "image/jpeg")}, timeout=15)
+        if not res.ok:
+            print(f"Telegram 사진 전송 실패: [{res.status_code}] {res.text[:200]}")
+        return res.ok
+    except Exception as e:
+        print(f"Telegram 사진 전송 오류: {e}")
+        return False
+
+
+def _proctor_valid(code: str) -> dict:
+    code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if db is None or len(code) != 6:
+        return {}
+    d = db.collection(PROCTOR_COLL).document(code).get()
+    row = (d.to_dict() or {}) if d.exists else {}
+    if not row or float(row.get("expires", 0)) < time.time():
+        return {}
+    return {**row, "code": code}
+
+
+@app.post("/api/admin/proctor/code")
+def proctor_new_code(admin_name: str = Depends(current_admin_name)):
+    """교실 태블릿에 넣을 6자리 감독 코드를 만든다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    for _ in range(10):
+        code = f"{secrets.randbelow(1000000):06d}"
+        ref = db.collection(PROCTOR_COLL).document(code)
+        if not ref.get().exists or not _proctor_valid(code):
+            expires = time.time() + PROCTOR_HOURS * 3600
+            ref.set({"admin_name": admin_name, "expires": expires,
+                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            return {"success": True, "code": code, "hours": PROCTOR_HOURS}
+    return {"success": False, "detail": "코드를 만들지 못했습니다. 다시 눌러 주세요."}
+
+
+@app.get("/api/proctor/check")
+def proctor_check(code: str):
+    row = _proctor_valid(code)
+    if not row:
+        return {"success": False, "detail": "코드가 맞지 않거나 시간이 지났습니다. 원장님께 새 코드를 받아 주세요."}
+    left_h = max(0, int((float(row["expires"]) - time.time()) // 3600))
+    return {"success": True, "hours_left": left_h}
+
+
+@app.post("/api/proctor/alert")
+async def proctor_alert(code: str = Form(...), message: str = Form(...),
+                        room: str = Form(""), photo: Optional[UploadFile] = File(None)):
+    """태블릿이 딴짓을 봤을 때. 사진은 저장하지 않고 원장님 텔레그램으로만 보낸다."""
+    row = await asyncio.to_thread(_proctor_valid, code)
+    if not row:
+        return {"success": False, "detail": "감독 코드가 끝났습니다."}
+    now = time.time()
+    if now - _proctor_last.get(row["code"], 0) < PROCTOR_MIN_GAP_SEC:
+        return {"success": True, "skipped": True}
+    _proctor_last[row["code"]] = now
+    caption = f"🚨 [자습 감독{(' · ' + room.strip()[:20]) if room.strip() else ''}] {message.strip()[:200]}\n{datetime.now().strftime('%H:%M:%S')}"
+    data = await photo.read() if photo and photo.filename else b""
+    if data and len(data) <= 5 * 1024 * 1024:
+        ok = await asyncio.to_thread(send_telegram_photo, data, caption)
+    else:
+        send_telegram_message(caption)
+        ok = True
+    return {"success": True, "sent": ok}
+
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
