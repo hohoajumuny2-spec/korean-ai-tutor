@@ -61,6 +61,34 @@
   .imgs img{height:22px}
   .imgs b{cursor:pointer;color:var(--warn)}
   #msg{font-size:12px;color:var(--warn);min-height:1em}
+  #msg.ok{color:#059669}
+  #libState{font-size:12px;color:var(--sub);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ── 보관함 ── */
+  dialog#lib{width:min(720px,calc(100% - 24px));max-height:calc(100% - 24px);padding:0;border:1px solid var(--line);
+       border-radius:12px;background:var(--panel);color:var(--ink);display:none;flex-direction:column}
+  dialog#lib[open]{display:flex}
+  dialog#lib::backdrop{background:rgba(0,0,0,.45)}
+  .lh{display:flex;gap:8px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .lh b{font-size:16px;margin-right:auto}
+  .lh input{flex:1 1 180px;width:auto}
+  #libMode{padding:8px 14px 0;margin:0}
+  #libMode.bad{color:var(--warn);font-weight:700}
+  #libList{overflow:auto;padding:8px 14px 12px;flex:1 1 auto;min-height:120px}
+  .li{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-top:8px}
+  .li.cur{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .li .lt{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .li .lt b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .li .la{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+  .li .la button{padding:4px 9px;font-size:13px}
+  .li .la button.del{color:var(--warn)}
+  .pick{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
+  .pick label{display:flex;gap:6px;align-items:baseline;padding:3px 0;font-size:13px;cursor:pointer;min-width:0}
+  .pick label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pick label.sub{padding-left:22px}
+  .pick label.gh{font-weight:700;color:var(--sub)}
+  .lf{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .lf .sp{flex:1}
 
   /* ── 시험지(A4) — 화면·인쇄 공통 ── */
   /* 머리말·꼬리말 글씨: 저장소의 Noto Sans KR 에서 머리말에 쓰는 글자만 뽑아 넣었다 (인터넷 없이도 같은 모양) */
@@ -159,9 +187,12 @@
 <div class="bar">
   <h1>📝 문제지 만들기</h1>
   <button class="primary" id="btnPrint" title="인쇄 창에서 대상(프린터)을 'PDF로 저장'으로 고르세요">PDF로 저장 / 인쇄</button>
+  <button id="btnKeep" title="지금 문제지를 보관함에 넣기 (넣은 뒤로는 고칠 때마다 저절로 저장)">📥 보관함에 넣기</button>
+  <button id="btnLib" title="모아 둔 문제지 보기 · 열기 · 문제 골라 넣기">📚 보관함</button>
+  <span id="libState"></span>
   <span class="sp"></span>
-  <button id="btnSave" title="지금 문제지를 파일로 보관">파일로 보관</button>
-  <button id="btnLoad" title="보관해 둔 파일 열기">열기</button>
+  <button id="btnSave" title="지금 문제지를 파일(.json)로 내려받기 — 다른 컴퓨터로 옮길 때">파일로 내보내기</button>
+  <button id="btnLoad" title="내보낸 파일 열기">파일 열기</button>
   <button id="btnSample">예시 넣기</button>
   <button id="btnNew">새로 만들기</button>
   <input type="file" id="fileLoad" accept=".json,application/json" hidden>
@@ -239,7 +270,9 @@
         <p><b>그림</b> — 그림을 복사해 입력칸에 붙여 넣거나 [🖼 그림 넣기]. <code>[그림:그림1 50%]</code>처럼 쓰면 폭을 줄일 수 있습니다.</p>
         <p><b>PDF 만들기</b> — [PDF로 저장 / 인쇄] → 대상(프린터)을 <b>'PDF로 저장'</b>으로 고르고 저장.
            (휴대폰: 공유 → 인쇄 → PDF 저장)</p>
-        <p>쓴 내용은 이 브라우저에 자동 저장됩니다. 다른 컴퓨터로 옮길 때는 [파일로 보관] → [열기].</p>
+        <p><b>보관함</b> — [📥 보관함에 넣기]를 누르면 문제지가 보관함에 모입니다. 넣은 뒤로는 고칠 때마다 저절로 저장되고,
+           PDF로 저장할 때도 저절로 넣어 둡니다. [📚 보관함]에서 다시 열거나, 예전 문제지의 문제를 골라 지금 문제지에 넣을 수 있습니다.</p>
+        <p>보관함과 쓰던 내용은 이 컴퓨터의 이 브라우저에만 저장됩니다. 다른 기기로 옮길 때는 보관함의 [백업 내보내기] → [백업 가져오기].</p>
       </div>
     </details>
   </div>
@@ -248,6 +281,22 @@
     <div id="pages"></div>
   </div>
 </div>
+
+<dialog id="lib">
+  <div class="lh">
+    <b>📚 보관함</b>
+    <input type="text" id="libQ" placeholder="제목·문제 내용으로 찾기">
+  </div>
+  <p class="hint" id="libMode"></p>
+  <div id="libList"></div>
+  <div class="lf">
+    <button id="libExport" title="보관함 전체를 파일 하나로 내려받기">백업 내보내기</button>
+    <button id="libImport" title="백업 파일이나 내보낸 문제지 파일을 보관함에 넣기">백업 가져오기</button>
+    <input type="file" id="libFile" accept=".json,application/json" multiple hidden>
+    <span class="sp"></span>
+    <button id="libClose">닫기</button>
+  </div>
+</dialog>
 
 <script>
 (() => {
@@ -295,7 +344,7 @@ const SAMPLE = `[1~2] 다음 글을 읽고 물음에 답하시오.
 정답: 갈 것이다 → 갔다
 `;
 
-let S = { opt:{...DEF}, text:SAMPLE, images:{}, logo:'' };
+let S = { opt:{...DEF}, text:SAMPLE, images:{}, logo:'', libId:'' };
 const THEMES = {
   ocean:['#1e3a8a','#0e7490','#eef6fb'], forest:['#14532d','#15803d','#f0f7f1'],
   violet:['#4c1d95','#7c3aed','#f5f1fc'], sunset:['#9a3412','#db2777','#fdf1ee'], mono:['#222222','#555555','#f4f4f4'],
@@ -318,10 +367,11 @@ const WAVE_ICON = `<svg viewBox="0 0 36 10" fill="none" stroke="currentColor" st
 // ─────────────────────────────────────────────
 let warnedQuota = false;
 function save(){
+  if(libDirty) libSync();
   try { localStorage.setItem(STORE, JSON.stringify(S)); }
   catch(e){
-    if(!warnedQuota){ warnedQuota = true;
-      msg('그림이 커서 브라우저 자동 저장이 안 됩니다. [파일로 보관]으로 따로 보관하세요.'); }
+    if(!warnedQuota && !S.libId){ warnedQuota = true;
+      msg('그림이 커서 브라우저 자동 저장이 안 됩니다. [📥 보관함에 넣기]로 보관하세요.'); }
   }
 }
 function load(){
@@ -331,9 +381,60 @@ function load(){
   } catch(e){}
 }
 function adopt(d){
-  S = { opt:{...DEF, ...(d.opt||{})}, text: typeof d.text==='string' ? d.text : '', images: d.images||{}, logo: typeof d.logo==='string' ? d.logo : '' };
+  S = { opt:{...DEF, ...(d.opt||{})}, text: typeof d.text==='string' ? d.text : '', images: d.images||{}, logo: typeof d.logo==='string' ? d.logo : '',
+        libId: typeof d.libId==='string' ? d.libId : '' };
 }
-function msg(t){ $('#msg').textContent = t || ''; }
+let okUntil = 0;   // 알림(초록 글씨)은 잠깐 남겨 둔다 — 곧이어 다시 그려도 지워지지 않게
+function msg(t, ok){ const m = $('#msg'); m.textContent = t || ''; m.classList.toggle('ok', !!ok); okUntil = ok ? Date.now() + 8000 : 0; }
+
+// ─────────────────────────────────────────────
+// 보관함 — 만든 문제지를 모아 둔다. 그림이 많아도 담기도록 IndexedDB에 넣고,
+//   막혀 있으면 localStorage, 그것도 막혀 있으면 창을 닫을 때까지만 기억한다.
+// ─────────────────────────────────────────────
+const LIB_KEY = 'munjeji.lib.v1';
+const Lib = (() => {
+  let db = null, mode = 'idb', mem = [];
+  function fallback(){
+    db = null;
+    try { localStorage.setItem(LIB_KEY + '.t', '1'); localStorage.removeItem(LIB_KEY + '.t'); mode = 'ls'; }
+    catch(e){ mode = 'mem'; }
+  }
+  const ready = new Promise(res => {
+    try {
+      const r = indexedDB.open('munjeji-lib', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('sheets', {keyPath:'id'});
+      r.onsuccess = () => { db = r.result; res(); };
+      r.onerror = r.onblocked = () => { fallback(); res(); };
+    } catch(e){ fallback(); res(); }
+  });
+  const lsAll = () => { try { return JSON.parse(localStorage.getItem(LIB_KEY) || '[]'); } catch(e){ return []; } };
+  const list = () => mode === 'ls' ? lsAll() : JSON.parse(JSON.stringify(mem));   // 늘 사본을 준다 (IndexedDB처럼)
+  const keep = a => { if(mode === 'ls') localStorage.setItem(LIB_KEY, JSON.stringify(a)); else mem = JSON.parse(JSON.stringify(a)); };
+  const tx = (kind, fn) => new Promise((res, rej) => {
+    const t = db.transaction('sheets', kind), r = fn(t.objectStore('sheets'));
+    t.oncomplete = () => res(r.result);
+    t.onerror = t.onabort = () => rej(t.error);
+  });
+  return {
+    ready, get mode(){ return mode; },
+    async all(){
+      await ready;
+      const a = mode === 'idb' ? await tx('readonly', st => st.getAll()) : list();
+      return (a || []).sort((x, y) => (y.saved || '').localeCompare(x.saved || ''));
+    },
+    async get(id){ await ready; return mode === 'idb' ? tx('readonly', st => st.get(id)) : list().find(r => r.id === id); },
+    async put(rec){
+      await ready;
+      if(mode === 'idb') return tx('readwrite', st => st.put(rec));
+      keep(list().filter(r => r.id !== rec.id).concat([rec]));
+    },
+    async del(id){
+      await ready;
+      if(mode === 'idb') return tx('readwrite', st => st.delete(id));
+      keep(list().filter(r => r.id !== id));
+    },
+  };
+})();
 
 // ─────────────────────────────────────────────
 // 글 → 문항 구조
@@ -373,19 +474,19 @@ function parse(src){
   const lines = src.replace(/\r\n?/g,'\n').split('\n');
   const numbered = lines.some(l => RE_Q.test(l) || RE_SQ.test(l));
   const items = [];
-  let cur = null, state = 'body', box = null, blank = false;
+  let cur = null, state = 'body', box = null, blank = false, li = 0;   // li: 지금 읽는 줄 (문항이 시작한 줄을 l0에 적어 둔다)
 
-  const newQ = num => ({type:'q', num, parts:[], choices:[], answer:'', explain:[], gap:false});
+  const newQ = num => ({type:'q', num, parts:[], choices:[], answer:'', explain:[], gap:false, l0:li});
   const flush = () => { if(cur) items.push(cur); cur = null; state = 'body'; box = null; };
 
-  for(const raw of lines){
-    const line = raw.replace(/\s+$/,'');
+  for(li = 0; li < lines.length; li++){
+    const line = lines[li].replace(/\s+$/,'');
     const empty = !line.trim();
     let m;
 
     if((m = line.match(RE_GROUP))){
       flush();
-      cur = {type:'g', from:+m[1], to:+m[2], title:m[3], parts:[], choices:[], gap:false};
+      cur = {type:'g', from:+m[1], to:+m[2], title:m[3], parts:[], choices:[], gap:false, l0:li};
       blank = false; continue;
     }
     if(numbered && (m = line.match(RE_SQ)) && state !== 'box-x'){
@@ -414,7 +515,7 @@ function parse(src){
 
     if(!cur){
       if(empty) continue;
-      cur = {type:'g', title:'', parts:[], choices:[], gap:false};   // 첫 번호 앞의 안내 글
+      cur = {type:'g', title:'', parts:[], choices:[], gap:false, l0:li};   // 첫 번호 앞의 안내 글
     }
 
     if(!empty && (m = line.match(RE_ANS))){ if(cur.type==='q'){ cur.answer = m[1].trim(); } state = 'after'; continue; }
@@ -741,7 +842,8 @@ function render(){
 
   const N = pager.pages.length;
   pager.pages.forEach((p, i) => { p.querySelector('.pno').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
-  msg(pager.tall ? '빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.' : '');
+  if(pager.tall) msg('빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.');
+  else if(Date.now() > okUntil) msg('');
   fitZoom();
   save();
 }
@@ -755,8 +857,8 @@ function fitZoom(){
 // ─────────────────────────────────────────────
 // 화면 연결
 // ─────────────────────────────────────────────
-let timer = 0;
-const later = () => { clearTimeout(timer); timer = setTimeout(render, 250); };
+let timer = 0, libDirty = false, syncT = 0;   // libDirty: 보관함에 아직 반영 안 한 고침이 있다
+const later = () => { libDirty = true; clearTimeout(timer); timer = setTimeout(render, 250); };
 
 function bindOptions(){
   document.querySelectorAll('[data-k]').forEach(inp => {
@@ -843,7 +945,11 @@ $('#fileLogo').onchange = e => {
   };
   fr.readAsDataURL(f); e.target.value = '';
 };
-$('#btnPrint').onclick = () => { clearTimeout(timer); render(); window.print(); };
+$('#btnPrint').onclick = () => {
+  clearTimeout(timer); render();
+  if(!S.libId && S.text.trim() && S.text !== SAMPLE) libAdd(true);   // PDF로 만든 문제지는 저절로 보관함에 모인다
+  window.print();
+};
 const docTitle = document.title;
 window.addEventListener('beforeprint', () => { document.title = S.opt.title || '문제지'; }); // PDF 파일 이름
 window.addEventListener('afterprint',  () => { document.title = docTitle; });
@@ -860,24 +966,233 @@ $('#fileLoad').onchange = e => {
   const f = e.target.files[0]; if(!f) return;
   const fr = new FileReader();
   fr.onload = () => {
-    try { adopt(JSON.parse(fr.result)); bindOptions(); render(); }
+    try { adopt({...JSON.parse(fr.result), libId:''}); libDirty = false; bindOptions(); render(); libStatus(); }
     catch(err){ msg('이 파일은 열 수 없습니다.'); }
   };
   fr.readAsText(f); e.target.value = '';
 };
 $('#btnSample').onclick = () => {
   if(S.text.trim() && !confirm('지금 쓴 내용을 지우고 예시를 넣을까요?')) return;
-  S.text = SAMPLE; $('#src').value = SAMPLE; render();
+  S.text = SAMPLE; S.libId = ''; $('#src').value = SAMPLE; render(); libStatus();   // 보관함의 문제지는 그대로 둔다
 };
 $('#btnNew').onclick = () => {
-  if(!confirm('문제와 그림을 모두 지우고 새로 시작할까요? (설정은 그대로 둡니다)')) return;
-  S.text = ''; S.images = {}; bindOptions(); render(); $('#src').focus();
+  if(!confirm(S.libId ? '새 문제지를 시작할까요? (지금 문제지는 보관함에 그대로 있습니다)'
+                      : '문제와 그림을 모두 지우고 새로 시작할까요? (설정은 그대로 둡니다)')) return;
+  S.text = ''; S.images = {}; S.libId = ''; bindOptions(); render(); libStatus(); $('#src').focus();   // 보관함의 문제지는 그대로 둔다
+};
+// ─────────────────────────────────────────────
+// 보관함 화면
+// ─────────────────────────────────────────────
+const stamp = () => { const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+const newId = () => 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const frontOf = t => { const m = t.match(RE_BACK); return m ? t.slice(0, m.index) : t; };
+const plain = s => (s || '').replace(/\[그림:[^\]]*\]/g, '[그림]').replace(/\*\*|__|\^\{|_\{|\}/g, '').trim();
+function sheetTitle(){
+  if(S.opt.title.trim()) return S.opt.title.trim();
+  const q = parse(frontOf(S.text)).find(it => it.type === 'q' && it.parts.length);
+  return q ? plain(q.parts[0].s || '').slice(0, 30) || '제목 없는 문제지' : '제목 없는 문제지';
+}
+function recOf(id){
+  return { id, title: sheetTitle(), saved: stamp(),
+           count: parse(frontOf(S.text)).filter(it => it.type === 'q').length,
+           data: { opt: S.opt, text: S.text, images: S.images, logo: S.logo } };
+}
+function libStatus(t){
+  $('#libState').textContent = t || (S.libId ? '보관함에 저장됨 ✓' : '');
+  $('#btnKeep').textContent = S.libId ? '📥 보관함에 저장됨' : '📥 보관함에 넣기';
+}
+const libFail = () => msg(Lib.mode === 'mem'
+  ? '이 화면은 브라우저 저장이 막혀 있습니다. 파일을 크롬·엣지·사파리로 직접 열어 주세요.'
+  : '보관함에 저장하지 못했습니다. 저장 공간이 모자랍니다 — 안 쓰는 문제지를 지우거나 [백업 내보내기] 하세요.');
+function libSync(now){
+  if(!S.libId){ libDirty = false; return Promise.resolve(); }
+  clearTimeout(syncT);
+  const go = () => { const id = S.libId; libDirty = false;
+    return Lib.put(recOf(id)).then(() => libStatus(), () => { libDirty = true; libFail(); }); };
+  if(now) return go();
+  libStatus('저장 중…'); syncT = setTimeout(go, 700);
+  return Promise.resolve();
+}
+async function libAdd(quiet){
+  if(!S.text.trim()){ msg('문제를 먼저 넣어 주세요.'); return false; }
+  const id = S.libId || newId();
+  try { await Lib.put(recOf(id)); } catch(e){ libFail(); return false; }
+  S.libId = id; libDirty = false; save(); libStatus();
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch(e){}
+  msg(Lib.mode === 'mem' ? '보관함에 넣었지만, 이 화면에서는 창을 닫으면 사라집니다. 파일을 크롬·엣지·사파리로 직접 열어 쓰세요.'
+      : quiet ? `'${sheetTitle()}' — 보관함에도 넣어 두었습니다.` : `'${sheetTitle()}' — 보관함에 넣었습니다. 이제 고칠 때마다 저절로 저장됩니다.`, Lib.mode !== 'mem');
+  return true;
+}
+$('#btnKeep').onclick = async () => {
+  if(S.libId){ await libSync(true); msg('보관함에 저장했습니다.', true); } else await libAdd();
+};
+
+// 다른 문제지의 글과 그림을 지금 문제지 끝에 붙인다. 그림 이름이 겹치면 새 이름을 준다.
+function appendSheet(text, images){
+  const ren = {};
+  for(const [k, v] of Object.entries(images || {})){
+    let nk = k;
+    if(S.images[k] && S.images[k] !== v) nk = nextImgName();
+    if(nk !== k) ren[k] = nk;
+    S.images[nk] = v;
+  }
+  text = text.replace(/\[그림:([^\]\s]+)/g, (m, k) => ren[k] ? '[그림:' + ren[k] : m);
+  const cut = t => { const m = t.match(RE_BACK); return m ? [t.slice(0, m.index), t.slice(m.index + m[0].length)] : [t, null]; };
+  const [af, ab] = cut(S.text), [bf, bb] = cut(text);
+  let out = af.replace(/\s+$/, '');
+  if(bf.trim()) out = (out ? out + '\n\n' : '') + bf.replace(/^\s*\n/, '').replace(/\s+$/, '');
+  if(ab !== null || bb !== null){               // [정답 모아보기]는 하나로 합쳐 맨 뒤에 둔다
+    const back = [ab, bb].filter(x => x && x.trim()).map(x => x.replace(/^\s*\n/, '').replace(/\s+$/, '')).join('\n\n');
+    out += '\n\n[정답 모아보기]\n' + back;
+  }
+  S.text = out + '\n';
+  const renum = !S.opt.renum; S.opt.renum = true;   // 번호가 겹치지 않게 다시 매긴다
+  bindOptions(); later();
+  const ta = $('#src'); ta.scrollTop = ta.scrollHeight;
+  return renum;
+}
+
+// 문제지를 문항 단위로 나눈다 (묶음 지문 [1~3]은 그 문제들과 함께 다닌다)
+function unitsOf(text){
+  const front = frontOf(text).replace(/\r\n?/g, '\n');
+  const lines = front.split('\n'), items = parse(front);
+  let g = -1, left = 0;
+  return items.map((it, i) => {
+    const end = i + 1 < items.length ? items[i + 1].l0 : lines.length;
+    const u = { it, src: lines.slice(it.l0, end).join('\n').replace(/\s+$/, ''), g: -1 };
+    if(it.type === 'g'){ if(it.from != null){ g = i; left = Math.max(1, it.to - it.from + 1); } else { g = -1; left = 0; } }
+    else if(g >= 0 && left > 0){ u.g = g; left--; }
+    return u;
+  });
+}
+function unitLabel(it){
+  const first = plain((it.parts.find(p => p.t === 'ln') || {}).s);
+  if(it.type === 'g') return it.from != null ? `[${it.from}~${it.to}] ${plain(it.title) || first}` : `(안내 글) ${first}`;
+  return `${it.sep ? it.sep + ' ' : ''}${it.num != null ? it.num + '.' : '·'} ${first || (it.parts.length ? '(상자·그림)' : '')}`;
+}
+
+let libRecs = [];
+async function drawLib(){
+  const list = $('#libList'), mode = $('#libMode');
+  try { libRecs = await Lib.all(); }
+  catch(e){ list.innerHTML = '<p class="hint">보관함을 열지 못했습니다.</p>'; return; }
+  mode.classList.toggle('bad', Lib.mode === 'mem');
+  mode.textContent = Lib.mode === 'mem'
+    ? '⚠ 이 화면에서는 브라우저 저장이 막혀 있어, 창을 닫으면 보관함이 사라집니다. 이 파일을 내려받아 크롬·엣지·사파리로 직접 열어 쓰세요.'
+    : `문제지 ${libRecs.length}개 · 이 컴퓨터의 이 브라우저에 저장됩니다. 다른 기기로 옮길 때는 [백업 내보내기].`;
+  const q = $('#libQ').value.trim();
+  const shown = q ? libRecs.filter(r => (r.title + '\n' + (r.data.text || '')).includes(q)) : libRecs;
+  list.innerHTML = shown.length ? '' : `<p class="hint" style="text-align:center;padding:28px 0">${q ? '찾는 문제지가 없습니다.'
+    : '아직 모아 둔 문제지가 없습니다.<br>[📥 보관함에 넣기]를 누르거나 PDF로 저장하면 여기에 모입니다.'}</p>`;
+  for(const r of shown){
+    const cur = r.id === S.libId;
+    const d = el(`<div class="li${cur ? ' cur' : ''}">
+      <div class="lt"><b>${esc(r.title)}</b><span class="hint">${esc(r.saved || '')} · ${r.count || 0}문항${cur ? ' · 지금 편집 중' : ''}</span></div>
+      <div class="la">
+        ${cur ? '' : '<button data-a="open">열기</button>'}
+        <button data-a="pick">문제 골라 넣기</button>
+        ${cur ? '' : '<button data-a="all">통째로 이어 붙이기</button>'}
+        <button data-a="copy">사본 만들기</button>
+        <button data-a="del" class="del">삭제</button>
+      </div>
+      <div class="pick" hidden></div></div>`);
+    d.querySelector('.la').onclick = e => { const a = e.target.dataset.a; if(a) libAct(a, r, d); };
+    list.appendChild(d);
+  }
+}
+async function libAct(a, r, d){
+  if(a === 'open'){
+    if(S.libId && libDirty) await libSync(true);
+    else if(!S.libId && S.text.trim() && S.text !== SAMPLE
+            && confirm('지금 쓰던 문제지를 먼저 보관함에 넣을까요?\n[취소]를 누르면 넣지 않고 바로 엽니다.')) await libAdd(true);
+    adopt({...r.data, libId: r.id}); libDirty = false;
+    bindOptions(); render(); libStatus(); $('#lib').close();
+    msg(`'${r.title}'을(를) 열었습니다.`, true);
+  } else if(a === 'all'){
+    const renum = appendSheet(r.data.text || '', r.data.images); $('#lib').close();
+    msg(`'${r.title}'의 문제 ${r.count || 0}개를 끝에 이어 붙였습니다.${renum ? ' 번호는 자동으로 다시 매깁니다.' : ''}`, true);
+  } else if(a === 'copy'){
+    try { await Lib.put({...r, id: newId(), title: r.title + ' (사본)', saved: stamp()}); } catch(e){ libFail(); }
+    drawLib();
+  } else if(a === 'del'){
+    if(!confirm(`'${r.title}'을(를) 보관함에서 지울까요? 되돌릴 수 없습니다.`)) return;
+    await Lib.del(r.id);
+    if(S.libId === r.id){ S.libId = ''; save(); libStatus(); }   // 화면의 문제지는 남겨 둔다
+    drawLib();
+  } else if(a === 'pick'){
+    const box = d.querySelector('.pick');
+    if(!box.hidden){ box.hidden = true; return; }
+    const units = unitsOf(r.data.text || '');
+    if(!units.some(u => u.it.type === 'q')){ box.innerHTML = '<p class="hint">고를 문제가 없습니다.</p>'; box.hidden = false; return; }
+    box.innerHTML = '<p class="hint" style="margin:0 0 4px">넣을 문제를 고르세요. 묶음 지문의 문제를 고르면 지문도 함께 들어갑니다.</p>'
+      + units.map((u, i) => `<label class="${u.g >= 0 ? 'sub' : ''}${u.it.type === 'g' ? ' gh' : ''}"><input type="checkbox" data-i="${i}"><span>${esc(unitLabel(u.it))}</span></label>`).join('')
+      + '<div class="la"><button data-go>고른 문제 넣기</button><button data-every>모두 고르기</button></div>';
+    const boxes = [...box.querySelectorAll('input')];
+    boxes.forEach(cb => cb.onchange = () => {           // 지문을 고르면 딸린 문제도 함께
+      const i = +cb.dataset.i;
+      units.forEach((u, j) => { if(u.g === i) boxes[j].checked = cb.checked; });
+    });
+    box.querySelector('[data-every]').onclick = () => boxes.forEach(cb => cb.checked = true);
+    box.querySelector('[data-go]').onclick = () => {
+      const on = new Set(boxes.filter(cb => cb.checked).map(cb => +cb.dataset.i));
+      units.forEach((u, i) => { if(on.has(i) && u.g >= 0) on.add(u.g); });
+      const picked = units.filter((u, i) => on.has(i));
+      const n = picked.filter(u => u.it.type === 'q').length;
+      if(!n){ alert('문제를 하나 이상 골라 주세요.'); return; }
+      const renum = appendSheet(picked.map(u => u.src).join('\n\n'), r.data.images);
+      $('#lib').close();
+      msg(`'${r.title}'에서 문제 ${n}개를 끝에 넣었습니다.${renum ? ' 번호는 자동으로 다시 매깁니다.' : ''}`, true);
+    };
+    box.hidden = false;
+  }
+}
+$('#btnLib').onclick = async () => {
+  if(S.libId && libDirty) await libSync(true);
+  $('#libQ').value = ''; $('#lib').showModal(); drawLib();
+};
+$('#libClose').onclick = () => $('#lib').close();
+$('#libQ').oninput = () => drawLib();
+$('#libExport').onclick = async () => {
+  const sheets = await Lib.all();
+  if(!sheets.length){ alert('보관함이 비어 있습니다.'); return; }
+  const blob = new Blob([JSON.stringify({munjejiLibrary:1, saved:stamp(), sheets})], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `문제지 보관함 백업 ${stamp().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$('#libImport').onclick = () => $('#libFile').click();
+$('#libFile').onchange = async e => {
+  let added = 0, bad = 0;
+  const have = new Map((await Lib.all()).map(r => [r.id, r]));
+  for(const f of e.target.files){
+    try {
+      const j = JSON.parse(await f.text());
+      if(Array.isArray(j.sheets)){                 // 보관함 백업: 같은 문제지는 더 새것만 남긴다
+        for(const r of j.sheets){
+          if(!r || !r.id || !r.data) continue;
+          const old = have.get(r.id);
+          if(old && (old.saved || '') >= (r.saved || '')) continue;
+          await Lib.put(r); added++;
+        }
+      } else if(typeof j.text === 'string'){        // [파일로 내보내기] 한 문제지 하나
+        const keepS = S; adopt({...j, libId:''});
+        const rec = recOf(newId()); S = keepS;
+        await Lib.put(rec); added++;
+      } else bad++;
+    } catch(err){ bad++; }
+  }
+  e.target.value = '';
+  drawLib();
+  alert(`${added}개를 보관함에 넣었습니다.` + (bad ? `\n(${bad}개 파일은 읽지 못했습니다)` : ''));
 };
 window.addEventListener('resize', fitZoom);
 
 load();
 bindOptions();
 render();
+libStatus();
 if(document.fonts && document.fonts.ready) document.fonts.ready.then(render);  // 글꼴이 늦게 오면 다시 맞춘다
 })();
 </script>
