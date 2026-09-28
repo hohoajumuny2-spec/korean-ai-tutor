@@ -8449,6 +8449,32 @@ def delete_board_post_admin(post_id: str):
     if db: db.collection("board").document(post_id).delete()
     return {"success": True}
 
+
+@app.post("/api/admin/board/{post_id}/update", dependencies=[Depends(verify_admin)])
+async def update_board_post_admin(post_id: str, title: str = Form(...), desc: str = Form(""),
+                                  target_classes: str = Form(""),
+                                  remove_file: bool = Form(False),
+                                  file: Optional[UploadFile] = File(None)):
+    """올려 둔 공지를 고친다. 새 파일을 올리면 첨부를 바꾸고, remove_file 이면 첨부를 뗀다.
+    💡 고치기에는 알림을 다시 보내지 않는다(과제 고치기와 같다). 읽은 기록도 그대로 둔다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    title = (title or "").strip()
+    if not title:
+        return {"success": False, "detail": "공지 제목을 넣어주세요."}
+    ref = db.collection("board").document(post_id)
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 공지입니다."}
+    upd = {"title": title, "desc": desc, "target_classes": normalize_target_classes(target_classes),
+           "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    if file and file.filename:
+        upd["file_url"] = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
+    elif remove_file:
+        upd["file_url"] = ""
+    await asyncio.to_thread(ref.set, upd, True)
+    return {"success": True}
+
 @app.get("/api/lectures")
 def get_lectures():
     if db is None: return {"success": False, "lectures": []}
