@@ -30,7 +30,16 @@ from typing import List, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import google.generativeai as genai
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# 💡 서버 컴퓨터(클라우드)의 시계는 영국 표준시라, datetime.now()로 적은 제출·등록 시각이
+#    전부 9시간 이르게 저장되고 있었다(오후 1시 35분 공지가 '04:35'). 프로그램이 뜨자마자
+#    이 프로세스의 시간대를 한국 시각으로 바꿔, 모든 datetime.now()가 한국 시각이 되게 한다.
+#    'KST-9'는 시간대 자료 파일 없이도 되는 표기다(한국은 서머타임이 없다).
+os.environ["TZ"] = "KST-9"
+if hasattr(time, "tzset"):      # 윈도우에는 없다 — 윈도우 PC는 원래 한국 시각이다
+    time.tzset()
+
 import fitz
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
@@ -99,7 +108,8 @@ LEVELS = [
 #   갈래(slot)마다 따로 고를 수 있어 조합이 많아진다.
 #   level은 그 항목이 열리는 레벨. 1이면 처음부터 쓸 수 있다.
 AVATAR_SLOTS = [
-    {"key": "face",   "name": "캐릭터",  "icon": "🙂"},
+    {"key": "animal", "name": "동물",    "icon": "🐾"},
+    {"key": "face",   "name": "표정·소품", "icon": "🙂"},
     {"key": "color",  "name": "색깔",    "icon": "🎨"},
     {"key": "outfit", "name": "옷",      "icon": "👕"},
     {"key": "hat",    "name": "머리",    "icon": "🎩"},
@@ -112,6 +122,17 @@ AVATAR_SLOTS = [
 PHOTO_UNLOCK_LEVEL = 3
 
 AVATAR_ITEMS = {
+    # 💡 여우 한 가지만 있던 캐릭터를 동물 여러 종에서 고르게 한다. 모두 처음부터 열려 있다.
+    "animal": [
+        {"id": "fox",     "emoji": "🦊", "label": "여우",   "level": 1},
+        {"id": "cat",     "emoji": "🐱", "label": "고양이", "level": 1},
+        {"id": "dog",     "emoji": "🐶", "label": "강아지", "level": 1},
+        {"id": "bunny",   "emoji": "🐰", "label": "토끼",   "level": 1},
+        {"id": "bear",    "emoji": "🐻", "label": "곰",     "level": 1},
+        {"id": "panda",   "emoji": "🐼", "label": "판다",   "level": 1},
+        {"id": "hamster", "emoji": "🐹", "label": "햄스터", "level": 1},
+        {"id": "tiger",   "emoji": "🐯", "label": "호랑이", "level": 1},
+    ],
     "face": [
         {"id": "boy",      "emoji": "👦", "label": "남학생",   "level": 1},
         {"id": "girl",     "emoji": "👧", "label": "여학생",   "level": 1},
@@ -194,7 +215,7 @@ AVATAR_ITEMS = {
     ],
 }
 
-AVATAR_DEFAULTS = {"face": "boy", "color": "blue", "outfit": "none", "hat": "none",
+AVATAR_DEFAULTS = {"animal": "fox", "face": "boy", "color": "blue", "outfit": "none", "hat": "none",
                    "pet": "none", "badge": "none", "effect": "none"}
 
 
@@ -904,7 +925,8 @@ class AuthRequest(BaseModel):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok"}
+    # 서버가 한국 시각으로 도는지 바로 확인할 수 있게 지금 시각도 함께 준다
+    return {"status": "ok", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
 @app.post("/api/auth")
@@ -1149,14 +1171,34 @@ def parse_explanation_map(raw) -> dict:
     return out
 
 
-def explanations_for(kind: str, title: str) -> dict:
-    """그 과제·시험·퀴즈에 저장해둔 문항별 해설을 꺼낸다. 없으면 빈 묶음."""
+def homework_expl_locked(hw: dict) -> bool:
+    """과제 해설·해답지를 아직 학생에게 잠가 둘 때인지.
+
+    💡 해설에는 보통 정답이 적혀 있다('따라서 ③이 적절하다'). 제출하자마자 해설을 보면
+       답을 고쳐 다시 낼 수 있으므로, 기한이 있는 과제는 마감이 지난 뒤에 연다.
+       기한이 없는 과제는 원장님 뜻에 따라 지금처럼 바로 보여준다."""
+    dl = str((hw or {}).get("deadline") or "").strip()
+    return bool(dl) and not deadline_passed(dl)
+
+
+def homework_doc(title: str) -> dict:
+    if db is None or not title:
+        return {}
+    d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+def explanations_for(kind: str, title: str, for_student: bool = False) -> dict:
+    """그 과제·시험·퀴즈에 저장해둔 문항별 해설을 꺼낸다. 없으면 빈 묶음.
+    for_student 면 마감 전인 과제의 해설은 비워서 준다 (homework_expl_locked)."""
     if db is None or not title:
         return {}
     try:
         if kind in ("과제 제출", "homework"):
-            d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
-            return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
+            hw = homework_doc(title)
+            if for_student and homework_expl_locked(hw):
+                return {}
+            return parse_explanation_map(hw.get("explanations"))
         if kind in ("모의고사", "exam"):
             d = db.collection("exams").document(sanitize_doc_id(title)).get()
             return parse_explanation_map((d.to_dict() or {}).get("explanations")) if d.exists else {}
@@ -1347,8 +1389,20 @@ def admin_student_reports(student_name: str):
     return {"success": True, "reports": rows[:600]}
 
 
+def is_admin_request(x_admin_token: Optional[str]) -> bool:
+    """관리자 토큰이 실려 온 요청인지 (학생 화면과 같은 주소를 원장님도 쓸 때 가른다)."""
+    return bool(x_admin_token) and _resolve_admin_token(x_admin_token) is not None
+
+
+def hide_answers_for_student(kind: str, x_admin_token: Optional[str] = None) -> bool:
+    """💡 과제는 학생에게 정답을 보여주지 않고 해설만 보여준다. 답을 고쳐 다시 낼
+    수 있으므로, 정답이 보이면 베껴서 고치는 꼴이 된다. 원장님은 그대로 본다."""
+    return kind == "과제 제출" and not is_admin_request(x_admin_token)
+
+
 @app.get("/api/student/view_result")
-def view_result(student_name: str, title: str, kind: str):
+def view_result(student_name: str, title: str, kind: str,
+                x_admin_token: Optional[str] = Header(None)):
     """제출한 뒤 나갔다 와도, 채점 직후 봤던 문항별 결과를 그대로 다시 본다.
 
     💡 나중에 원장님이 정답표를 고쳐도 이 학생이 실제로 맞고 틀렸던 결과는
@@ -1367,7 +1421,12 @@ def view_result(student_name: str, title: str, kind: str):
         return {"success": False, "detail": "이 항목을 제출한 기록이 없습니다."}
 
     qs = task_source_questions(k, task)
-    expl = explanations_for(k, task)
+    hide = hide_answers_for_student(k, x_admin_token)
+    if hide:
+        qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
+    expl = explanations_for(k, task, for_student=hide)
+    hw_for_lock = homework_doc(task) if (hide and k == "과제 제출") else {}
+    expl_locked = bool(hw_for_lock) and homework_expl_locked(hw_for_lock)
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
     unsure = {int(u) for u in (rep.get("unsure") or []) if _num(u) is not None}
     mine = rep.get("mine") or []
@@ -1395,7 +1454,16 @@ def view_result(student_name: str, title: str, kind: str):
         "score": rep.get("score", ""), "total_score": rep.get("total_score", ""),
         "correct_count": rep.get("correct_count", ""), "question_count": len(items),
         "retry": rep.get("retry") or {},
-        "files": exam_paper_files(k, task),
+        # 정답을 가려 둔 동안에는 해답지 주소도 보내지 않는다
+        "files": {kk: v for kk, v in exam_paper_files(k, task).items() if not (hide and kk == "ans_pdf_url")},
+        "answers_hidden": hide,
+        "first_score": rep.get("first_score", ""),
+        "updated_at": rep.get("updated_at", ""),
+        "edit_count": rep.get("edit_count", 0),
+        "late": bool(rep.get("late")), "late_edit": bool(rep.get("late_edit")),
+        "deadline": rep.get("deadline", ""),
+        # 마감 전이라 해설을 잠가 둔 과제 — 화면에 '마감 후 공개'라고 알려준다
+        "expl_locked": expl_locked, "expl_open_at": hw_for_lock.get("deadline", "") if expl_locked else "",
         "items": items,
     }
 
@@ -1440,12 +1508,14 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         title = r.get("task_name", "")
         # 💡 번호만 알려주면 왜 틀렸는지 알 수 없다. 저장해둔 문항별 해설을 같이 붙여
         #    학생이 눌러서 바로 확인할 수 있게 한다.
-        expl = explanations_for(kind, title)
+        expl = explanations_for(kind, title, for_student=True)
         # 💡 전부 맞힌 시험도 해설이 있으면 남겨 둔다 — 찍어서 맞힌 걸 되짚어 보려면
         #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
         if not wrongs and not expl:
             continue
         qs = task_source_questions(kind, title)
+        if kind == "과제 제출":   # 과제는 정답 없이 해설만
+            qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
         def make_item(no):
             q = qs[no - 1] if 0 < no <= len(qs) else {}
             return {"no": no, "text": q.get("text", ""),
@@ -2347,7 +2417,10 @@ def add_xp(student_name: str, amount: int):
 
 
 
-def task_visible_to_student(subject: str, target_class, student_name: str) -> bool:
+_NO_INFO = object()
+
+
+def task_visible_to_student(subject: str, target_class, student_name: str, info=_NO_INFO) -> bool:
     """이 자료가 이 학생에게 보여도 되는지.
 
     - 원장님 체험 신분은 전부 본다 (점검하려면 다 보여야 한다).
@@ -2358,7 +2431,9 @@ def task_visible_to_student(subject: str, target_class, student_name: str) -> bo
     """
     if is_preview(student_name):
         return True
-    info = student_targeting_info(student_name)
+    # 💡 여러 자료를 한꺼번에 따질 때는 명단을 한 번만 읽어 넘겨받는다 (info)
+    if info is _NO_INFO:
+        info = student_targeting_info(student_name)
     subj_key = normalize_subject(subject) if subject else ""
     if subj_key and info is not None and subj_key not in info["subjects"]:
         return False
@@ -5969,11 +6044,35 @@ def remove_push_subscription(endpoint: str):
     db.collection("push_subs").document(doc_id).delete()
 
 
-def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> bool:
-    """구독 하나에 실제로 쏜다. 기기가 사라졌으면(410/404) False를 돌려줘 정리하게 한다."""
+_vapid_signer_cache = None
+LAST_PUSH_ERROR = ""        # 원장님 '테스트' 단추가 실패 까닭을 보여줄 수 있게 남겨 둔다
+
+
+def get_vapid_signer():
+    """저장해 둔 개인키(PEM 글자)를 서명용 키 객체로 바꾼다.
+
+    💡 예전에는 PEM 글자를 pywebpush 에 그대로 넘겼다. pywebpush 는 그 글자를 PEM으로
+       읽지 못해('Could not deserialize key data') 보내기 전에 매번 실패했고, 그 실패를
+       '보냄'으로 세고 있어서 알림이 한 번도 가지 않았는데도 아무도 몰랐다."""
+    global _vapid_signer_cache
+    if _vapid_signer_cache is None:
+        keys = get_vapid_keys()
+        pem = keys.get("private_pem", "") if keys else ""
+        if not pem:
+            return None
+        _vapid_signer_cache = Vapid01.from_pem(pem.encode() if isinstance(pem, str) else pem)
+    return _vapid_signer_cache
+
+
+def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> str:
+    """구독 하나에 실제로 쏜다.
+    'sent' 보냄 / 'gone' 기기가 사라짐(410·404, 정리한다) / 'error' 그 밖의 실패(구독은 남긴다)."""
+    global LAST_PUSH_ERROR
     keys = get_vapid_keys()
-    if not keys:
-        return True
+    signer = get_vapid_signer()
+    if not keys or signer is None:
+        LAST_PUSH_ERROR = "알림 키를 불러오지 못했습니다."
+        return "error"
     payload = json.dumps({"title": title, "body": body, "url": url or "/", "tag": tag or "logyedu"})
     subscription_info = {
         "endpoint": sub_doc["endpoint"],
@@ -5982,20 +6081,25 @@ def _push_one(sub_doc, title: str, body: str, url: str, tag: str) -> bool:
     try:
         pywebpush.webpush(
             subscription_info=subscription_info, data=payload,
-            vapid_private_key=keys["private_pem"],
+            vapid_private_key=signer,
             vapid_claims={"sub": keys.get("subject", "mailto:owner@logyedu.co.kr")},
+            # 휴대폰이 꺼져 있어도 하루 동안은 기다렸다 켜지면 전한다
+            ttl=86400,
             timeout=6,
         )
-        return True
+        return "sent"
     except pywebpush.WebPushException as e:
         status = getattr(e.response, "status_code", None)
         if status in (404, 410):
-            return False   # 기기에서 알림을 껐거나 앱을 지웠다 — 조용히 정리한다
-        print("푸시 전송 실패:", e)
-        return True
+            return "gone"   # 기기에서 알림을 껐거나 앱을 지웠다 — 조용히 정리한다
+        body_txt = e.response.text[:200] if getattr(e, "response", None) is not None else ""
+        LAST_PUSH_ERROR = f"{status or ''} {body_txt or e}".strip()
+        print("푸시 전송 실패:", LAST_PUSH_ERROR)
+        return "error"
     except Exception as e:
-        print("푸시 전송 실패:", e)
-        return True
+        LAST_PUSH_ERROR = f"{type(e).__name__}: {e}"[:300]
+        print("푸시 전송 실패:", LAST_PUSH_ERROR)
+        return "error"
 
 
 def _push_to_docs(docs, title: str, body: str, url: str, tag: str) -> int:
@@ -6004,9 +6108,10 @@ def _push_to_docs(docs, title: str, body: str, url: str, tag: str) -> int:
         row = d.to_dict() or {}
         if not row.get("endpoint"):
             continue
-        if _push_one(row, title, body, url, tag):
+        result = _push_one(row, title, body, url, tag)
+        if result == "sent":
             sent += 1
-        else:
+        elif result == "gone":
             db.collection("push_subs").document(d.id).delete()
     return sent
 
@@ -6048,9 +6153,10 @@ def send_push_to_audience(subject: str, target_class, title: str, body: str, url
         name = row.get("student_name", "")
         if not seen_students.get(name):
             continue
-        if _push_one(row, title, body, url, tag):
+        result = _push_one(row, title, body, url, tag)
+        if result == "sent":
             sent += 1
-        else:
+        elif result == "gone":
             db.collection("push_subs").document(d.id).delete()
     return sent
 
@@ -6089,10 +6195,153 @@ async def push_unsubscribe(req: PushUnsubscribeReq):
 @app.post("/api/admin/push_test", dependencies=[Depends(verify_admin)])
 async def push_test(student_name: str = Form(...)):
     """원장님이 알림이 실제로 뜨는지 시험 삼아 한 번 보내본다."""
+    global LAST_PUSH_ERROR
+    LAST_PUSH_ERROR = ""
     n = await asyncio.to_thread(
         send_push_to_student, student_name.strip(), "로지에듀",
         "테스트 알림입니다. 이게 보이면 정상 동작 중이에요!", "/", "test")
+    # 💡 보내다 실패한 것을 '보냄'으로 세지 않는다 — 실패하면 까닭을 그대로 알려준다
+    if n == 0 and LAST_PUSH_ERROR:
+        return {"success": False, "sent": 0, "detail": LAST_PUSH_ERROR}
     return {"success": True, "sent": n}
+
+
+def push_status_by_student() -> dict:
+    """학생마다 알림을 켠 기기가 몇 대인지, 마지막으로 켠 때가 언제인지 모은다."""
+    out = {}
+    if db is None:
+        return out
+    for d in db.collection("push_subs").stream():
+        row = d.to_dict() or {}
+        name = row.get("student_name", "")
+        if not name:
+            continue
+        cur = out.setdefault(name, {"devices": 0, "updated_at": ""})
+        cur["devices"] += 1
+        cur["updated_at"] = max(cur["updated_at"], row.get("updated_at", ""))
+    return out
+
+
+@app.get("/api/admin/push_status", dependencies=[Depends(verify_admin)])
+async def push_status():
+    """원장님 학생 명단에 '알림 켬' 표시를 붙이려고, 알림을 켠 학생 목록을 준다."""
+    return {"success": True, "students": await asyncio.to_thread(push_status_by_student)}
+
+
+# ─────────────────────────────────────────────────────────
+# 예전 기록의 시각 바로잡기 (한 번만 쓰는 작업)
+#   2026-09-27 오전까지 서버 시계가 영국 표준시라, 그때까지 저장된 시각이 전부
+#   9시간 이르다. 서버가 스스로 적은 시각 칸만 골라 9시간을 더한다.
+#   · 원장님이 직접 적은 값(과제 마감 '2026-10-05T18:00', 시험 날짜 등)은 모양이 달라 건드리지 않는다
+#   · 바꾸기 전 문서를 통째로 backup_tz_fix 에 남긴다. 백업이 있는 문서는 이미 고친 것이라
+#     다시 돌려도 두 번 더해지지 않는다(백업과 수정을 한 묶음으로 저장한다).
+# ─────────────────────────────────────────────────────────
+TZ_FIX_KEYS = {"created_at", "updated_at", "submitted_at", "uploaded_at", "used_at",
+               "requested_at", "decided_at", "last_at", "at", "record_eval_at"}
+TZ_FIX_CUTOFF = "2026-09-27 06:00"      # 이보다 이른 값은 옛 서버(영국 표준시)가 적은 것
+TZ_FIX_BACKUP = "backup_tz_fix"
+TZ_FIX_SKIP = {TZ_FIX_BACKUP, "admin_sessions", "chat_logs"}
+_TZ_FIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$")
+
+
+def _tz_shift(value, key=None):
+    """(고친 값, 고친 칸 수). 사전·목록 안쪽(제출 파일 이력 등)까지 따라 들어간다."""
+    if isinstance(value, dict):
+        out, n = {}, 0
+        for k, v in value.items():
+            out[k], c = _tz_shift(v, k)
+            n += c
+        return out, n
+    if isinstance(value, list):
+        out, n = [], 0
+        for v in value:
+            nv, c = _tz_shift(v, None)
+            out.append(nv)
+            n += c
+        return out, n
+    if (key in TZ_FIX_KEYS and isinstance(value, str) and _TZ_FIX_RE.match(value)
+            and value[:16] < TZ_FIX_CUTOFF):
+        fmt = "%Y-%m-%d %H:%M:%S" if len(value) == 19 else "%Y-%m-%d %H:%M"
+        return (datetime.strptime(value, fmt) + timedelta(hours=9)).strftime(fmt), 1
+    return value, 0
+
+
+def _tz_backup_id(coll: str, doc_id: str) -> str:
+    return hashlib.sha1(f"{coll}/{doc_id}".encode("utf-8")).hexdigest()
+
+
+def run_tz_fix(apply: bool) -> dict:
+    done_ids = {d.id for d in db.collection(TZ_FIX_BACKUP).select(["collection"]).stream()}
+    per_coll, samples = {}, []
+    docs_changed = fields_changed = 0
+    batch, pending = db.batch(), 0
+    for coll_ref in db.collections():
+        coll = coll_ref.id
+        if coll in TZ_FIX_SKIP:
+            continue
+        for d in coll_ref.stream():
+            bid = _tz_backup_id(coll, d.id)
+            if bid in done_ids:
+                continue
+            data = d.to_dict() or {}
+            changes, n = {}, 0
+            for k, v in data.items():
+                nv, c = _tz_shift(v, k)
+                if c:
+                    changes[k] = nv
+                    n += c
+            if not n:
+                continue
+            docs_changed += 1
+            fields_changed += n
+            per_coll[coll] = per_coll.get(coll, 0) + 1
+            if len(samples) < 5:
+                k0 = next(iter(changes))
+                if isinstance(data[k0], str):
+                    samples.append({"collection": coll, "field": k0, "before": data[k0], "after": changes[k0]})
+            if apply:
+                batch.set(db.collection(TZ_FIX_BACKUP).document(bid),
+                          {"collection": coll, "doc_id": d.id, "data": data,
+                           "fixed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                batch.set(d.reference, changes, merge=True)
+                pending += 1
+                if pending >= 200:
+                    batch.commit()
+                    batch, pending = db.batch(), 0
+    if apply and pending:
+        batch.commit()
+    if apply and docs_changed:
+        db.collection("settings").document("tz_fix").set({
+            "done": True, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "docs": docs_changed, "fields": fields_changed})
+    return {"success": True, "applied": apply, "docs": docs_changed, "fields": fields_changed,
+            "collections": per_coll, "samples": samples}
+
+
+@app.get("/api/admin/tz_fix/status", dependencies=[Depends(verify_admin)])
+def tz_fix_status():
+    """이미 바로잡았는지만 본다. 관리자 화면을 열 때마다 전체를 훑지 않으려고 따로 둔다."""
+    if db is None:
+        return {"success": False}
+    doc = db.collection("settings").document("tz_fix").get()
+    row = (doc.to_dict() or {}) if doc.exists else {}
+    return {"success": True, "done": bool(row.get("done")),
+            "at": row.get("at", ""), "docs": row.get("docs", 0), "fields": row.get("fields", 0)}
+
+
+@app.get("/api/admin/tz_fix/preview", dependencies=[Depends(verify_admin)])
+async def tz_fix_preview():
+    """바꾸지 않고, 몇 건이 어떻게 바뀔지만 세어 본다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    return await asyncio.to_thread(run_tz_fix, False)
+
+
+@app.post("/api/admin/tz_fix/apply", dependencies=[Depends(verify_admin)])
+async def tz_fix_apply():
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    return await asyncio.to_thread(run_tz_fix, True)
 
 
 GRADE_KINDS = {
@@ -6316,7 +6565,7 @@ async def retry_info(req: RetryInfoReq):
 
     wrongs = sorted(int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None)
     retry = rep.get("retry") or {}
-    expl = await asyncio.to_thread(explanations_for, kind, title)
+    expl = await asyncio.to_thread(explanations_for, kind, title, True)
     # 💡 문항마다 1~5번 중 고르는지, 글자로 직접 쓰는지, 정해진 정답이 없는
     #    서술형인지가 달라 다시 풀기 화면도 그에 맞게 그려야 한다.
     qs = await asyncio.to_thread(task_source_questions, kind, title)
@@ -6403,7 +6652,7 @@ async def retry_submit(req: RetrySubmitReq):
         "wrongs": sorted(still),
         "fixed": sorted(fixed),
         "unsure": sorted(set(unsure)),
-        "rewarded": bool(prev.get("rewarded")),
+        "rewarded": bool(prev.get("rewarded") or rep.get("retry_rewarded")),
     }
 
     # 💡 틀린 것을 하나도 남김없이 고쳤을 때 포인트를 준다. 시험 하나당 한 번만 —
@@ -6433,7 +6682,8 @@ async def retry_submit(req: RetrySubmitReq):
         "all_fixed": bool(was_wrong) and not still,
         "xp_gain": xp_gain,
         "level_up": lvl_up,
-        "answers": {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
+        # 과제는 정답을 보여주지 않는다 (해설만)
+        "answers": {} if kind == "과제 제출" else {str(n): str(key[n - 1]) for n in sorted(was_wrong) if 1 <= n <= len(key)},
     }
 
 
@@ -6911,10 +7161,13 @@ def strip_homework_answers(hw: dict) -> dict:
 
 
 @app.get("/api/homeworks")
-def get_homeworks(student_name: str = ""):
+def get_homeworks(student_name: str = "", x_admin_token: Optional[str] = Header(None)):
     if db is None:
         return {"success": False, "homeworks": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if not is_admin_request(x_admin_token) or student_name:
+        # 💡 원장님이 숨긴 과제(지난 과제 등)는 학생 화면에 보이지 않는다. 원장님 관리 화면만 본다.
+        rows = [h for h in rows if not h.get("hidden")]
     if student_name:
         # 💡 대상 반을 고른 과제는 그 반 학생에게만 보인다. 대상을 안 고른
         #    과제(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
@@ -6923,6 +7176,28 @@ def get_homeworks(student_name: str = ""):
         # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
         #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
         rows = [strip_homework_answers(h) for h in rows]
+        # 💡 해답지 파일도 정답이다. 주소가 응답에 실려 있으면 화면에서 가려도 열어볼 수
+        #    있으므로, 낸 과제에만 — 기한이 있으면 마감이 지난 뒤에만 — 실어 보낸다.
+        name = student_name.strip()
+        submitted = set()
+        if not is_preview(name):
+            submitted = {(r.to_dict() or {}).get("task_name", "") for r in
+                         db.collection("reports").where("student_name", "==", name)
+                         .where("type", "==", "과제 제출").stream()}
+        for h in rows:
+            locked = homework_expl_locked(h)
+            h["expl_locked"] = locked
+            h["expl_open_at"] = h.get("deadline", "") if locked else ""
+            hold = locked or (h.get("title") not in submitted and not is_preview(name))
+            if hold:
+                # 파일이 있다는 것만 알려준다 — 낸 뒤(기한이 있으면 마감 뒤) 열린다
+                h["answer_file_waiting"] = bool(h.get("answer_file"))
+                h["answer_file"] = ""
+                h["answer_text"] = ""
+    elif not is_admin_request(x_admin_token):
+        # 💡 이름 없이 주소만 열어도 정답표가 통째로 보이던 구멍을 막는다.
+        #    정답은 관리자 토큰이 있을 때(원장님 과제 관리 화면)만 보낸다.
+        rows = [{**strip_homework_answers(h), "answer_file": "", "answer_text": ""} for h in rows]
     return {"success": True, "homeworks": rows}
 
 
@@ -6948,6 +7223,12 @@ def is_skip_slot(key_slot) -> bool:
     return str(key_slot or "").strip() in SKIP_MARKS
 
 
+def now_kst() -> datetime:
+    """한국 시각. 원장님이 적는 마감 시각은 한국 시각인데, 서버 컴퓨터의 시계는
+    나라가 다를 수 있다(클라우드 서버는 보통 영국 표준시). 마감을 따질 때는 이걸 쓴다."""
+    return datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+
+
 def deadline_passed(deadline) -> bool:
     """마감 시한이 지났는지. 시한을 안 정했으면(빈 값) 늘 열려 있다.
 
@@ -6963,10 +7244,40 @@ def deadline_passed(deadline) -> bool:
             # 날짜만 적었으면 그날 끝까지 열어 둔다
             if fmt == "%Y-%m-%d":
                 when = when.replace(hour=23, minute=59, second=59)
-            return datetime.now() > when
+            return now_kst() > when
         except ValueError:
             continue
     return False            # 읽지 못한 값 때문에 못 풀게 막지는 않는다
+
+
+def deadline_label(deadline) -> str:
+    """'2026-10-05T18:00' → '10/5(일) 18:00' — 알림 글에 넣기 좋게 짧게."""
+    t = str(deadline or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(t[:16] if fmt.endswith("%M") else t[:10], fmt)
+        except ValueError:
+            continue
+        day = f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})"
+        return day if fmt == "%Y-%m-%d" else f"{day} {d.strftime('%H:%M')}"
+    return t
+
+
+def homework_late_fields(hw: dict, prev: Optional[dict]) -> dict:
+    """과제는 마감이 지나도 낼 수 있다. 대신 늦게 냈다는 사실을 기록에 남긴다.
+
+    · 처음 낸 것이 마감 뒤면 late=True ('기한 후 제출')
+    · 마감 안에 냈다가 마감 뒤에 고쳐 낸 것은 late_edit=True ('기한 후 수정') —
+      처음 제출은 제때였으니 '기한 후 제출'로 바꾸지는 않는다."""
+    dl = str((hw or {}).get("deadline") or "").strip()
+    if not dl:
+        return {}
+    passed = deadline_passed(dl)
+    if prev is None:
+        return {"deadline": dl, "late": passed}
+    if passed and not prev.get("late"):
+        return {"late_edit": True}
+    return {}
 
 
 def answer_slots(key_slot) -> list:
@@ -7197,6 +7508,8 @@ async def create_homework(
     old_title: str = Form(""),
     # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 대상.
     target_classes: str = Form(""),
+    # 💡 제출 기한 ('2026-10-05T18:00'). 비우면 기한 없음. 지나도 낼 수는 있고 '기한 후 제출'로 남는다.
+    deadline: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -7206,6 +7519,7 @@ async def create_homework(
     answer_list = parse_answer_list(answers)
     safe_title = sanitize_doc_id(title)
     kind_norm = normalize_homework_kind(kind)
+    deadline_str = str(deadline or "").strip().replace(" ", "T")[:16]
     old_title = (old_title or "").strip()
 
     # 💡 같은 제목이면 그 문서에서, 제목을 바꿔 고친 경우엔 '예전 제목' 문서에서
@@ -7244,15 +7558,19 @@ async def create_homework(
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
+                "deadline": deadline_str,
+                # 고치기로 저장해도 숨겨 둔 과제는 계속 숨긴다
+                "hidden": bool(prev_data.get("hidden", False)),
                 "created_at": created_at,
             }
         )
     )
     if is_new:
         kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
+        due = f" 마감 {deadline_label(deadline_str)}." if deadline_str else ""
         await asyncio.to_thread(
             send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
-            f"'{title}' {kind_label}가 올라왔어요. 확인해보세요!", "/#prog-classroom", "homework")
+            f"'{title}' {kind_label}가 올라왔어요.{due} 확인해보세요!", "/#prog-classroom", "homework")
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
@@ -7301,19 +7619,11 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     if not key:
         return {"success": False, "detail": "이 과제에는 정답이 등록되어 있지 않아 자동 채점을 할 수 없습니다. 선생님께 알려주세요."}
 
-    existing = await asyncio.to_thread(
-        lambda: list(
-            db.collection("reports")
-            .where("student_name", "==", name)
-            .where("task_name", "==", req.title)
-            .where("type", "==", "과제 제출")
-            .limit(1)
-            .stream()
-        )
-    )
-    허락 = await asyncio.to_thread(retry_allowed, "과제 제출", req.title, name)
-    if existing and not (허락 or is_preview(name)):
-        return {"success": False, "detail": "이미 제출한 과제입니다."}
+    # 💡 과제는 한 번 내고 끝이 아니라 답을 고쳐 다시 낼 수 있다. 채점 결과에
+    #    정답은 보여주지 않으므로(해설만 보인다) 다시 내도 답을 베껴 고치는 꼴이
+    #    되지 않는다. 다시 내면 가장 나중 기록을 새 채점으로 바꾸고, 처음 점수는
+    #    first_* 로 남겨 원장님이 처음 실력과 고친 결과를 함께 볼 수 있게 한다.
+    prev_id, prev = await asyncio.to_thread(find_report, name, req.title, "과제 제출")
 
     # 💡 학생 답안은 자리(문항 번호)가 생명이라 parse_answer_slots 로 읽는다.
     #    예전에는 parse_answer_list 를 써서, 한 문항만 비워도 그 뒤가 전부 밀려
@@ -7336,28 +7646,59 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     total = scored
     score = round(correct / total * 100) if total else 0
     kind_label = HOMEWORK_KINDS.get(normalize_homework_kind(data.get("kind")), "수업 과제")
-    await asyncio.to_thread(
-        lambda: save_report({
-            "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "student_name": name, "school": req.school, "grade": req.grade,
-            "task_name": req.title, "type": "과제 제출",
-            "homework_kind": data.get("kind", "class"),
-            "score": f"{correct}/{total}",
-            "percent": score, "wrongs": wrongs,
-            # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
-            "unsure": unsure,
-            # 나중에 결과를 다시 볼 수 있으려면 실제로 고른 답도 남아 있어야 한다
-            "mine": mine,
-        })
-    )
-    send_telegram_message(f"📘 [{kind_label}]\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
-    if 허락:
-        await asyncio.to_thread(consume_retry_permission, "과제 제출", req.title, name)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result = {
+        "score": f"{correct}/{total}",
+        "percent": score, "wrongs": wrongs,
+        # 찍어서 맞힌 것과 진짜 아는 것을 구분하려면 '모름'을 따로 남겨야 한다
+        "unsure": unsure,
+        # 나중에 결과를 다시 볼 수 있으려면 실제로 고른 답도 남아 있어야 한다
+        "mine": mine,
+    }
+    edited = bool(prev_id) and not is_preview(name)
+    late_info = homework_late_fields(data, prev if edited else None)
+    if edited:
+        upd = dict(result)
+        upd.update(late_info)
+        upd["updated_at"] = now
+        upd["edit_count"] = int(prev.get("edit_count") or 0) + 1
+        if "first_score" not in prev:
+            upd["first_score"] = prev.get("score", "")
+            upd["first_percent"] = prev.get("percent", "")
+            upd["first_wrongs"] = prev.get("wrongs") or []
+        # 틀린 문항이 바뀌었으니 '틀린 문항 다시 풀기' 기록은 새로 시작한다.
+        # 다 고쳐서 받은 포인트는 다시 받지 못하게 표시만 남긴다.
+        old_retry = prev.get("retry") or {}
+        upd["retry"] = firestore.DELETE_FIELD
+        if old_retry.get("rewarded") or prev.get("retry_rewarded"):
+            upd["retry_rewarded"] = True
+        await asyncio.to_thread(lambda: db.collection("reports").document(prev_id).update(upd))
+        first = prev.get("first_score") or prev.get("score", "")
+        send_telegram_message(f"✏️ [{kind_label} 수정 제출]\n{name} 학생이 '{req.title}' 답을 고쳐 다시 냈습니다. ({correct}/{total}, 처음 {first})")
+    else:
+        await asyncio.to_thread(
+            lambda: save_report({
+                "submitted_at": now,
+                "student_name": name, "school": req.school, "grade": req.grade,
+                "task_name": req.title, "type": "과제 제출",
+                "homework_kind": data.get("kind", "class"),
+                **result,
+                **late_info,
+            })
+        )
+        late_tag = " ⏰기한 후 제출" if late_info.get("late") else ""
+        send_telegram_message(f"📘 [{kind_label}]{late_tag}\n{name} 학생이 '{req.title}'을(를) 제출했습니다. ({correct}/{total})")
     # 💡 채점 직후가 가장 잘 기억나는 때다. 번호를 눌러 바로 해설을 볼 수 있게 함께 보낸다.
+    #    정답(answers)은 보내지 않는다 — 과제는 정답 없이 해설만 보여주고,
+    #    틀린 문항은 학생이 답을 고쳐 다시 내게 한다.
+    #    기한이 있는 과제는 해설에 적힌 답을 보고 고쳐 내지 못하게, 마감 전에는 점수와
+    #    틀린 번호만 주고 해설은 마감 뒤에 연다.
     return {"success": True, "correct": correct, "total": total, "score": score,
-            "wrongs": wrongs, "unsure": unsure, "mine": mine,
-            "answers": key, "kind": data.get("kind", "class"),
-            "explanations": parse_explanation_map(data.get("explanations"))}
+            "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
+            "late": bool(late_info.get("late") or late_info.get("late_edit")),
+            "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
+            "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
+            "expl_locked": homework_expl_locked(data), "expl_open_at": data.get("deadline", "") if homework_expl_locked(data) else ""}
 
 
 @app.delete("/api/admin/homework/{title}")
@@ -7365,6 +7706,25 @@ def delete_homework(title: str, _: bool = Depends(verify_admin)):
     if db:
         db.collection("homeworks").document(title).delete()
     return {"success": True}
+
+
+class HomeworkHideReq(BaseModel):
+    titles: list = []
+    hidden: bool = True
+
+
+@app.post("/api/admin/homework/hide", dependencies=[Depends(verify_admin)])
+def hide_homeworks(req: HomeworkHideReq):
+    """지난 과제를 학생 화면에서 숨기거나 다시 보이게 한다. 지우는 게 아니라 제출 기록 · 채점은 그대로 남는다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    n = 0
+    for t in [str(x) for x in (req.titles or [])][:500]:
+        ref = db.collection("homeworks").document(sanitize_doc_id(t))
+        if ref.get().exists:
+            ref.set({"hidden": bool(req.hidden)}, merge=True)
+            n += 1
+    return {"success": True, "count": n}
 
 
 @app.post("/api/homework/submit")
@@ -7395,20 +7755,57 @@ async def submit_homework(
             file_bytes = await f.read()
             file_urls.append(await asyncio.to_thread(save_bytes, file_bytes, f.filename, "homeworks", f.content_type))
 
-    await asyncio.to_thread(
-        lambda: save_report(
-            {
-                "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "student_name": student_name,
-                "school": school,
-                "grade": grade,
-                "task_name": title,
-                "type": "과제 제출",
-                "score": "제출완료",
+    if not file_urls:
+        return {"success": False, "detail": "제출할 파일을 하나 이상 첨부해주세요."}
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    hw_doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(sanitize_doc_id(title)).get())
+    hw_data = (hw_doc.to_dict() or {}) if hw_doc.exists else {}
+    late_info = {}
+    if existing and not is_preview(student_name):
+        old = existing[0].to_dict() or {}
+        # OMR로 채점된 과제는 정답을 이미 봤으므로 여기서 덮어쓰지 않는다
+        # (다시 내려면 지금처럼 원장님 재응시 허락을 받는다)
+        if "percent" in old:
+            return {"success": False, "detail": "OMR로 채점된 과제는 다시 낼 수 없습니다. 원장님께 재응시를 부탁하세요."}
+        late_info = homework_late_fields(hw_data, old)
+        # 💡 파일 과제는 한 번 내고 끝이 아니라 고쳐서 다시 낼 수 있다.
+        #    기록을 하나 더 쌓으면 원장님 화면에 같은 과제가 여러 줄 뜨므로,
+        #    처음 기록을 새 파일로 바꾸고 예전 파일은 이력으로만 남긴다.
+        #    처음 낸 시각(submitted_at)은 그대로 두어 제출 순서가 뒤바뀌지 않게 한다.
+        history = list(old.get("file_history") or [])
+        if old.get("file_url"):
+            history.append({"file_url": old.get("file_url"),
+                            "submitted_at": old.get("updated_at") or old.get("submitted_at", "")})
+        await asyncio.to_thread(
+            lambda: existing[0].reference.update({
                 "file_url": ",".join(file_urls),
-            }
+                "updated_at": now,
+                "edit_count": int(old.get("edit_count") or 0) + 1,
+                "file_history": history[-10:],
+                **late_info,
+            })
         )
-    )
+        send_telegram_message(f"✏️ [과제 수정 제출]\n{student_name} 학생이 '{title}' 과제를 고쳐서 다시 냈습니다. (파일 {len(file_urls)}개)")
+    else:
+        late_info = homework_late_fields(hw_data, None)
+        if late_info.get("late"):
+            send_telegram_message(f"⏰ [기한 후 제출]\n{student_name} 학생이 '{title}' 과제를 마감({deadline_label(late_info.get('deadline'))}) 뒤에 냈습니다.")
+        await asyncio.to_thread(
+            lambda: save_report(
+                {
+                    "submitted_at": now,
+                    "student_name": student_name,
+                    "school": school,
+                    "grade": grade,
+                    "task_name": title,
+                    "type": "과제 제출",
+                    "score": "제출완료",
+                    "file_url": ",".join(file_urls),
+                    **late_info,
+                }
+            )
+        )
 
     lvl_up = None
     if not existing:
@@ -7420,8 +7817,9 @@ async def submit_homework(
             lambda: add_xp(student_name, XP_REWARD_HOMEWORK)
         )
 
-    doc = await asyncio.to_thread(lambda: db.collection("homeworks").document(title).get())
-    return {"success": True, "answer_file": doc.to_dict().get("answer_file", "") if doc.exists else "", "level_up": lvl_up}
+    return {"success": True, "answer_file": "" if homework_expl_locked(hw_data) else hw_data.get("answer_file", ""),
+            "level_up": lvl_up,
+            "late": bool(late_info.get("late") or late_info.get("late_edit"))}
 
 @app.get("/api/board")
 def get_board(student_name: str = ""):
@@ -7432,18 +7830,767 @@ def get_board(student_name: str = ""):
         #    공지(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
         rows = [r for r in rows
                 if task_visible_to_student("", task_target_classes(r), student_name)]
+        # 💡 누가 읽었는지(read_by)는 학생에게 보낼 필요가 없다 — 나만 읽었는지 알려준다.
+        name = student_name.strip()
+        for r in rows:
+            r["is_read"] = name in (r.pop("read_by", None) or [])
+    else:
+        for r in rows:
+            r["read_count"] = len(r.pop("read_by", None) or [])
     return {"success": True, "posts": rows}
+
+
+class BoardReadReq(BaseModel):
+    student_name: str
+    post_ids: list = []
+
+
+@app.post("/api/board/read")
+def mark_board_read(req: BoardReadReq):
+    """학생이 공지 목록을 열어 본 공지를 '읽음'으로 남긴다. 로그인할 때 '확인 안 한 공지'를
+    알려주고, 원장님은 공지마다 몇 명이 읽었는지 볼 수 있다."""
+    name = (req.student_name or "").strip()
+    if db is None or not name or is_preview(name):
+        return {"success": True}
+    for pid in [str(p) for p in (req.post_ids or [])][:100]:
+        try:
+            db.collection("board").document(pid).update({"read_by": firestore.ArrayUnion([name])})
+        except Exception:
+            pass            # 그사이 지워진 공지는 건너뛴다
+    return {"success": True}
+
+
+# 로그인했을 때 알려줄 '아직 안 한 것'. 너무 오래된 것까지 쌓이면 알림이 소음이 되므로
+# 기한이 없는 과제·모의고사는 최근 것만, 공지는 더 짧게 본다.
+TODO_RECENT_DAYS = 30
+TODO_NOTICE_DAYS = 14
+TODO_OVERDUE_DAYS = 14      # 기한이 지난 과제도 이만큼은 '아직 안 냄'으로 알려준다
+
+
+def _created_within(row: dict, days: int) -> bool:
+    try:
+        return datetime.strptime(str(row.get("created_at", ""))[:19], "%Y-%m-%d %H:%M:%S") >= datetime.now() - timedelta(days=days)
+    except ValueError:
+        return False
+
+
+def _deadline_dt(deadline):
+    t = str(deadline or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(t[:16] if "%M" in fmt else t[:10], fmt)
+            return d.replace(hour=23, minute=59) if fmt == "%Y-%m-%d" else d
+        except ValueError:
+            continue
+    return None
+
+
+@app.get("/api/student/todo")
+def student_todo(student_name: str):
+    """학생이 들어왔을 때 알려줄 할 일 — 안 낸 과제, 안 본 공지, 안 푼 퀴즈, 안 본 모의고사."""
+    name = (student_name or "").strip()
+    empty = {"success": True, "homeworks": [], "notices": [], "quizzes": [], "exams": []}
+    if db is None or not name:
+        return empty
+
+    done = defaultdict(set)
+    for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream():
+        d = r.to_dict() or {}
+        done[d.get("type", "")].add(d.get("task_name", ""))
+
+    now = now_kst()
+    info = student_targeting_info(name)
+
+    homeworks = []
+    for d in db.collection("homeworks").stream():
+        h = d.to_dict() or {}
+        title = h.get("title", "")
+        if not title or title in done["과제 제출"] or h.get("hidden"):
+            continue
+        if not task_visible_to_student("", task_target_classes(h), name, info):
+            continue
+        due = _deadline_dt(h.get("deadline"))
+        if due is not None:
+            if now - due > timedelta(days=TODO_OVERDUE_DAYS):
+                continue
+        elif not _created_within(h, TODO_RECENT_DAYS):
+            continue
+        homeworks.append({"title": title, "deadline": h.get("deadline", ""),
+                          "overdue": bool(due and now > due), "kind": h.get("kind", "class")})
+    # 마감이 급한 것부터, 기한 없는 것은 뒤로
+    homeworks.sort(key=lambda x: (_deadline_dt(x["deadline"]) is None, _deadline_dt(x["deadline"]) or datetime.max))
+
+    quizzes = []
+    for d in db.collection("quizzes").stream():
+        q = d.to_dict() or {}
+        title = q.get("title", "")
+        if not title or title in done["타임어택 퀴즈"] or deadline_passed(q.get("deadline")):
+            continue
+        if not q.get("deadline") and not _created_within(q, TODO_RECENT_DAYS):
+            continue
+        if not task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), name, info):
+            continue
+        quizzes.append({"title": title, "deadline": q.get("deadline", ""), "time_limit": q.get("time_limit", "")})
+
+    exams = []
+    for d in db.collection("exams").stream():
+        e = d.to_dict() or {}
+        title = e.get("title", "")
+        if not title or title in done["모의고사"] or not _created_within(e, TODO_RECENT_DAYS):
+            continue
+        if not task_visible_to_student(e.get("subject", "korean"), task_target_classes(e), name, info):
+            continue
+        exams.append({"title": title})
+
+    notices = []
+    for d in db.collection("board").stream():
+        p = d.to_dict() or {}
+        if name in (p.get("read_by") or []) or not _created_within(p, TODO_NOTICE_DAYS):
+            continue
+        if not task_visible_to_student("", task_target_classes(p), name, info):
+            continue
+        notices.append({"id": d.id, "title": p.get("title", ""), "created_at": p.get("created_at", "")})
+    notices.sort(key=lambda x: x["created_at"], reverse=True)
+
+    return {"success": True, "homeworks": homeworks, "notices": notices, "quizzes": quizzes, "exams": exams}
+
+
+# ─────────────────────────────────────────────────────────
+# 스터디룸 — 온라인 표시 · 학습 시간 재기
+#   · 앱이 열려 있는 동안 학생 화면이 1분마다 '여기 있어요'(beat)를 보낸다.
+#   · 학습 시간은 서버가 beat 사이 간격으로 센다. 휴대폰 시계를 바꿔도 늘지 않는다.
+#   · 앱을 벗어나도 5분까지는 계속 센다. 그보다 오래 비우면 벗어난 순간에 멈춘 것으로 한다.
+#   · '온라인'은 서버 메모리에만 둔다(저장소 쓰기를 줄이려고). 학습 시간은 학생마다
+#     문서 하나(study_state)에 날짜별로 쌓는다 — 공부 중일 때만 1분에 한 번 쓴다.
+#   · 30분마다 포인트, 하루 최대 8번(4시간).
+# ─────────────────────────────────────────────────────────
+STUDY_BEAT_SEC = 60
+STUDY_GRACE_SEC = 300            # 앱을 벗어나도 봐주는 시간
+STUDY_ONLINE_SEC = 150           # beat 가 이 안에 왔으면 '온라인'
+STUDY_XP_BLOCK_SEC = 1800
+STUDY_XP_PER_BLOCK = 20
+STUDY_XP_MAX_BLOCKS = 8
+STUDY_DAY_MAX_SEC = 16 * 3600
+STUDY_COLL = "study_state"
+
+_study_lock = threading.Lock()
+_study_mem = {}                  # 학생 이름 → 상태 (Firestore study_state 와 같은 모양 + last_seen, info)
+_study_all_cache = {"at": 0.0, "rows": {}}
+
+
+def _study_today() -> str:
+    return now_kst().strftime("%Y-%m-%d")
+
+
+def _study_load(name: str) -> dict:
+    """메모리에 없으면(서버가 다시 켜진 뒤 등) 저장소에서 읽어 온다. _study_lock 안에서 부른다."""
+    st = _study_mem.get(name)
+    if st is not None:
+        return st
+    st = {"active": False, "session_start": 0.0, "last_beat": 0.0, "days": {}, "xp_days": {},
+          "last_seen": 0.0, "info": {}}
+    if db is not None:
+        d = db.collection(STUDY_COLL).document(sanitize_doc_id(name)).get()
+        if d.exists:
+            row = d.to_dict() or {}
+            for k in ("active", "session_start", "last_beat", "days", "xp_days"):
+                if k in row:
+                    st[k] = row[k]
+        s = db.collection("students").document(name).get()
+        if s.exists:
+            sd = s.to_dict() or {}
+            st["info"] = {"school": sd.get("school", ""), "grade": sd.get("grade", ""),
+                          "class_name": sd.get("class_name", "")}
+    _study_mem[name] = st
+    return st
+
+
+def _study_credit(name: str, st: dict, now: float) -> dict:
+    """마지막 beat 이후 시간을 오늘 학습 시간에 더한다. 너무 오래 비웠으면 멈춘다.
+    저장소에 쓸 내용과 알려줄 것을 돌려준다. _study_lock 안에서 부른다."""
+    out = {"stopped_away": False, "xp": 0}
+    if not st.get("active"):
+        return out
+    gap = now - float(st.get("last_beat") or now)
+    if gap > STUDY_GRACE_SEC + STUDY_BEAT_SEC:
+        # 오래 비웠다 — 떠난 순간(마지막 beat)에 멈춘 것으로 친다
+        st["active"] = False
+        out["stopped_away"] = True
+        return out
+    today = _study_today()
+    days = st.setdefault("days", {})
+    before = int(days.get(today, 0))
+    after = min(STUDY_DAY_MAX_SEC, before + max(0, int(round(gap))))
+    days[today] = after
+    st["last_beat"] = now
+    xp_days = st.setdefault("xp_days", {})
+    earned = min(STUDY_XP_MAX_BLOCKS, after // STUDY_XP_BLOCK_SEC)
+    new_blocks = earned - int(xp_days.get(today, 0))
+    if new_blocks > 0:
+        xp_days[today] = earned
+        out["xp"] = new_blocks * STUDY_XP_PER_BLOCK
+    return out
+
+
+def _study_save(name: str, st: dict):
+    if db is None or is_preview(name):
+        return
+    db.collection(STUDY_COLL).document(sanitize_doc_id(name)).set({
+        "student_name": name, "active": bool(st.get("active")),
+        "session_start": st.get("session_start", 0.0), "last_beat": st.get("last_beat", 0.0),
+        "days": st.get("days", {}), "xp_days": st.get("xp_days", {}),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, merge=True)
+    _study_all_cache["at"] = 0.0          # 순위표를 다음에 새로 읽게 한다
+
+
+def _study_me(name: str, st: dict, now: float) -> dict:
+    return {"active": bool(st.get("active")), "today_seconds": int((st.get("days") or {}).get(_study_today(), 0)),
+            "session_start": st.get("session_start", 0.0), "last_beat": st.get("last_beat", 0.0),
+            "server_now": now, "beat_sec": STUDY_BEAT_SEC, "grace_sec": STUDY_GRACE_SEC}
+
+
+class StudyReq(BaseModel):
+    student_name: str
+
+
+def _study_action(name: str, action: str) -> dict:
+    name = (name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+    now = time.time()
+    xp = 0
+    with _study_lock:
+        st = _study_load(name)
+        st["last_seen"] = now
+        was_active = bool(st.get("active"))
+        res = _study_credit(name, st, now)
+        xp = res["xp"]
+        if action == "start" and not st.get("active"):
+            st["active"] = True
+            st["session_start"] = now
+            st["last_beat"] = now
+        elif action == "stop" and st.get("active"):
+            st["active"] = False
+        changed = was_active or bool(st.get("active"))
+        me = _study_me(name, st, now)
+        snapshot = {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items() if k not in ("info",)}
+    if changed:
+        _study_save(name, snapshot)
+    if xp:
+        add_xp(name, xp)
+    return {"success": True, "me": me, "stopped_away": res["stopped_away"], "xp": xp}
+
+
+@app.post("/api/study/beat")
+def study_beat(req: StudyReq):
+    return _study_action(req.student_name, "beat")
+
+
+@app.post("/api/study/start")
+def study_start(req: StudyReq):
+    return _study_action(req.student_name, "start")
+
+
+@app.post("/api/study/stop")
+def study_stop(req: StudyReq):
+    return _study_action(req.student_name, "stop")
+
+
+def _study_all_rows() -> dict:
+    """모든 학생의 학습 기록(저장소). 1분 동안은 읽어 둔 것을 쓴다."""
+    now = time.time()
+    if now - _study_all_cache["at"] < 60 and _study_all_cache["rows"]:
+        return _study_all_cache["rows"]
+    rows = {}
+    if db is not None:
+        for d in db.collection(STUDY_COLL).stream():
+            r = d.to_dict() or {}
+            if r.get("student_name"):
+                rows[r["student_name"]] = r
+    _study_all_cache.update({"at": now, "rows": rows})
+    return rows
+
+
+def _study_status(st: dict, now: float) -> str:
+    seen = now - float(st.get("last_seen") or 0)
+    if st.get("active"):
+        if seen <= STUDY_ONLINE_SEC:
+            return "studying"
+        if now - float(st.get("last_beat") or 0) <= STUDY_GRACE_SEC + STUDY_BEAT_SEC:
+            return "away"                  # 공부 중이다가 잠깐 자리를 비움
+    return "online" if seen <= STUDY_ONLINE_SEC else "offline"
+
+
+@app.get("/api/study/room")
+def study_room(student_name: str = ""):
+    """스터디룸 화면: 지금 공부 중 · 온라인 학생과 오늘 학습 시간 순위. 학원 학생 전체가 본다."""
+    now = time.time()
+    today = _study_today()
+    stored = _study_all_rows()
+    with _study_lock:
+        mem = {n: {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items()} for n, st in _study_mem.items()}
+    people = {}
+    for n, r in stored.items():
+        people[n] = {"name": n, "today": int((r.get("days") or {}).get(today, 0)), "status": "offline", "info": {}}
+    for n, st in mem.items():
+        if is_preview(n):
+            continue
+        p = people.setdefault(n, {"name": n, "today": 0, "status": "offline", "info": {}})
+        p["today"] = int((st.get("days") or {}).get(today, 0))
+        p["status"] = _study_status(st, now)
+        p["info"] = st.get("info") or {}
+        if st.get("active"):
+            p["session_start"] = st.get("session_start", 0.0)
+    listed = [p for p in people.values() if p["status"] != "offline"]
+    order = {"studying": 0, "away": 1, "online": 2}
+    listed.sort(key=lambda p: (order.get(p["status"], 3), -p["today"]))
+    ranking = sorted([p for p in people.values() if p["today"] > 0], key=lambda p: -p["today"])[:50]
+    me = None
+    name = (student_name or "").strip()
+    if name:
+        with _study_lock:
+            st = _study_mem.get(name)
+            if st is not None:
+                me = _study_me(name, st, now)
+    return {"success": True, "server_now": now, "live": listed, "ranking": ranking, "me": me,
+            "counts": {"studying": sum(1 for p in listed if p["status"] == "studying"),
+                       "online": len(listed)}}
+
+
+@app.get("/api/admin/study/report", dependencies=[Depends(verify_admin)])
+def study_report(days: int = 7):
+    """원장님: 학생마다 오늘 · 최근 N일 · 전체 학습 시간과 지금 상태."""
+    days = max(1, min(int(days or 7), 90))
+    now = time.time()
+    today = now_kst().date()
+    keys = {(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)}
+    _study_all_cache["at"] = 0.0
+    stored = _study_all_rows()
+    with _study_lock:
+        mem = {n: {k: (dict(v) if isinstance(v, dict) else v) for k, v in st.items()} for n, st in _study_mem.items()}
+    rows = []
+    for n in set(stored) | set(mem):
+        if is_preview(n):
+            continue
+        src = mem.get(n) or stored.get(n) or {}
+        d = src.get("days") or {}
+        rows.append({
+            "name": n,
+            "today": int(d.get(today.strftime("%Y-%m-%d"), 0)),
+            "recent": sum(int(v) for k, v in d.items() if k in keys),
+            "total": sum(int(v) for v in d.values()),
+            "status": _study_status(mem[n], now) if n in mem else "offline",
+            "last_day": max(d) if d else "",
+        })
+    rows.sort(key=lambda r: -r["recent"])
+    return {"success": True, "days": days, "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────
+# 질문 게시판 — 학생끼리 묻고 답한다
+#   · 사진(카메라·캡처)을 붙여 올릴 수 있고, 학원 학생 전체와 원장님이 본다.
+#   · 답은 누구나 달 수 있다. 원장님 답은 따로 표시한다.
+#   · 질문한 학생은 '해결됨'으로 바꿀 수 있고, 답이 달리면 알림이 간다.
+#   · 글은 쓴 사람과 원장님만 지운다.
+# ─────────────────────────────────────────────────────────
+QNA_COLL = "qna_posts"
+QNA_MAX_IMAGES = 4
+QNA_TEXT_MAX = 2000
+QNA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif"}
+
+
+async def _qna_save_images(files) -> list:
+    urls = []
+    for f in (files or [])[:QNA_MAX_IMAGES]:
+        if not f or not f.filename:
+            continue
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in QNA_IMAGE_EXT:
+            raise HTTPException(status_code=400, detail="사진(jpg·png)만 올릴 수 있습니다.")
+        data = await f.read()
+        if data:
+            urls.append(await asyncio.to_thread(save_bytes, data, f.filename, "qna", f.content_type or "image/jpeg"))
+    return urls
+
+
+def _qna_author(name: str, x_admin_token: Optional[str]) -> dict:
+    admin_name = _resolve_admin_token(x_admin_token) if x_admin_token else None
+    if admin_name:
+        return {"author": admin_name if admin_name != "원장님" else "원장님", "is_admin": True}
+    return {"author": (name or "").strip(), "is_admin": False}
+
+
+def _qna_public(p: dict, pid: str) -> dict:
+    answers = sorted(p.get("answers") or [], key=lambda a: a.get("created_at", ""))
+    return {"id": pid, "author": p.get("author", ""), "is_admin": bool(p.get("is_admin")),
+            "school": p.get("school", ""), "grade": p.get("grade", ""),
+            "subject": p.get("subject", ""), "text": p.get("text", ""), "images": p.get("images") or [],
+            "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
+            "answers": answers, "answer_count": len(answers)}
+
+
+@app.get("/api/qna")
+def qna_list(limit: int = 60):
+    if db is None:
+        return {"success": False, "posts": []}
+    rows = [_qna_public(d.to_dict() or {}, d.id) for d in
+            db.collection(QNA_COLL).order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(max(1, min(int(limit or 60), 200))).stream()]
+    return {"success": True, "posts": rows}
+
+
+@app.post("/api/qna")
+async def qna_create(student_name: str = Form(""), school: str = Form(""), grade: str = Form(""),
+                     subject: str = Form(""), text: str = Form(""),
+                     images: List[UploadFile] = File(None),
+                     x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    who = _qna_author(student_name, x_admin_token)
+    text = (text or "").strip()[:QNA_TEXT_MAX]
+    if not who["author"]:
+        return {"success": False, "detail": "로그인 정보가 없습니다."}
+    urls = await _qna_save_images(images)
+    if not text and not urls:
+        return {"success": False, "detail": "질문 내용이나 사진을 넣어주세요."}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ref = db.collection(QNA_COLL).document()
+    row = {**who, "school": school, "grade": grade, "subject": (subject or "").strip()[:20],
+           "text": text, "images": urls, "solved": False, "answers": [], "created_at": now}
+    await asyncio.to_thread(ref.set, row)
+    if not who["is_admin"]:
+        send_telegram_message(f"❓ [질문 게시판]\n{who['author']} 학생이 질문을 올렸습니다.\n{text[:80]}")
+    return {"success": True, "post": _qna_public(row, ref.id)}
+
+
+@app.post("/api/qna/{post_id}/answer")
+async def qna_answer(post_id: str, student_name: str = Form(""), text: str = Form(""),
+                     images: List[UploadFile] = File(None),
+                     x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    who = _qna_author(student_name, x_admin_token)
+    text = (text or "").strip()[:QNA_TEXT_MAX]
+    if not who["author"]:
+        return {"success": False, "detail": "로그인 정보가 없습니다."}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    urls = await _qna_save_images(images)
+    if not text and not urls:
+        return {"success": False, "detail": "답 내용이나 사진을 넣어주세요."}
+    ans = {**who, "id": uuid.uuid4().hex[:12], "text": text, "images": urls,
+           "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    await asyncio.to_thread(ref.update, {"answers": firestore.ArrayUnion([ans])})
+    asker = (doc.to_dict() or {}).get("author", "")
+    if asker and asker != who["author"]:
+        label = "원장님" if who["is_admin"] else who["author"]
+        await asyncio.to_thread(send_push_to_student, asker, "내 질문에 답이 달렸어요",
+                                f"{label}: {(text or '사진')[:80]}", "/#prog-qna", "qna")
+    return {"success": True, "answer": ans}
+
+
+class QnaOwnerReq(BaseModel):
+    student_name: str = ""
+    solved: bool = True
+
+
+@app.post("/api/qna/{post_id}/solved")
+def qna_solved(post_id: str, req: QnaOwnerReq, x_admin_token: Optional[str] = Header(None)):
+    if db is None:
+        return {"success": False}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    who = _qna_author(req.student_name, x_admin_token)
+    if not who["is_admin"] and (doc.to_dict() or {}).get("author") != who["author"]:
+        return {"success": False, "detail": "질문한 학생만 바꿀 수 있습니다."}
+    ref.update({"solved": bool(req.solved)})
+    return {"success": True}
+
+
+@app.post("/api/qna/{post_id}/delete")
+def qna_delete(post_id: str, req: QnaOwnerReq, answer_id: str = "",
+               x_admin_token: Optional[str] = Header(None)):
+    """글(또는 답 하나)을 지운다. 쓴 사람과 원장님만."""
+    if db is None:
+        return {"success": False}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": True}
+    who = _qna_author(req.student_name, x_admin_token)
+    row = doc.to_dict() or {}
+    if answer_id:
+        answers = row.get("answers") or []
+        target = next((a for a in answers if a.get("id") == answer_id), None)
+        if target is None:
+            return {"success": True}
+        if not who["is_admin"] and target.get("author") != who["author"]:
+            return {"success": False, "detail": "쓴 사람만 지울 수 있습니다."}
+        ref.update({"answers": [a for a in answers if a.get("id") != answer_id]})
+        return {"success": True}
+    if not who["is_admin"] and row.get("author") != who["author"]:
+        return {"success": False, "detail": "쓴 사람만 지울 수 있습니다."}
+    ref.delete()
+    return {"success": True}
+
+
+# ─────────────────────────────────────────────────────────
+# 원장님 톡 — 원장님과 학생 한 명의 1:1 대화
+#   · 학생마다 대화방 문서 하나(dm_threads). 최근 200개 말만 남긴다.
+#   · 화면은 10초마다 '새 말 있어요?'를 묻는다(poll). 답은 서버 메모리의 번호표만 보고
+#     하므로 저장소를 읽지 않는다. 번호가 바뀌었을 때만 대화를 읽어 간다.
+#   · 원장님이 말을 걸면 학생 휴대폰으로도 알림이 가고, 학생이 답하면 텔레그램으로 알린다.
+# ─────────────────────────────────────────────────────────
+DM_COLL = "dm_threads"
+DM_KEEP = 200
+DM_TEXT_MAX = 1000
+_dm_lock = threading.Lock()
+_dm_ver = {}                     # 학생 이름 → 번호표 (대화가 바뀔 때마다 오른다)
+_dm_admin_ver = [0]              # 원장님 쪽 번호표 (어느 학생이든 새 말이 오면 오른다)
+_DM_BOOT = int(time.time())      # 서버가 다시 켜지면 번호표가 새로 시작하므로 화면이 알아채게 한다
+
+
+def _dm_bump(name: str, admin_too: bool = False):
+    with _dm_lock:
+        _dm_ver[name] = _dm_ver.get(name, 0) + 1
+        if admin_too:
+            _dm_admin_ver[0] += 1
+
+
+def _dm_version(name: str = "") -> str:
+    with _dm_lock:
+        n = _dm_ver.get(name, 0) if name else _dm_admin_ver[0]
+    return f"{_DM_BOOT}.{n}"
+
+
+def _dm_append(name: str, msg: dict, unread_field: str):
+    ref = db.collection(DM_COLL).document(sanitize_doc_id(name))
+    doc = ref.get()
+    row = (doc.to_dict() or {}) if doc.exists else {}
+    msgs = (row.get("messages") or []) + [msg]
+    ref.set({"student_name": name, "messages": msgs[-DM_KEEP:], "last_at": msg["at"],
+             "last_text": msg["text"][:80], "last_from": msg["from"],
+             unread_field: int(row.get(unread_field) or 0) + 1}, merge=True)
+
+
+class DmSendReq(BaseModel):
+    student_name: str
+    text: str
+
+
+@app.post("/api/admin/dm/send")
+def dm_admin_send(req: DmSendReq, admin_name: str = Depends(current_admin_name)):
+    name, text = (req.student_name or "").strip(), (req.text or "").strip()[:DM_TEXT_MAX]
+    if db is None or not name or not text:
+        return {"success": False, "detail": "받는 학생과 말을 넣어주세요."}
+    msg = {"id": uuid.uuid4().hex[:12], "from": "admin", "admin_name": admin_name, "text": text,
+           "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    _dm_append(name, msg, "unread_student")
+    _dm_bump(name, admin_too=True)
+    # 앱을 보고 있지 않아도 알 수 있게 휴대폰 알림도 보낸다
+    send_push_to_student(name, f"{admin_name if admin_name != '원장님' else '원장님'}의 메시지",
+                         text[:120], "/#dm", "dm")
+    return {"success": True, "message": msg}
+
+
+@app.post("/api/dm/send")
+def dm_student_send(req: DmSendReq):
+    name, text = (req.student_name or "").strip(), (req.text or "").strip()[:DM_TEXT_MAX]
+    if db is None or not name or not text:
+        return {"success": False, "detail": "보낼 말을 넣어주세요."}
+    msg = {"id": uuid.uuid4().hex[:12], "from": "student", "text": text,
+           "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    _dm_append(name, msg, "unread_admin")
+    _dm_bump(name, admin_too=True)
+    if not is_preview(name):
+        send_telegram_message(f"💬 [원장님 톡]\n{name}: {text[:200]}")
+    return {"success": True, "message": msg}
+
+
+@app.get("/api/dm/poll")
+def dm_poll(student_name: str = ""):
+    """번호표만 돌려준다. 화면은 번호가 바뀌었을 때만 대화를 새로 읽는다 (저장소를 안 읽는다)."""
+    return {"success": True, "v": _dm_version((student_name or "").strip())}
+
+
+@app.get("/api/admin/dm/poll", dependencies=[Depends(verify_admin)])
+def dm_admin_poll():
+    return {"success": True, "v": _dm_version("")}
+
+
+def _dm_thread(name: str) -> dict:
+    d = db.collection(DM_COLL).document(sanitize_doc_id(name)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+@app.get("/api/dm/thread")
+def dm_thread(student_name: str, mark_read: bool = False):
+    """학생 화면: 내 대화. mark_read 면 원장님 말을 읽은 것으로 한다."""
+    name = (student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "messages": []}
+    row = _dm_thread(name)
+    unread = int(row.get("unread_student") or 0)
+    if mark_read and unread:
+        db.collection(DM_COLL).document(sanitize_doc_id(name)).set({"unread_student": 0}, merge=True)
+        _dm_bump(name, admin_too=True)      # 원장님 화면에 '읽음'이 보이게
+    return {"success": True, "messages": row.get("messages") or [], "unread": unread,
+            "admin_unread": int(row.get("unread_admin") or 0), "v": _dm_version(name)}
+
+
+@app.get("/api/admin/dm/thread", dependencies=[Depends(verify_admin)])
+def dm_admin_thread(student_name: str, mark_read: bool = True):
+    name = (student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "messages": []}
+    row = _dm_thread(name)
+    if mark_read and int(row.get("unread_admin") or 0):
+        db.collection(DM_COLL).document(sanitize_doc_id(name)).set({"unread_admin": 0}, merge=True)
+        _dm_bump(name, admin_too=True)
+    return {"success": True, "messages": row.get("messages") or [],
+            "student_unread": int(row.get("unread_student") or 0), "v": _dm_version(name)}
+
+
+@app.get("/api/admin/dm/threads", dependencies=[Depends(verify_admin)])
+def dm_admin_threads():
+    """원장님: 대화방 목록 (최근 말 순, 안 읽은 수)."""
+    if db is None:
+        return {"success": False, "threads": []}
+    rows = []
+    for d in db.collection(DM_COLL).stream():
+        r = d.to_dict() or {}
+        rows.append({"student_name": r.get("student_name", ""), "last_at": r.get("last_at", ""),
+                     "last_text": r.get("last_text", ""), "last_from": r.get("last_from", ""),
+                     "unread": int(r.get("unread_admin") or 0)})
+    rows.sort(key=lambda x: x["last_at"], reverse=True)
+    return {"success": True, "threads": rows, "unread_total": sum(r["unread"] for r in rows),
+            "v": _dm_version("")}
+
+
+# ─────────────────────────────────────────────────────────
+# 자습 감독 — 교실 태블릿 카메라가 딴짓(휴대폰 · 엎드림 · 자리 비움)을 보면 원장님께 알린다
+#   · 영상 판단은 태블릿 안에서 한다. 서버는 경고 순간의 사진 한 장을 텔레그램으로
+#     원장님께 넘겨주기만 하고 저장하지 않는다.
+#   · 교실 태블릿에 관리자 로그인을 해 두면 학생이 관리자 화면을 열 수 있으므로,
+#     원장님이 6자리 '감독 코드'를 만들어 태블릿에 넣는다. 코드는 12시간 뒤 끝난다.
+# ─────────────────────────────────────────────────────────
+PROCTOR_COLL = "proctor_codes"
+PROCTOR_HOURS = 12
+PROCTOR_MIN_GAP_SEC = 20          # 알림이 쏟아지지 않게 한 코드당 20초에 한 번
+_proctor_last = {}
+
+
+def send_telegram_photo(image: bytes, caption: str) -> bool:
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Telegram 사진 건너뜀: TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID 가 없습니다.")
+        return False
+    try:
+        res = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                            data={"chat_id": chat_id, "caption": caption[:1000]},
+                            files={"photo": ("alert.jpg", image, "image/jpeg")}, timeout=15)
+        if not res.ok:
+            print(f"Telegram 사진 전송 실패: [{res.status_code}] {res.text[:200]}")
+        return res.ok
+    except Exception as e:
+        print(f"Telegram 사진 전송 오류: {e}")
+        return False
+
+
+def _proctor_valid(code: str) -> dict:
+    code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if db is None or len(code) != 6:
+        return {}
+    d = db.collection(PROCTOR_COLL).document(code).get()
+    row = (d.to_dict() or {}) if d.exists else {}
+    if not row or float(row.get("expires", 0)) < time.time():
+        return {}
+    return {**row, "code": code}
+
+
+@app.post("/api/admin/proctor/code")
+def proctor_new_code(admin_name: str = Depends(current_admin_name)):
+    """교실 태블릿에 넣을 6자리 감독 코드를 만든다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    for _ in range(10):
+        code = f"{secrets.randbelow(1000000):06d}"
+        ref = db.collection(PROCTOR_COLL).document(code)
+        if not ref.get().exists or not _proctor_valid(code):
+            expires = time.time() + PROCTOR_HOURS * 3600
+            ref.set({"admin_name": admin_name, "expires": expires,
+                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            return {"success": True, "code": code, "hours": PROCTOR_HOURS}
+    return {"success": False, "detail": "코드를 만들지 못했습니다. 다시 눌러 주세요."}
+
+
+@app.get("/api/proctor/check")
+def proctor_check(code: str):
+    row = _proctor_valid(code)
+    if not row:
+        return {"success": False, "detail": "코드가 맞지 않거나 시간이 지났습니다. 원장님께 새 코드를 받아 주세요."}
+    left_h = max(0, int((float(row["expires"]) - time.time()) // 3600))
+    return {"success": True, "hours_left": left_h}
+
+
+@app.post("/api/proctor/alert")
+async def proctor_alert(code: str = Form(...), message: str = Form(...),
+                        room: str = Form(""), photo: Optional[UploadFile] = File(None)):
+    """태블릿이 딴짓을 봤을 때. 사진은 저장하지 않고 원장님 텔레그램으로만 보낸다."""
+    row = await asyncio.to_thread(_proctor_valid, code)
+    if not row:
+        return {"success": False, "detail": "감독 코드가 끝났습니다."}
+    now = time.time()
+    if now - _proctor_last.get(row["code"], 0) < PROCTOR_MIN_GAP_SEC:
+        return {"success": True, "skipped": True}
+    _proctor_last[row["code"]] = now
+    caption = f"🚨 [자습 감독{(' · ' + room.strip()[:20]) if room.strip() else ''}] {message.strip()[:200]}\n{datetime.now().strftime('%H:%M:%S')}"
+    data = await photo.read() if photo and photo.filename else b""
+    if data and len(data) <= 5 * 1024 * 1024:
+        ok = await asyncio.to_thread(send_telegram_photo, data, caption)
+    else:
+        send_telegram_message(caption)
+        ok = True
+    return {"success": True, "sent": ok}
+
+BOARD_MAX_FILES = 10
+
+
+async def _board_save_files(uploads) -> list:
+    """공지 첨부파일을 저장하고 주소 목록을 돌려준다 (올린 순서 그대로)."""
+    urls = []
+    for f in [u for u in (uploads or []) if u and u.filename][:BOARD_MAX_FILES]:
+        urls.append(await asyncio.to_thread(save_bytes, await f.read(), f.filename, "board", f.content_type))
+    return urls
+
+
+def board_file_fields(urls: list) -> dict:
+    """💡 예전에는 첨부를 file_url 하나만 저장해 파일을 두 개 올려도 하나만 보였다.
+    이제 file_urls 에 모두 담고, 예전 화면을 위해 file_url 에는 첫 파일을 둔다."""
+    urls = [u for u in (urls or []) if u][:BOARD_MAX_FILES]
+    return {"file_urls": urls, "file_url": urls[0] if urls else ""}
+
+
+def board_post_files(row: dict) -> list:
+    return list(row.get("file_urls") or ([row["file_url"]] if row.get("file_url") else []))
+
 
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
                                   target_classes: str = Form(""),
-                                  file: Optional[UploadFile] = File(None)):
+                                  file: Optional[UploadFile] = File(None),
+                                  files: List[UploadFile] = File(None)):
     if db is None: return {"success": False}
-    file_url = ""
-    if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
+    urls = await _board_save_files(([file] if file else []) + list(files or []))
     tclasses = normalize_target_classes(target_classes)
-    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, **board_file_fields(urls), "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
     await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
     return {"success": True}
@@ -7451,6 +8598,42 @@ async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
 def delete_board_post_admin(post_id: str):
     if db: db.collection("board").document(post_id).delete()
+    return {"success": True}
+
+
+@app.post("/api/admin/board/{post_id}/update", dependencies=[Depends(verify_admin)])
+async def update_board_post_admin(post_id: str, title: str = Form(...), desc: str = Form(""),
+                                  target_classes: str = Form(""),
+                                  remove_file: bool = Form(False),
+                                  # 남겨 둘 기존 첨부 주소들 (JSON 목록). 보내지 않으면 기존 첨부를 모두 남긴다.
+                                  keep_files: Optional[str] = Form(None),
+                                  file: Optional[UploadFile] = File(None),
+                                  files: List[UploadFile] = File(None)):
+    """올려 둔 공지를 고친다. 남길 첨부(keep_files)에 새로 올린 파일을 뒤에 붙인다.
+    💡 고치기에는 알림을 다시 보내지 않는다(과제 고치기와 같다). 읽은 기록도 그대로 둔다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    title = (title or "").strip()
+    if not title:
+        return {"success": False, "detail": "공지 제목을 넣어주세요."}
+    ref = db.collection("board").document(post_id)
+    doc = await asyncio.to_thread(ref.get)
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 공지입니다."}
+    upd = {"title": title, "desc": desc, "target_classes": normalize_target_classes(target_classes),
+           "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    current = board_post_files(doc.to_dict() or {})
+    if keep_files is not None:
+        try:
+            wanted = json.loads(keep_files) or []
+        except ValueError:
+            wanted = current
+        kept = [u for u in current if u in wanted]        # 원래 붙어 있던 것만 남길 수 있다
+    else:
+        kept = [] if remove_file else current
+    new_urls = await _board_save_files(([file] if file else []) + list(files or []))
+    upd.update(board_file_fields(kept + new_urls))
+    await asyncio.to_thread(ref.set, upd, True)
     return {"success": True}
 
 @app.get("/api/lectures")
