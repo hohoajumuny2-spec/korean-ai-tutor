@@ -8518,16 +8518,38 @@ async def proctor_alert(code: str = Form(...), message: str = Form(...),
         ok = True
     return {"success": True, "sent": ok}
 
+BOARD_MAX_FILES = 10
+
+
+async def _board_save_files(uploads) -> list:
+    """공지 첨부파일을 저장하고 주소 목록을 돌려준다 (올린 순서 그대로)."""
+    urls = []
+    for f in [u for u in (uploads or []) if u and u.filename][:BOARD_MAX_FILES]:
+        urls.append(await asyncio.to_thread(save_bytes, await f.read(), f.filename, "board", f.content_type))
+    return urls
+
+
+def board_file_fields(urls: list) -> dict:
+    """💡 예전에는 첨부를 file_url 하나만 저장해 파일을 두 개 올려도 하나만 보였다.
+    이제 file_urls 에 모두 담고, 예전 화면을 위해 file_url 에는 첫 파일을 둔다."""
+    urls = [u for u in (urls or []) if u][:BOARD_MAX_FILES]
+    return {"file_urls": urls, "file_url": urls[0] if urls else ""}
+
+
+def board_post_files(row: dict) -> list:
+    return list(row.get("file_urls") or ([row["file_url"]] if row.get("file_url") else []))
+
+
 @app.post("/api/admin/board", dependencies=[Depends(verify_admin)])
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
                                   target_classes: str = Form(""),
-                                  file: Optional[UploadFile] = File(None)):
+                                  file: Optional[UploadFile] = File(None),
+                                  files: List[UploadFile] = File(None)):
     if db is None: return {"success": False}
-    file_url = ""
-    if file and file.filename: file_url = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
+    urls = await _board_save_files(([file] if file else []) + list(files or []))
     tclasses = normalize_target_classes(target_classes)
-    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, "file_url": file_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, **board_file_fields(urls), "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
     await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
     return {"success": True}
@@ -8542,8 +8564,11 @@ def delete_board_post_admin(post_id: str):
 async def update_board_post_admin(post_id: str, title: str = Form(...), desc: str = Form(""),
                                   target_classes: str = Form(""),
                                   remove_file: bool = Form(False),
-                                  file: Optional[UploadFile] = File(None)):
-    """올려 둔 공지를 고친다. 새 파일을 올리면 첨부를 바꾸고, remove_file 이면 첨부를 뗀다.
+                                  # 남겨 둘 기존 첨부 주소들 (JSON 목록). 보내지 않으면 기존 첨부를 모두 남긴다.
+                                  keep_files: Optional[str] = Form(None),
+                                  file: Optional[UploadFile] = File(None),
+                                  files: List[UploadFile] = File(None)):
+    """올려 둔 공지를 고친다. 남길 첨부(keep_files)에 새로 올린 파일을 뒤에 붙인다.
     💡 고치기에는 알림을 다시 보내지 않는다(과제 고치기와 같다). 읽은 기록도 그대로 둔다."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
@@ -8556,10 +8581,17 @@ async def update_board_post_admin(post_id: str, title: str = Form(...), desc: st
         return {"success": False, "detail": "지워진 공지입니다."}
     upd = {"title": title, "desc": desc, "target_classes": normalize_target_classes(target_classes),
            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    if file and file.filename:
-        upd["file_url"] = await asyncio.to_thread(save_bytes, await file.read(), file.filename, "board", file.content_type)
-    elif remove_file:
-        upd["file_url"] = ""
+    current = board_post_files(doc.to_dict() or {})
+    if keep_files is not None:
+        try:
+            wanted = json.loads(keep_files) or []
+        except ValueError:
+            wanted = current
+        kept = [u for u in current if u in wanted]        # 원래 붙어 있던 것만 남길 수 있다
+    else:
+        kept = [] if remove_file else current
+    new_urls = await _board_save_files(([file] if file else []) + list(files or []))
+    upd.update(board_file_fields(kept + new_urls))
     await asyncio.to_thread(ref.set, upd, True)
     return {"success": True}
 
