@@ -142,6 +142,7 @@
   .q.sq>.qb>.sqh{margin-bottom:.8mm}
   .badge{display:inline-block;padding:0 1.8mm;border-radius:1mm;background:var(--t1);color:#fff;
          font-size:.82em;font-weight:700;line-height:1.55;vertical-align:.08em;margin-right:1mm}
+  .ox{float:right;white-space:nowrap;margin-left:3mm;font-weight:700;letter-spacing:.08em}
   .sa{display:flex;justify-content:flex-end;align-items:flex-end;gap:2mm;margin-top:2.5mm;font-weight:700}
   .sa .ln{display:inline-block;width:48%;border-bottom:.35mm solid #222;height:1.2em}
   .essay{margin-top:2mm;border:.35mm solid #333;border-radius:1mm;padding:0 3mm}
@@ -260,6 +261,8 @@
         <p><b>문제 종류</b> — 선택지가 둘이면 2지선다, 없으면 묻는 말(<code>쓰시오</code>·<code>서술하시오</code> 등)이나
            <code>[단답형]</code> <code>[서술형]</code> 표시를 보고 답 줄·답 칸을 넣습니다.
            <code>[서술형 1]</code> <code>[단답형 2]</code> 처럼 쓰면 본 번호와 따로 번호를 매깁니다.</p>
+        <p><b>O/X 문제</b> — 문장 끝에 <code>(O/X)</code>를 붙이거나, 정답을 <code>정답: O</code> · <code>정답: X</code>로 쓰면
+           문장 뒤에 <b>( O , X )</b>가 붙습니다. 묶음 안내에 <code>맞으면 O, 틀리면 X</code>라고 쓰면 그 아래 문제는 모두 O/X로 봅니다.</p>
         <p><b>정답·해설</b> — <code>정답: 3</code> <code>해설: …</code> 줄은 문제지에서 빠지고 맨 뒤 정답지로 갑니다.<br>
            <code>[정답 모아보기]</code> 한 줄을 쓰면 그 아래로 쓴 내용은 전부 새 종이(뒷장)에 쓴 그대로 실립니다.</p>
         <p><b>&lt;보기&gt; 상자</b> — <code>&lt;보기&gt;</code> 줄 다음부터 선택지 전까지 상자로 묶습니다.<br>
@@ -555,7 +558,7 @@ function fmt(s){
   h = h.replace(/\[그림:([^\]\s]+)(?:\s+(\d{1,3})%)?\]/g, (_, k, w) =>
         S.images[k] ? `<img src="${S.images[k]}" alt=""${w ? ` style="width:${w}%"` : ''}>`
                     : `<span class="missing">[그림 없음: ${k}]</span>`);
-  h = h.replace(/[\[【]\s*(서술형|단답형|객관식|2지 ?선다형?)\s*[\]】]/g, '<span class="badge">$1</span>');
+  h = h.replace(/[\[【]\s*(서술형|단답형|객관식|2지 ?선다형?|O\s*\/\s*X|OX)\s*[\]】]/g, (m, t) => `<span class="badge">${/^O/.test(t) ? 'O/X' : t}</span>`);
   h = h.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
        .replace(/__(.+?)__/g, '<u>$1</u>')
        .replace(/\^\{(.+?)\}/g, '<sup>$1</sup>')
@@ -622,14 +625,26 @@ function backBlocks(txt){
   return out;
 }
 // 문제 종류: 선택지가 있으면 객관식(2지선다도), 없으면 [서술형]/[단답형] 표시나 묻는 말로 가린다
+// O/X 문제 — 문장 끝의 (O/X) · (O, X) · (○/×) 표시, [O/X] 표시, 또는 정답이 O/X 인 문제
+const RE_OXMARK = /\s*[(（]\s*[OoＯ○]\s*[,，/·ㆍ]?\s*[XxＸ×]\s*[)）]\s*$/;
+const RE_OXTAG  = /[\[【]\s*(?:O\s*\/\s*X|OX)\s*[\]】]/;
+const RE_OXHINT = /맞으면\s*[O○]|[O○]\s*표|\bO\s*[,/·또는]+\s*X\b|○\s*[,/·]?\s*×/;
+function normOX(v){
+  const t = String(v == null ? '' : v).trim().replace(/[.。]$/, '').toUpperCase();
+  if(/^(O|Ｏ|○|◯|⭕|맞다|맞음|참|TRUE)$/.test(t)) return 'O';
+  if(/^(X|Ｘ|×|✕|✖|❌|틀리다|틀림|거짓|FALSE)$/.test(t)) return 'X';
+  return '';
+}
 function kindOf(it){
   if(it.kind) return it.kind;
   if(it.choices.length) return 'mc';
   const stem = it.parts.map(p => p.t === 'ln' ? p.s : p.lines.map(l => l.s).join(' ')).join(' ');
+  if(RE_OXTAG.test(stem) || it.parts.some(p => p.t === 'ln' && RE_OXMARK.test(p.s)) || normOX(it.answer)) return 'ox';
   if(/[\[<〈(【]\s*서술형/.test(stem)) return 'essay';
   if(/[\[<〈(【]\s*단답형/.test(stem)) return 'short';
   if(/(서술|설명|논술|논하|비교|분석|요약)하시오|서술형/.test(stem)) return 'essay';
   if(/(쓰시오|적으시오|구하시오|고르시오|찾으시오|답하시오|채우시오|넣으시오|무엇인가\?|단답형)/.test(stem)) return 'short';
+  if(it.oxCtx) return 'ox';
   return null;
 }
 function answerSpace(kind){
@@ -643,7 +658,7 @@ function el(html){ const t = document.createElement('template'); t.innerHTML = h
 
 function answerText(it){
   let a = it.answer.trim();
-  if(!it.choices.length) return a;
+  if(!it.choices.length) return normOX(a) || a;
   // 복수 정답: 2, 4 / 2,4 / 2 4 / 2와 4 / 2번, 4번 / ②④ / ②, ④  →  ②, ④
   if(/^[\s\d①-⑩,，/·、&+및와과번그리고]+$/.test(a)){
     const picks = [];
@@ -781,9 +796,13 @@ function render(){
   const pager = Pager(root);
   pager.start();
 
-  let n = 0; const withAns = [], sepN = {};
+  let n = 0, oxCtx = 0; const withAns = [], sepN = {};
   items.forEach((it, i) => {
     if(it.type === 'g'){
+      // '맞으면 O, 틀리면 X' 같은 묶음 안내 아래 문제는 O/X
+      //   [4~8] 처럼 범위가 있으면 그 문제 수만큼, 없으면 다음 묶음 안내까지
+      oxCtx = RE_OXHINT.test([it.title || ''].concat(it.parts.filter(p => p.t === 'ln').map(p => p.s)).join(' '))
+        ? (it.from != null ? Math.max(1, it.to - it.from + 1) : Infinity) : 0;
       let title = it.title;
       if(it.from != null){
         let a = it.from, b = it.to;
@@ -794,7 +813,9 @@ function render(){
       if(html) pager.place(el(`<div class="g"><div class="qb">${html}</div></div>`));
       return;
     }
+    if(oxCtx > 0){ oxCtx--; if(!it.choices.length && !it.sep) it.oxCtx = true; }
     const kind = kindOf(it);
+    if(kind === 'ox') it.parts.forEach(p => { if(p.t === 'ln') p.s = p.s.replace(RE_OXMARK, ''); });
     if(it.sep){                                   // [서술형 1] 처럼 따로 매기는 번호
       sepN[it.sep] = (sepN[it.sep] || 0) + 1;
       it.label = `${it.sep} ${o.renum ? sepN[it.sep] : it.num}`;
@@ -804,7 +825,12 @@ function render(){
     }
     if(it.answer || it.explain.length) withAns.push(it);
     const solve = o.solve > 0 && (kind === 'mc' || !kind) ? '<div class="solve"></div>' : '';
-    const body = partsHTML(it.parts, true) + choicesHTML(it.choices) + answerSpace(kind) + solve;
+    let stemHtml = partsHTML(it.parts, true);
+    if(kind === 'ox'){                            // 문장 바로 뒤에 ( O , X )
+      const tag = '<span class="ox">(&nbsp;O&nbsp;,&nbsp;X&nbsp;)</span>';
+      stemHtml = /<\/p>$/.test(stemHtml) ? stemHtml.replace(/<\/p>$/, tag + '</p>') : stemHtml + `<p style="text-align:right">${tag}</p>`;
+    }
+    const body = stemHtml + choicesHTML(it.choices) + answerSpace(kind) + solve;
     pager.place(el(it.sep
       ? `<div class="q sq"><div class="qb"><p class="sqh"><span class="badge">${esc(it.label)}</span></p>${body || '<p>&nbsp;</p>'}</div></div>`
       : `<div class="q"><div class="qn">${it.label}.</div><div class="qb">${body || '<p>&nbsp;</p>'}</div></div>`));
