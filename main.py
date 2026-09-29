@@ -7148,6 +7148,9 @@ def get_homeworks(student_name: str = "", x_admin_token: Optional[str] = Header(
     if db is None:
         return {"success": False, "homeworks": []}
     rows = [{"id": d.id, **d.to_dict()} for d in db.collection("homeworks").order_by("created_at", direction=firestore.Query.DESCENDING).stream()]
+    if not is_admin_request(x_admin_token) or student_name:
+        # 💡 원장님이 숨긴 과제(지난 과제 등)는 학생 화면에 보이지 않는다. 원장님 관리 화면만 본다.
+        rows = [h for h in rows if not h.get("hidden")]
     if student_name:
         # 💡 대상 반을 고른 과제는 그 반 학생에게만 보인다. 대상을 안 고른
         #    과제(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
@@ -7539,6 +7542,8 @@ async def create_homework(
                 "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
                 "deadline": deadline_str,
+                # 고치기로 저장해도 숨겨 둔 과제는 계속 숨긴다
+                "hidden": bool(prev_data.get("hidden", False)),
                 "created_at": created_at,
             }
         )
@@ -7684,6 +7689,25 @@ def delete_homework(title: str, _: bool = Depends(verify_admin)):
     if db:
         db.collection("homeworks").document(title).delete()
     return {"success": True}
+
+
+class HomeworkHideReq(BaseModel):
+    titles: list = []
+    hidden: bool = True
+
+
+@app.post("/api/admin/homework/hide", dependencies=[Depends(verify_admin)])
+def hide_homeworks(req: HomeworkHideReq):
+    """지난 과제를 학생 화면에서 숨기거나 다시 보이게 한다. 지우는 게 아니라 제출 기록 · 채점은 그대로 남는다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    n = 0
+    for t in [str(x) for x in (req.titles or [])][:500]:
+        ref = db.collection("homeworks").document(sanitize_doc_id(t))
+        if ref.get().exists:
+            ref.set({"hidden": bool(req.hidden)}, merge=True)
+            n += 1
+    return {"success": True, "count": n}
 
 
 @app.post("/api/homework/submit")
@@ -7864,7 +7888,7 @@ def student_todo(student_name: str):
     for d in db.collection("homeworks").stream():
         h = d.to_dict() or {}
         title = h.get("title", "")
-        if not title or title in done["과제 제출"]:
+        if not title or title in done["과제 제출"] or h.get("hidden"):
             continue
         if not task_visible_to_student("", task_target_classes(h), name, info):
             continue
