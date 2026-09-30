@@ -63,6 +63,11 @@
   #msg{font-size:12px;color:var(--warn);min-height:1em}
   #msg.ok{color:#059669}
   #libState{font-size:12px;color:var(--sub);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 문제지 / 정리 노트 고르기 — 한쪽에만 쓰는 칸은 감춘다 */
+  .tabs{display:flex;gap:6px;margin-bottom:12px}
+  .tabs button{flex:1;font-weight:700;padding:9px 10px}
+  .tabs button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .left.note .qo,.left:not(.note) .no{display:none!important}
 
   /* ── 보관함 ── */
   dialog#lib{width:min(720px,calc(100% - 24px));max-height:calc(100% - 24px);padding:0;border:1px solid var(--line);
@@ -169,6 +174,52 @@
   .missing{color:#c00}
   .tall{outline:2px dashed #e11;outline-offset:1mm}
 
+  /* ── 강조 상자 (지문 요약 · 정리 노트의 [핵심] 등) ── */
+  .box.call{position:relative;border:.35mm solid var(--t1);border-radius:2mm;margin:3.4mm 0 1.8mm;padding:2.9mm 3.5mm 1.9mm}
+  .box.call>.lbl{top:-.8em;left:3mm;transform:none;background:var(--t1);color:#fff;border-radius:1mm;
+                 padding:0 2.2mm;font-size:.84em;font-weight:700;letter-spacing:.04em}
+  .box.call.sum{background:var(--tl)}
+  .box.call.warn{border-color:#b91c1c;background:#fef5f5}
+  .box.call.warn>.lbl{background:#b91c1c}
+  .box.call.tip{border-color:var(--t2)}
+  .box.call.tip>.lbl{background:var(--t2)}
+  .box.call.ex{border-style:dashed}
+  /* ── 정리 노트 ── */
+  .nb{padding-bottom:2.4mm}
+  .nb .qb>p+p{margin-top:.2em}
+  .nb .qb p.pg{margin-top:.7em}
+  .qb p.nh{break-after:avoid}
+  .qb p.nh1{font-size:1.45em;font-weight:800;color:var(--t1);line-height:1.35;margin:.6mm 0 2.4mm;
+            padding-bottom:1mm;border-bottom:.6mm solid var(--t2)}
+  .qb p.nh2{font-size:1.16em;font-weight:800;color:var(--t1);line-height:1.4;margin:2.6mm 0 1.8mm;padding:1mm 3mm;
+            background:var(--tl);border-left:1.6mm solid var(--t1);border-radius:0 1.5mm 1.5mm 0}
+  .qb p.nh3{font-size:1.04em;font-weight:700;color:var(--t2);margin:1.8mm 0 .6mm}
+  .qb p.nh3::before{content:"▸ "}
+  .qb p.nh:first-child{margin-top:0}
+  .qb p.hang.l1{padding-left:4.5mm}
+  .qb p.hang.l2{padding-left:9mm}
+  .qb p.hang.l3{padding-left:13.5mm}
+  .qb p.hang>.mk.dot{color:var(--t2);font-weight:900}
+  .qb p.hang>.mk.num{color:var(--t1);font-weight:800}
+  .qb p.qa{gap:2mm;align-items:flex-start}
+  .qb p.qa>.mk{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;margin-top:-.05em;
+               border-radius:50%;color:#fff;font-weight:800;font-size:.9em;line-height:1}
+  .qb p.qq{background:var(--tl);border-radius:1.8mm;padding:1.6mm 2.6mm;font-weight:700;margin:1mm 0 1.4mm}
+  .qb p.qq>.mk{background:var(--t1)}
+  .qb p.aa>.mk{background:var(--t2)}
+  .box.quote{border:0;border-left:1mm solid var(--t2);border-radius:0 1.5mm 1.5mm 0;background:#f5f6f8;color:#333;padding:1.6mm 3mm}
+  .box.code{border:.25mm solid #cfd3da;border-radius:1.5mm;background:#f7f8fa;padding:1.6mm 3mm;
+            font-family:ui-monospace,"D2Coding",Consolas,monospace;font-size:.86em;line-height:1.5}
+  .box.code p{white-space:pre-wrap}
+  table.nt{border-collapse:collapse;width:100%;margin:1.6mm 0;font-size:.95em}
+  table.nt th,table.nt td{border:.25mm solid #9aa1ab;padding:1mm 2mm;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+  table.nt th{background:var(--tl);color:var(--t1);font-weight:700}
+  hr.nhr{border:0;border-top:.3mm dashed #aab;margin:2.4mm 0}
+  .qb p.fig{text-align:center;margin:1.6mm 0}
+  .qb p.fig img{max-height:200mm;border:.3mm solid #d4d7dd;border-radius:2mm;padding:1mm;background:#fff}
+  .qb mark{background:linear-gradient(transparent 52%,#fde68a 52%);color:inherit}
+  .qb code{font-family:ui-monospace,"D2Coding",Consolas,monospace;font-size:.9em;background:#f0f1f4;border-radius:.8mm;padding:0 1mm}
+
   @page{size:A4;margin:0}
   @media print{
     html,body{background:#fff;height:auto}
@@ -201,10 +252,14 @@
 
 <div class="main">
   <div class="left">
+    <div class="tabs">
+      <button data-mode="quiz" title="문제를 붙여 넣어 시험지로">📝 문제지</button>
+      <button data-mode="note" title="Claude에게 물어본 답(글·캡처)을 붙여 넣어 예쁜 정리 노트로">📒 정리 노트</button>
+    </div>
     <details id="optBox" open>
-      <summary>시험지 설정</summary>
+      <summary><span class="qo">시험지 설정</span><span class="no">정리 노트 설정</span></summary>
       <div class="grid">
-        <label class="full">시험 이름<input type="text" data-k="title" placeholder="예: 3월 월말평가"></label>
+        <label class="full"><span class="qo">시험 이름</span><span class="no">노트 제목 (비워 두면 글의 첫 <code># 제목</code>)</span><input type="text" data-k="title" placeholder="예: 3월 월말평가"></label>
         <label>머리말 왼쪽 (모든 쪽)<input type="text" data-k="bandL" placeholder="예: LOGYEDU"></label>
         <label>머리말 오른쪽 (모든 쪽)<input type="text" data-k="bandR" placeholder="예: 로지에듀 최준용 국어"></label>
         <label>색상
@@ -217,31 +272,36 @@
         <label>학원·학교 이름<input type="text" data-k="org" placeholder="예: ○○학원"></label>
         <label>과목·범위<input type="text" data-k="subject" placeholder="예: 중2 수학 1단원"></label>
         <label>날짜<input type="text" data-k="date" placeholder="예: 2026. 9. 25."></label>
-        <label>단 나누기
+        <label class="qo">단 나누기
           <select data-k="cols" data-num="1"><option value="2">2단 (시험지형)</option><option value="1">1단</option></select></label>
+        <label class="no">단 나누기
+          <select data-k="noteCols" data-num="1"><option value="1">1단 (넓게)</option><option value="2">2단</option></select></label>
         <label>글꼴
           <select data-k="font"><option value="gothic">고딕</option><option value="myeongjo">명조 (바탕)</option></select></label>
         <label>글자 크기 (pt)<input type="number" data-k="fs" data-num="1" min="7" max="16" step="0.5"></label>
         <label>줄 간격<input type="number" data-k="lh" data-num="1" min="1.1" max="2.4" step="0.1"></label>
-        <label>문제 사이 간격 (mm)<input type="number" data-k="gap" data-num="1" min="0" max="40" step="1"></label>
-        <label>풀이 공간 (mm)<input type="number" data-k="solve" data-num="1" min="0" max="120" step="5"></label>
-        <label class="chk"><input type="checkbox" data-k="ansBox"> 단답형·서술형 답 칸 넣기</label>
-        <label>서술형 답 칸 줄 수<input type="number" data-k="essayRows" data-num="1" min="1" max="30" step="1"></label>
+        <label class="qo">문제 사이 간격 (mm)<input type="number" data-k="gap" data-num="1" min="0" max="40" step="1"></label>
+        <label class="qo">풀이 공간 (mm)<input type="number" data-k="solve" data-num="1" min="0" max="120" step="5"></label>
+        <label class="chk qo"><input type="checkbox" data-k="ansBox"> 단답형·서술형 답 칸 넣기</label>
+        <label class="qo">서술형 답 칸 줄 수<input type="number" data-k="essayRows" data-num="1" min="1" max="30" step="1"></label>
         <label class="chk"><input type="checkbox" data-k="nameBox"> 이름 칸</label>
-        <label class="chk"><input type="checkbox" data-k="scoreBox"> 점수 칸</label>
-        <label class="chk"><input type="checkbox" data-k="renum"> 번호 자동으로 다시 매기기</label>
-        <label>'않은 것' 밑줄
+        <label class="chk qo"><input type="checkbox" data-k="scoreBox"> 점수 칸</label>
+        <label class="chk qo"><input type="checkbox" data-k="renum"> 번호 자동으로 다시 매기기</label>
+        <label class="qo">'않은 것' 밑줄
           <select data-k="negUl"><option value="word">'않은'에만 (수능식)</option><option value="phrase">'적절하지 않은' 전체</option><option value="off">밑줄 없음</option></select></label>
         <label class="chk"><input type="checkbox" data-k="pageNo"> 쪽 번호</label>
-        <label class="chk"><input type="checkbox" data-k="answers"> 맨 뒤에 정답지 붙이기</label>
-        <label class="chk"><input type="checkbox" data-k="explain"> 정답지에 해설 넣기</label>
-        <label class="chk full"><input type="checkbox" data-k="ansSheet"> 양면 인쇄용: 정답은 새 종이에서 시작 (문제 뒷면에 정답이 비치지 않게)</label>
+        <label class="chk qo"><input type="checkbox" data-k="answers"> 맨 뒤에 정답지 붙이기</label>
+        <label class="chk qo"><input type="checkbox" data-k="explain"> 정답지에 해설 넣기</label>
+        <label class="qo">지문 요약 싣는 곳
+          <select data-k="sumAt"><option value="here">문제지 (쓴 자리)</option><option value="back">정답지 (뒷장)</option><option value="off">싣지 않음</option></select></label>
+        <label class="chk full qo"><input type="checkbox" data-k="ansSheet"> 양면 인쇄용: 정답은 새 종이에서 시작 (문제 뒷면에 정답이 비치지 않게)</label>
       </div>
     </details>
 
     <div class="row" style="justify-content:space-between">
-      <b>문제 넣기</b>
+      <b><span class="qo">문제 넣기</span><span class="no">내용 넣기</span></b>
       <span>
+        <button id="btnSum" title="고른 지문(또는 커서가 있는 [지문] 상자)에서 핵심어와 중심 문장을 뽑아 [요약] 상자로 넣기">✂ 지문 요약</button>
         <button id="btnImg" title="그림 파일을 골라 커서 자리에 넣기">🖼 그림 넣기</button>
         <input type="file" id="fileImg" accept="image/*" multiple hidden>
       </span>
@@ -250,7 +310,26 @@
     <div id="msg"></div>
     <div class="imgs" id="imgList"></div>
 
-    <details style="margin-top:12px">
+    <details class="no" style="margin-top:12px" open>
+      <summary>쓰는 법 (정리 노트)</summary>
+      <div class="hint">
+        <p>Claude에게 물어본 답을 <b>복사해 그대로 붙여 넣으면</b> 제목·목록·표·굵은 글씨를 살려 A4 정리 노트로 꾸밉니다.
+           답 아래의 복사 버튼으로 복사해도 되고, 화면에서 마우스로 긁어 복사해도 됩니다.</p>
+        <p><b>캡처</b> — 화면을 캡처해서(윈도우 <code>Win+Shift+S</code>, 맥 <code>⌘+Ctrl+Shift+4</code>) 입력칸에 붙여 넣으면
+           테두리를 두른 그림으로 들어갑니다. [🖼 그림 넣기]로 캡처 파일을 골라도 됩니다.</p>
+        <p><b>질문·답</b> — <code>Q. 물어본 내용</code> <code>A. 답</code> 으로 시작하는 줄은 질문 카드·답 표시로 꾸밉니다.</p>
+        <p><b>제목</b> — <code># 큰 제목</code> <code>## 소제목</code> <code>### 작은 제목</code>. 맨 처음 <code>#</code> 제목은 노트 제목이 됩니다.</p>
+        <p><b>목록</b> — <code>- 항목</code> <code>1. 항목</code>. 앞에 칸을 두 칸 띄우면 한 단계 안으로 들어갑니다.</p>
+        <p><b>강조 상자</b> — <code>[핵심]</code> … <code>[/핵심]</code>. 이름은 마음대로 씁니다.
+           요약·핵심·정리는 색 상자, 주의·함정·오답은 빨간 상자, 예시는 점선 상자, 그 밖은 테두리 상자.</p>
+        <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>==형광펜==</code> <code>&gt; 인용</code> <code>---</code>(가름줄),
+           표는 <code>| 칸 | 칸 |</code></p>
+        <p><b>지문 요약</b> — 지문을 붙여 넣고 마우스로 끌어 고른 뒤 [✂ 지문 요약]을 누르면 핵심어와 중심 문장을 뽑아 <code>[요약]</code> 상자로 넣어 줍니다.</p>
+        <p>[📥 보관함에 넣기]·[PDF로 저장 / 인쇄]는 문제지와 똑같이 씁니다. 보관함에는 📒 표시로 모입니다.</p>
+      </div>
+    </details>
+
+    <details class="qo" style="margin-top:12px">
       <summary>쓰는 법</summary>
       <div class="hint">
         <p>한글·워드·PDF·카톡에서 복사해 그대로 붙여 넣으면 됩니다. 오른쪽에 바로 시험지 모양으로 나옵니다.</p>
@@ -268,6 +347,10 @@
         <p><b>&lt;보기&gt; 상자</b> — <code>&lt;보기&gt;</code> 줄 다음부터 선택지 전까지 상자로 묶습니다.<br>
            <b>지문 상자</b> — <code>[지문]</code> … <code>[/지문]</code></p>
         <p><b>묶음 지문</b> — <code>[1~3] 다음 글을 읽고 물음에 답하시오.</code></p>
+        <p><b>지문 요약</b> — 지문을 <code>[지문]</code> … <code>[/지문]</code>으로 묶어 두거나 마우스로 끌어 고른 뒤 [✂ 지문 요약]을 누르면,
+           핵심어와 문단마다의 중심 문장을 뽑아 지문 바로 아래에 <code>[요약]</code> … <code>[/요약]</code> 상자로 넣습니다.
+           인터넷·AI 없이 지문 속 문장을 골라 뽑는 방식이니 필요하면 고쳐 쓰세요. 직접 써 넣어도 됩니다.
+           요약 상자를 문제지에 둘지 정답지(뒷장)로 보낼지는 설정의 '지문 요약 싣는 곳'에서 고릅니다.</p>
         <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>x^{2}</code>(위첨자) <code>a_{1}</code>(아래첨자)<br>
            발문의 <code>적절하지 않은</code> · <code>옳지 않은</code> · <code>없는 것</code> · <code>아닌 것</code> · <code>틀린 것</code> · <code>거리가 먼 것</code>에는 저절로 밑줄이 쳐집니다.</p>
         <p><b>그림</b> — 그림을 복사해 입력칸에 붙여 넣거나 [🖼 그림 넣기]. <code>[그림:그림1 50%]</code>처럼 쓰면 폭을 줄일 수 있습니다.</p>
@@ -313,6 +396,7 @@ const DEF = {
   theme:'ocean', bandL:'LOGYEDU', bandR:'로지에듀 최준용 국어',
   motto:'파도의 방향은 바꿀 수 없어도 노를 젓는 방향은 바꿀 수 있다',
   nameBox:true, scoreBox:true, renum:true, negUl:'word', pageNo:true, answers:true, explain:true, ansSheet:true,
+  mode:'quiz', noteCols:1, sumAt:'here',   // mode: 'quiz' 문제지 / 'note' 정리 노트
 };
 const FONTS = {
   gothic:'"Noto Sans KR","Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Nanum Gothic",sans-serif',
@@ -346,6 +430,39 @@ const SAMPLE = `[1~2] 다음 글을 읽고 물음에 답하시오.
 나는 어제 친구와 함께 도서관에 갈 것이다.
 정답: 갈 것이다 → 갔다
 `;
+const NOTE_SAMPLE = `# 비유법 한눈에 정리
+
+Q. 직유법과 은유법은 어떻게 달라요?
+
+A. 둘 다 어떤 대상을 **다른 대상에 빗대어** 나타내는 방법이지만, 빗대는 말을 **드러내느냐 숨기느냐**가 다릅니다.
+
+## 1. 직유법
+- '~같이', '~처럼', '~듯이' 같은 **연결어로 직접** 견줍니다.
+- 예) 쟁반같이 둥근 달 / 앵두 같은 입술
+
+## 2. 은유법
+- 연결어 없이 'A는 B이다' 꼴로 **슬쩍** 빗댑니다.
+- 예) 내 마음은 호수요 / 시간은 금이다
+
+## 3. 한눈에 비교
+| 구분 | 직유법 | 은유법 |
+|---|---|---|
+| 연결어 | 있음 (같이·처럼·듯이) | 없음 |
+| 기본 꼴 | A는 B 같다 | A는 B이다 |
+| 느낌 | 분명하고 쉽다 | 압축적이고 강렬하다 |
+
+[핵심 정리]
+연결어가 **있으면 직유법**, **없으면 은유법**!
+[/핵심 정리]
+
+[주의]
+'~같다'가 있어도 **추측**('비가 올 것 같다')이면 비유가 아닙니다.
+[/주의]
+
+> 시험에서는 먼저 ==연결어가 있는지== 확인하는 습관을 들이세요.
+`;
+const isSample = t => t === SAMPLE || t === NOTE_SAMPLE;
+const isNote = () => S.opt.mode === 'note';
 
 let S = { opt:{...DEF}, text:SAMPLE, images:{}, logo:'', libId:'' };
 const THEMES = {
@@ -452,7 +569,9 @@ const RE_ANS   = /^\s*(?:[\[【<〈(]\s*(?:정답|답)\s*[\]】>〉)]|(?:정답|
 const RE_EXP   = /^\s*(?:[\[【<〈(]\s*(?:해설|풀이)\s*[\]】>〉)]|(?:해설|풀이)\s*[:：]|해설(?=\s|$))\s*(.*)$/;
 const RE_BOGI  = /^\s*[<〈《＜\[【(]\s*보\s*기\s*[>〉》＞\]】)]\s*$/;
 const RE_BOX   = /^\s*\[(지문|박스|상자)\]\s*$/;
-const RE_BOXEND= /^\s*\[\/(보기|지문|박스|상자)\]\s*$/;
+const RE_BOXEND= /^\s*\[\/\s*(보기|지문|박스|상자|(?:지문\s*)?요약|핵심\s*정리)\s*\]\s*$/;
+// [요약] … [/요약] — 지문 요약 상자 (직접 쓰거나 [✂ 지문 요약]으로 만든다)
+const RE_SUM   = /^\s*[\[【]\s*(?:(?:지문\s*)?요약|핵심\s*정리)\s*[\]】]\s*$/;
 // [서술형 1] / 서술형 2. / <단답형 3> — 본 번호와 따로 매기는 서술형·단답형 문제
 const RE_SQ    = /^\s*[\[<〈(【]?\s*(서술형|단답형)\s*(\d{1,3})\s*[\]>〉)】]?\s*[.．:)]?(?:\s+|$)(.*)$/;
 const RE_CHOICE= /^\s*(?:[①-⑩]|\(\d{1,2}\)|[1-9]\)\s)/;
@@ -506,7 +625,7 @@ function parse(src){
     }
     if(!empty){
       const special = RE_ANS.test(line) || RE_EXP.test(line) || RE_CHOICE.test(line)
-                   || RE_BOGI.test(line) || RE_BOX.test(line) || RE_BOXEND.test(line);
+                   || RE_BOGI.test(line) || RE_BOX.test(line) || RE_BOXEND.test(line) || RE_SUM.test(line);
       if(!numbered){
         if(!cur || (blank && !special && state !== 'box-x')){ flush(); cur = newQ(null); }
       } else if(blank && !special && state !== 'box-x' && state !== 'explain'
@@ -527,6 +646,7 @@ function parse(src){
 
     if(RE_BOGI.test(line)){ box = {t:'box', label:'보기', lines:[], gap:false}; cur.parts.push(box); state = 'box'; continue; }
     if(RE_BOX.test(line)){  box = {t:'box', label:'', lines:[], gap:false};     cur.parts.push(box); state = 'box-x'; continue; }
+    if(RE_SUM.test(line)){  box = {t:'box', label:'지문 요약', sum:true, lines:[], gap:false}; cur.parts.push(box); state = 'box-x'; continue; }
     if(RE_BOXEND.test(line)){ state = 'body'; box = null; continue; }
 
     if(state !== 'box-x' && RE_CHOICE.test(line) && cur.type === 'q'){
@@ -584,6 +704,7 @@ const lnHTML = (l, cls='', stem=false) => {
 };
 function partsHTML(parts, stem=false){
   return parts.map(p => p.t === 'ln' ? lnHTML(p, '', stem)
+    : p.sum ? `<div class="box call sum"><span class="lbl">${p.label}</span>${p.lines.map(l=>lnHTML(l)).join('') || '<p>&nbsp;</p>'}</div>`
     : `<div class="box${p.label?' lb':''}">${p.label?`<span class="lbl">&lt;${p.label}&gt;</span>`:''}${p.lines.map(l=>lnHTML(l)).join('')}</div>`
   ).join('');
 }
@@ -672,10 +793,280 @@ function answerText(it){
 }
 
 // ─────────────────────────────────────────────
+// 정리 노트 — Claude 등에게 물어본 답(마크다운 비슷한 글·캡처 그림)을 A4 노트 틀로 꾸민다
+// ─────────────────────────────────────────────
+const RE_N_HEAD  = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
+const RE_N_BOLDH = /^\s*\*\*([^*]{1,60})\*\*\s*[:：]?\s*$/;          // **소제목** 만 있는 줄
+const RE_N_HR    = /^\s*(?:[-*_─━═]\s*){3,}$/;
+const RE_N_FENCE = /^\s*(?:```|~~~)/;
+const RE_N_QUOTE = /^\s*>\s?(.*)$/;
+const RE_N_LIST  = /^(\s*)([-*+•·▪◦‣]|\d{1,2}[.)]|[①-⑩]|[ㄱ-ㅎ][.)]|[가나다라마바사아자차카타파하][.)])\s+(.*)$/;
+const RE_N_QA    = /^\s*(?:\*\*)?(Q|A|질문|답변)\s*\d{0,2}\s*[.:：)]\s*(?:\*\*)?\s*(.*)$/i;
+const RE_N_TABLE = /^\s*\|.*\|\s*$/;
+const RE_N_CALL  = /^\s*[\[【]\s*(?!그림\s*:)([^\]】\/\d][^\]】]{0,11}?)\s*[\]】]\s*$/;
+const RE_N_CEND  = /^\s*[\[【]\s*\/[^\]】]{0,12}[\]】]\s*$/;
+const RE_N_IMG   = /^\s*\[그림:[^\]]+\]\s*$/;
+const RE_N_H1    = /^\s{0,3}#\s+(.+?)\s*#*\s*$/m;
+
+const noteTitle = () => { const m = S.text.match(RE_N_H1); return m ? plain(m[1]).replace(/==/g, '') : ''; };
+// 제목 칸을 비워 두면 글의 첫 '# 제목'을 노트 제목으로 올리고 본문에서는 뺀다
+const noteBody = () => S.opt.title.trim() || !noteTitle() ? S.text : S.text.replace(RE_N_H1, '');
+const docName = () => S.opt.title.trim() || (isNote() ? noteTitle() || '정리 노트' : '문제지');
+
+function nfmt(s){
+  const h = fmt(s.replace(/\[([^\]]+)\]\((?:https?:|mailto:)[^)\s]*\)/g, '$1'));   // [글](주소) → 글
+  return h.replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/==(.+?)==/g, '<mark>$1</mark>')
+          .replace(/(^|[^*\w])\*(?![\s*])([^*]+?)\*(?![*\w])/g, '$1<i>$2</i>');
+}
+function callKind(label){
+  if(/요약|핵심|정리|결론|포인트|중요|정답/.test(label)) return 'sum';
+  if(/주의|함정|오답|실수|경고|조심|틀리기/.test(label)) return 'warn';
+  if(/예시|예문|보기|^예$/.test(label)) return 'ex';
+  return 'tip';
+}
+function noteLine(line, pg){
+  const g = pg ? ' pg' : '';
+  let m;
+  if(RE_N_IMG.test(line)) return `<p class="fig${g}">${fmt(line.trim())}</p>`;
+  if((m = line.match(RE_N_QA))){
+    const q = /^(q|질문)$/i.test(m[1]);
+    return `<p class="hang qa ${q ? 'qq' : 'aa'}${g}"><span class="mk">${q ? 'Q' : 'A'}</span><span>${nfmt(m[2]) || '&nbsp;'}</span></p>`;
+  }
+  if((m = line.match(RE_N_LIST))){
+    const lv = Math.min(3, Math.floor(m[1].replace(/\t/g, '  ').length / 2));
+    const dot = /^[-*+•·▪◦‣]$/.test(m[2]);
+    return `<p class="hang${lv ? ' l' + lv : ''}${g}"><span class="mk ${dot ? 'dot' : 'num'}">${dot ? '•' : esc(m[2])}</span><span>${nfmt(m[3])}</span></p>`;
+  }
+  return `<p class="${g.trim()}">${nfmt(line.trim()) || '&nbsp;'}</p>`;
+}
+function tableHTML(rows){
+  const cells = r => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+  const sep = r => /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(r);
+  let head = null, body = rows;
+  if(rows.length > 1 && sep(rows[1])){ head = cells(rows[0]); body = rows.slice(2); }
+  body = body.filter(r => !sep(r));
+  return `<table class="nt">${head ? `<tr>${head.map(c => `<th>${nfmt(c)}</th>`).join('')}</tr>` : ''}`
+       + body.map(r => `<tr>${cells(r).map(c => `<td>${nfmt(c) || '&nbsp;'}</td>`).join('')}</tr>`).join('') + '</table>';
+}
+// 글 → 쪽에 실을 덩어리들. 제목(#)마다 새 덩어리를 시작하고, 긴 덩어리는 쪽 나누기에서 줄 단위로 나뉜다.
+function noteBlocks(text){
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let cur = [], gap = false;
+  const flush = () => { if(cur.length) out.push(el(`<div class="g nb"><div class="qb">${cur.join('')}</div></div>`)); cur = []; };
+  const inner = ls => { let pg = false; const h = [];
+    for(const l of ls){ if(!l.trim()){ pg = h.length > 0; continue; } h.push(noteLine(l, pg)); pg = false; }
+    return h.join('') || '<p>&nbsp;</p>'; };
+  for(let i = 0; i < lines.length; i++){
+    const line = lines[i].replace(/\s+$/, '');
+    if(!line.trim()){ gap = cur.length > 0; continue; }
+    const pg = gap; gap = false;
+    let m;
+    if(RE_N_FENCE.test(line)){                           // ``` 코드 ```
+      const body = [];
+      for(i++; i < lines.length && !RE_N_FENCE.test(lines[i]); i++) body.push(lines[i].replace(/\s+$/, ''));
+      cur.push(`<div class="box code">${body.map(l => `<p>${esc(l) || '&nbsp;'}</p>`).join('') || '<p>&nbsp;</p>'}</div>`);
+      continue;
+    }
+    if((m = line.match(RE_N_HEAD))){
+      flush();
+      const lv = m[1].length;
+      cur.push(`<p class="nh ${lv === 1 ? 'nh1' : lv === 2 ? 'nh2' : 'nh3'}">${nfmt(m[2])}</p>`);
+      continue;
+    }
+    if((m = line.match(RE_N_BOLDH)) && !RE_N_LIST.test(line)){ cur.push(`<p class="nh nh3">${nfmt(m[1])}</p>`); continue; }
+    if(RE_N_HR.test(line)){ cur.push('<hr class="nhr">'); continue; }
+    if((m = line.match(RE_N_CALL))){                     // [핵심] … [/핵심]
+      const label = m[1].trim(), body = [];
+      let j = i + 1;
+      while(j < lines.length && !RE_N_CEND.test(lines[j])) j++;
+      if(j < lines.length){ for(let k = i + 1; k < j; k++) body.push(lines[k]); i = j; }
+      else { for(i++; i < lines.length && lines[i].trim() && !RE_N_HEAD.test(lines[i]); i++) body.push(lines[i]); i--; }
+      cur.push(`<div class="box call ${callKind(label)}"><span class="lbl">${esc(label)}</span>${inner(body)}</div>`);
+      continue;
+    }
+    if(RE_N_QUOTE.test(line)){                            // > 인용
+      const body = [];
+      for(; i < lines.length && RE_N_QUOTE.test(lines[i]); i++) body.push(lines[i].match(RE_N_QUOTE)[1]);
+      i--;
+      cur.push(`<div class="box quote">${inner(body)}</div>`);
+      continue;
+    }
+    if(RE_N_TABLE.test(line)){                            // | 표 |
+      const rows = [];
+      for(; i < lines.length && RE_N_TABLE.test(lines[i]); i++) rows.push(lines[i]);
+      i--;
+      cur.push(tableHTML(rows));
+      continue;
+    }
+    cur.push(noteLine(line, pg));
+  }
+  flush();
+  return out;
+}
+
+// 웹 화면(Claude 등)에서 긁어 복사한 글 → 노트 글. 제목·목록·표·굵은 글씨를 살린다.
+function htmlToNote(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');   // 스크립트는 돌지 않는다
+  doc.querySelectorAll('script,style,noscript,button,svg,template,iframe').forEach(n => n.remove());
+  const out = [];
+  const BLOCK = /^(p|div|section|article|main|header|footer|aside|nav|h[1-6]|ul|ol|li|table|thead|tbody|tr|pre|blockquote|hr|figure|details|summary|dl|dt|dd)$/;
+  const tag = n => n.nodeType === 1 ? n.tagName.toLowerCase() : '';
+  const hasBlock = n => [...n.children].some(c => BLOCK.test(tag(c)) || hasBlock(c));
+  const wrap = (x, a, b = a) => { const t = x.trim(); return t ? a + t + b : ''; };
+  const inl = n => {
+    if(n.nodeType === 3) return n.nodeValue.replace(/\s+/g, ' ');
+    const t = tag(n); if(!t) return '';
+    const c = () => [...n.childNodes].map(inl).join('');
+    if(t === 'br') return '\n';
+    if(t === 'strong' || t === 'b') return wrap(c(), '**');
+    if(t === 'u' || t === 'ins') return wrap(c(), '__');
+    if(t === 'mark') return wrap(c(), '==');
+    if(t === 'code') return wrap(n.textContent, '`');
+    if(t === 'sup') return wrap(c(), '^{', '}');
+    if(t === 'sub') return wrap(c(), '_{', '}');
+    if(t === 'img') return '';
+    return c();
+  };
+  const line = s => { s = s.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').trim(); if(s) out.push(s); };
+  const list = (l, depth) => {
+    let k = +(l.getAttribute('start') || 1);
+    for(const li of l.children){
+      if(tag(li) !== 'li') continue;
+      const mk = tag(l) === 'ol' ? `${k++}.` : '-';
+      let txt = ''; const subs = [];
+      for(const ch of li.childNodes){
+        if(/^(ul|ol)$/.test(tag(ch))) subs.push(ch);
+        else if(BLOCK.test(tag(ch))) txt += ' ' + inl(ch);
+        else txt += inl(ch);
+      }
+      out.push('  '.repeat(depth) + mk + ' ' + txt.replace(/\s+/g, ' ').trim());
+      subs.forEach(s => list(s, depth + 1));
+    }
+  };
+  const walk = n => {
+    let run = '';
+    const flushRun = () => { line(run); run = ''; };
+    for(const ch of n.childNodes){
+      const t = tag(ch);
+      if(ch.nodeType === 3 || (t && !BLOCK.test(t) && !hasBlock(ch))){ run += inl(ch); continue; }
+      if(!t) continue;
+      flushRun();
+      if(/^h[1-6]$/.test(t)){ out.push('', '#'.repeat(Math.min(3, +t[1])) + ' ' + inl(ch).replace(/\s+/g, ' ').trim(), ''); }
+      else if(t === 'p'){ line(inl(ch)); out.push(''); }
+      else if(t === 'ul' || t === 'ol'){ list(ch, 0); out.push(''); }
+      else if(t === 'pre'){ out.push('```', ch.textContent.replace(/\n+$/, ''), '```', ''); }
+      else if(t === 'blockquote'){ htmlToNote(ch.innerHTML).split('\n').forEach(l => out.push(l.trim() ? '> ' + l : '>')); out.push(''); }
+      else if(t === 'table'){
+        const rows = [...ch.querySelectorAll('tr')].map(tr => [...tr.children].map(td => inl(td).replace(/\s+/g, ' ').replace(/\|/g, '／').trim()));
+        rows.forEach((r, k) => { out.push('| ' + r.join(' | ') + ' |'); if(k === 0) out.push('|' + r.map(() => '---').join('|') + '|'); });
+        out.push('');
+      }
+      else if(t === 'hr'){ out.push('---'); }
+      else walk(ch);
+    }
+    flushRun();
+  };
+  walk(doc.body);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ─────────────────────────────────────────────
+// 지문 요약 — 인터넷·AI 없이: 지문에 자주 나오는 낱말(핵심어)을 세고,
+//   문단마다 그 낱말을 가장 많이 담은 문장(중심 문장)을 골라 뽑는다.
+// ─────────────────────────────────────────────
+const JOSA = ('으로써 으로서 에서는 에게서 으로는 이라는 이라고 에서도 까지는 부터는 이지만 에서 에게 께서 한테 으로 이라 라는 라고 처럼 보다 까지 '
+  + '부터 마다 조차 밖에 이나 이며 이고 와는 과는 에는 에도 로는 로서 로써 은 는 이 가 을 를 에 의 와 과 도 만 로 나 랑').split(' ');
+const STOP = new Set(('그리고 그러나 하지만 그런데 또한 따라서 그래서 그러므로 이처럼 이렇게 이러한 이런 그런 저런 그러한 우리 이것 그것 저것 무엇 어떤 '
+  + '때문 경우 정도 사실 자신 모든 여러 다른 같은 대한 위해 위한 통해 가장 매우 아주 모두 함께 이후 이전 다음 사이 가지 하나 부분 결과 이상 이하 '
+  + '오늘 이제 지금 누구 어디 언제 이미 다시 계속 바로 먼저 결국 한편 게다가 더욱 특히 역시 물론 아마 거의 무척 얼마 그렇게 이렇듯 즉 곧 더 또 것 수 등 때 중').split(' '));
+const RE_PRED = /(?:습니다|니다|했다|하였다|한다|된다|이다|였다|었다|았다|겠다|는다|하는|되는|있는|없는|하며|하고|하여|해서|하게|되어|되고|지만|면서|는데|으며|어야|아야|도록|려고|어서|아서|으면|하면|이며|이고|다고|듯이|다가|ㄴ다|한|된|할|될|함|됨|했|됐)$/;
+function stemWord(w){
+  if(/^\d+$/.test(w)) return '';
+  if(/[가-힣]/.test(w)){
+    if(w.length >= 3 && (RE_PRED.test(w) || /다$/.test(w))) return '';
+    for(const j of JOSA) if(w.length - j.length >= 2 && w.endsWith(j)){ w = w.slice(0, -j.length); break; }
+    if(w.length >= 3 && w.endsWith('들')) w = w.slice(0, -1);
+    if(w.length >= 3 && RE_PRED.test(w)) return '';
+  } else w = w.toLowerCase();
+  return w.length >= 2 && !STOP.has(w) ? w : '';
+}
+const wordsOf = s => (s.match(/[가-힣A-Za-z0-9]+/g) || []).map(stemWord).filter(Boolean);
+const sentencesOf = p => p.split(/(?<=[.!?。？！…]["'”’」』)]*)\s+/).map(x => x.trim()).filter(x => x.length > 1);
+const RE_CONCL = /따라서|그러므로|결국|요컨대|즉,|이처럼|이와 같이|이렇듯|결론적으로|중요하|핵심|필요하다|해야 한다|할 수 있다/;
+const RE_LEAD  = /^(?:그러나|하지만|그런데|또한|그리고|따라서|그러므로|이처럼|이와 같이|이렇듯|즉|결국|요컨대|한편|게다가|더구나|그래서)\s*,?\s*/;
+function summarize(src){
+  const text = plain(src).replace(/==/g, '').replace(/\r\n?/g, '\n');
+  // 빈 줄로 문단을 나누고, 빈 줄이 없으면 문장이 끝난 줄에서 문단을 나눈다 (PDF처럼 줄이 중간에 끊긴 글도 이어 붙인다)
+  let paras = text.split(/\n[ \t]*\n/);
+  if(paras.length === 1){
+    paras = []; let buf = '';
+    for(const l of text.split('\n').map(x => x.trim()).filter(Boolean)){
+      buf += (buf ? ' ' : '') + l;
+      if(/[.!?。？！…]["'”’」』)]*$/.test(l)){ paras.push(buf); buf = ''; }
+    }
+    if(buf) paras.push(buf);
+  }
+  const P = paras.map(p => sentencesOf(p.replace(/\s*\n\s*/g, ' ').trim())).filter(ss => ss.length);
+  const all = P.flat();
+  if(all.length < 2) return null;
+  const tf = {}, df = {};
+  P.forEach(ss => { const seen = new Set();
+    ss.forEach(x => wordsOf(x).forEach(w => { tf[w] = (tf[w] || 0) + 1; seen.add(w); }));
+    seen.forEach(w => df[w] = (df[w] || 0) + 1); });
+  const weight = w => tf[w] * (1 + (df[w] - 1) * .5);
+  const kw = Object.keys(tf).filter(w => tf[w] >= 2).sort((a, b) => weight(b) - weight(a) || b.length - a.length).slice(0, 6);
+  const score = (x, first) => {
+    const ws = [...new Set(wordsOf(x))];
+    if(!ws.length) return 0;
+    let v = ws.reduce((a, w) => a + (tf[w] > 1 ? weight(w) : 0), 0) / Math.sqrt(ws.length + 2);
+    if(RE_CONCL.test(x)) v *= 1.35;
+    if(first) v *= 1.1;
+    if(x.length < 15) v *= .5;
+    return v;
+  };
+  const best = ss => ss.map((x, k) => [score(x, k === 0), k]).sort((a, b) => b[0] - a[0]);
+  const out = [];
+  if(kw.length) out.push(`**핵심어** ${kw.join(' · ')}`);
+  if(P.length > 1){
+    out.push('**문단별 중심 내용**');
+    P.forEach((ss, i) => out.push(`• (${i + 1}문단) ${ss[best(ss)[0][1]]}`));
+  } else {
+    const n = Math.min(3, Math.max(1, Math.round(all.length / 3)));
+    out.push('**중심 문장**');
+    best(all).slice(0, n).map(x => x[1]).sort((a, b) => a - b).forEach(k => out.push('• ' + all[k]));
+  }
+  // 한 줄 요약: 글쓴이의 결론이 담기기 쉬운 마지막 문장에 조금 더 무게를 준다
+  const top = all.map((x, k) => [score(x, false) * (k === all.length - 1 ? 1.3 : 1), x]).sort((a, b) => b[0] - a[0])[0][1];
+  const one = top.replace(RE_LEAD, '');
+  out.push(`**한 줄 요약** ${one.charAt(0).toUpperCase() + one.slice(1)}`);
+  return out;
+}
+// 커서 자리의 지문을 찾는다: [지문] 상자 → 없으면 [1~3] 묶음 안내 아래 글
+function findPassage(v, pos){
+  const found = []; let m;
+  const re = /^[ \t]*\[(?:지문|박스|상자)\][ \t]*\n([\s\S]*?)\n[ \t]*\[\/(?:지문|박스|상자)\][ \t]*$/gm;
+  while((m = re.exec(v))) found.push({src:m[1], start:m.index, end:m.index + m[0].length});
+  if(!found.length){
+    const lines = v.split('\n'); let off = 0, g = null;
+    const end = () => { if(g && g.src.replace(/\s/g, '').length >= 40) found.push({...g}); g = null; };
+    lines.forEach(l => {
+      if(RE_GROUP.test(l)){ end(); g = {src:'', start:off, end:off + l.length}; }
+      else if(g && (RE_Q.test(l) || RE_SQ.test(l) || RE_SUM.test(l) || RE_ANS.test(l))) end();
+      else if(g){ g.src += l + '\n'; if(l.trim()) g.end = off + l.length; }
+      off += l.length + 1;
+    });
+    end();
+  }
+  return found.find(f => pos >= f.start && pos <= f.end) || [...found].reverse().find(f => f.end <= pos) || found[0] || null;
+}
+
+// ─────────────────────────────────────────────
 // 쪽 나누기 — 실제 A4 크기로 채워 보며 넘친 문항을 다음 단·쪽으로 보낸다
 // ─────────────────────────────────────────────
-function Pager(root){
-  const o = S.opt;
+function Pager(root, nc, docTitle){
+  const o = S.opt, note = isNote();
   let page, cols, ci, first = true, section = '';
   const pages = [];
   const over = c => c.scrollHeight > c.clientHeight + 1;
@@ -690,14 +1081,14 @@ function Pager(root){
       const meta = [];
       meta.push(`<span class="grow">${esc(o.subject)}</span>`);
       if(o.nameBox)  meta.push(`<span>이름<span class="blank"></span></span>`);
-      if(o.scoreBox) meta.push(`<span>점수<span class="blank" style="min-width:18mm"></span></span>`);
+      if(o.scoreBox && !note) meta.push(`<span>점수<span class="blank" style="min-width:18mm"></span></span>`);
       head += `<div class="head"><div class="top"><span>${esc(o.org)}</span><span>${esc(o.date)}</span></div>
-              <div class="ttl">${esc(o.title || '문제지')}</div><div class="meta">${meta.join('')}</div></div>`;
+              <div class="ttl">${esc(docTitle)}</div><div class="meta">${meta.join('')}</div></div>`;
       first = false;
     } else if(!hasBand){
-      head = `<div class="rhead"><span>${esc(o.title || '문제지')}</span><span>${esc(section || o.subject)}</span></div>`;
+      head = `<div class="rhead"><span>${esc(docTitle)}</span><span>${esc(section || o.subject)}</span></div>`;
     }
-    page.innerHTML = head + `<div class="cols${o.cols == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(o.cols == 2 ? 2 : 1)}</div><div class="foot">${o.motto ? `<div class="motto">${WAVE_ICON}<span>${esc(o.motto)}</span>${WAVE_ICON}</div>` : ''}<div class="pno"></div></div>`;
+    page.innerHTML = head + `<div class="cols${nc == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(nc == 2 ? 2 : 1)}</div><div class="foot">${o.motto ? `<div class="motto">${WAVE_ICON}<span>${esc(o.motto)}</span>${WAVE_ICON}</div>` : ''}<div class="pno">${o.pageNo ? '0 / 0' : ''}</div></div>`;   // 쪽 번호는 다 채운 뒤에 적지만, 자리는 미리 잡아 둔다 (꼬리말 높이가 바뀌면 단 아래가 잘린다)
     root.appendChild(page); pages.push(page);
     cols = [...page.querySelectorAll('.col')]; ci = 0;
   }
@@ -712,6 +1103,13 @@ function Pager(root){
     col().removeChild(b);
     if(!tooBig){ next(); col().appendChild(b); return; }
     split(b);                         // 한 단보다 긴 문항·지문은 줄 단위로 이어서 싣는다
+  }
+  // 정리 노트: 덩어리째 다음 단으로 넘기지 않고, 남은 자리부터 줄 단위로 채워 싣는다
+  function flow(b){
+    col().appendChild(b);
+    if(!over(col())) return;
+    col().removeChild(b);
+    split(b);
   }
   function split(b){
     const qn = b.querySelector(':scope>.qn');
@@ -731,6 +1129,12 @@ function Pager(root){
         const piece = rest[0].classList.contains('box') && splitBox(rest[0], body);
         if(piece){ rest[0] = piece; placed++; }   // 긴 지문 상자는 남는 자리만큼 잘라 싣고 나머지는 다음 단으로
         break;
+      }
+      // 소제목이 단 맨 아래에 홀로 남지 않게, 딸린 글과 함께 다음 단으로 보낸다
+      const lastEl = body.lastElementChild;
+      if(placed && rest.length && lastEl && lastEl.classList.contains('nh') && (placed > 1 || col().children.length > 1)){
+        body.removeChild(lastEl); rest.unshift(lastEl); placed--;
+        if(!placed){ col().removeChild(part); next(); continue; }
       }
       if(!placed){
         if(col().children.length > 1){ col().removeChild(part); next(); continue; }
@@ -772,31 +1176,23 @@ function Pager(root){
       }
       section = title || ''; newPage();
     },
-    place, pages, get tall(){ return tall; },
+    place, flow, pages, get tall(){ return tall; },
   };
 }
 
-function render(){
+function quizInto(pager){
   const o = S.opt;
-  const root = $('#pages');
-  root.style.zoom = 1;
-  root.style.setProperty('--fs', o.fs + 'pt');
-  root.style.setProperty('--lh', o.lh);
-  root.style.setProperty('--gap', o.gap + 'mm');
-  root.style.setProperty('--solve', o.solve + 'mm');
-  root.style.fontFamily = FONTS[o.font] || FONTS.gothic;
-  const th = THEMES[o.theme] || THEMES.ocean;
-  root.style.setProperty('--t1', th[0]); root.style.setProperty('--t2', th[1]); root.style.setProperty('--tl', th[2]);
-  root.innerHTML = '';
-
   // [정답 모아보기] 줄부터 뒤는 문제로 읽지 않고, 새 종이(뒷장)에 쓴 그대로 싣는다
   const mk = S.text.match(RE_BACK);
   const items = parse(mk ? S.text.slice(0, mk.index) : S.text);
   const back = mk ? S.text.slice(mk.index + mk[0].length) : null;
-  const pager = Pager(root);
-  pager.start();
 
-  let n = 0, oxCtx = 0; const withAns = [], sepN = {};
+  let n = 0, oxCtx = 0; const withAns = [], sepN = {}, sums = [];
+  // 지문 요약 상자: '정답지'면 모아 두었다가 뒷장에, '싣지 않음'이면 뺀다
+  const takeSums = (it, ref) => {
+    if(o.sumAt !== 'back' && o.sumAt !== 'off') return;
+    it.parts = it.parts.filter(p => { if(p.sum && o.sumAt === 'back' && p.lines.length) sums.push({ref, p}); return !p.sum; });
+  };
   items.forEach((it, i) => {
     if(it.type === 'g'){
       // '맞으면 O, 틀리면 X' 같은 묶음 안내 아래 문제는 O/X
@@ -809,6 +1205,7 @@ function render(){
         if(o.renum){ a = n + 1; b = n + Math.max(1, it.to - it.from + 1); }
         title = `[${a}~${b}] ` + title;
       }
+      takeSums(it, it.from != null ? title.match(/^\[[^\]]*\]/)[0] : '');
       const html = (title ? lnHTML({s:title}, 'gt') : '') + partsHTML(it.parts);
       if(html) pager.place(el(`<div class="g"><div class="qb">${html}</div></div>`));
       return;
@@ -823,6 +1220,7 @@ function render(){
       n++;
       it.label = o.renum ? n : (it.num || n);
     }
+    takeSums(it, `${it.label}번`);
     if(it.answer || it.explain.length) withAns.push(it);
     const solve = o.solve > 0 && (kind === 'mc' || !kind) ? '<div class="solve"></div>' : '';
     let stemHtml = partsHTML(it.parts, true);
@@ -845,6 +1243,10 @@ function render(){
     openSection('정답 모아보기');
     backBlocks(back).forEach(b => pager.place(b));
   }
+  if(sums.length){
+    openSection('지문 요약');
+    sums.forEach(x => pager.place(el(`<div class="g"><div class="qb">${x.ref ? `<p class="gt">${esc(x.ref)}</p>` : ''}${partsHTML([x.p])}</div></div>`)));
+  }
   if(o.answers && withAns.length){
     openSection('정답 및 해설');
     const list = withAns.filter(it => it.answer);
@@ -865,6 +1267,27 @@ function render(){
       pager.place(el(`<div class="q"><div class="qn">${it.label}.</div><div class="qb">${head}${lines}</div></div>`));
     });
   }
+
+}
+
+function render(){
+  const o = S.opt;
+  const root = $('#pages');
+  root.style.zoom = 1;
+  root.style.setProperty('--fs', o.fs + 'pt');
+  root.style.setProperty('--lh', o.lh);
+  root.style.setProperty('--gap', o.gap + 'mm');
+  root.style.setProperty('--solve', o.solve + 'mm');
+  root.style.fontFamily = FONTS[o.font] || FONTS.gothic;
+  const th = THEMES[o.theme] || THEMES.ocean;
+  root.style.setProperty('--t1', th[0]); root.style.setProperty('--t2', th[1]); root.style.setProperty('--tl', th[2]);
+  root.innerHTML = '';
+
+  const note = isNote();
+  const pager = Pager(root, note ? o.noteCols : o.cols, docName());
+  pager.start();
+  if(note) noteBlocks(noteBody()).forEach(b => pager.flow(b));
+  else quizInto(pager);
 
   const N = pager.pages.length;
   pager.pages.forEach((p, i) => { p.querySelector('.pno').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
@@ -898,7 +1321,36 @@ function bindOptions(){
   });
   $('#src').value = S.text;
   refreshImgList();
+  updateModeUI();
 }
+const QUIZ_PH = $('#src').placeholder;
+function updateModeUI(){
+  const note = isNote();
+  $('.left').classList.toggle('note', note);
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.mode === (note ? 'note' : 'quiz')));
+  $('#src').placeholder = note
+    ? 'Claude에게 물어본 답을 복사해 붙여 넣거나, 화면을 캡처해 붙여 넣으세요 (Ctrl+V).\n\nQ. 물어본 내용\n## 소제목\n- 목록\n[핵심] 꼭 기억할 것 [/핵심]'
+    : QUIZ_PH;
+  $('[data-k="title"]').placeholder = note ? '예: 비유법 한눈에 정리' : '예: 3월 월말평가';
+}
+// 문제지 ↔ 정리 노트: 쓰던 글은 보관함에 넣어 두고 새로 시작한다
+async function setMode(m){
+  if((S.opt.mode || 'quiz') === m) return;
+  let kept = '';
+  if(S.text.trim() && !isSample(S.text)){
+    if(S.libId){ if(libDirty) await libSync(true); kept = sheetTitle(); }
+    else if(await libAdd(true)) kept = sheetTitle();
+    else if(!confirm('보관함에 넣지 못했습니다. 그래도 지금 글을 비우고 넘어갈까요?')) return;
+  }
+  const wasEmpty = !S.text.trim() || isSample(S.text);
+  S.opt.mode = m;
+  S.text = wasEmpty ? (m === 'note' ? NOTE_SAMPLE : SAMPLE) : '';
+  S.images = {}; S.libId = '';
+  bindOptions(); render(); libStatus();
+  msg(kept ? `'${kept}'은(는) 보관함에 넣어 두었습니다. [📚 보관함]에서 다시 열 수 있습니다.` : '', !!kept);
+  if(!wasEmpty) $('#src').focus();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
 $('#src').addEventListener('input', e => { S.text = e.target.value; later(); });
 
@@ -926,7 +1378,10 @@ function addImage(file){
         }
         const name = nextImgName();
         S.images[name] = url;
-        insertAtCursor(`[그림:${name}]`);
+        if(isNote()){                      // 정리 노트: 캡처 그림은 한 줄을 차지하게 (테두리 두른 그림)
+          const ta = $('#src'), before = ta.value.slice(0, ta.selectionStart);
+          insertAtCursor((before && !before.endsWith('\n') ? '\n' : '') + `[그림:${name}]\n`);
+        } else insertAtCursor(`[그림:${name}]`);
         refreshImgList(); res();
       };
       img.onerror = () => { msg('그림을 읽지 못했습니다.'); res(); };
@@ -947,11 +1402,38 @@ function refreshImgList(){
 $('#btnImg').onclick = () => $('#fileImg').click();
 $('#fileImg').onchange = async e => { for(const f of e.target.files) await addImage(f); e.target.value = ''; };
 $('#src').addEventListener('paste', async e => {
+  // 정리 노트: 웹 화면에서 긁어 복사한 글은 제목·목록·표·굵은 글씨를 살려 옮긴다
+  const html = isNote() && e.clipboardData ? e.clipboardData.getData('text/html') : '';
+  if(html && /<(h[1-6]|li|table|strong|b|blockquote|pre|code)\b/i.test(html)){
+    let t = '';
+    try { t = htmlToNote(html); } catch(err){}
+    if(t){ e.preventDefault(); insertAtCursor(t + '\n'); return; }
+  }
   const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
   if(!files.length) return;
   e.preventDefault();
   for(const f of files) await addImage(f);
 });
+
+$('#btnSum').onclick = () => {
+  const ta = $('#src'), v = ta.value;
+  let a = ta.selectionStart, b = ta.selectionEnd, src = '', at = -1;
+  if(v.slice(a, b).replace(/\s/g, '').length >= 30){ src = v.slice(a, b); at = v[b - 1] === '\n' ? b - 1 : b; }
+  else { const f = findPassage(v, a); if(f){ src = f.src; at = f.end; } }
+  if(!src.trim()){
+    alert('요약할 지문을 마우스로 끌어 고르거나(드래그), [지문] … [/지문] 으로 묶은 뒤 다시 눌러 주세요.'); return;
+  }
+  const lines = summarize(src);
+  if(!lines){ alert('문장이 두 개 이상인 지문을 골라 주세요.'); return; }
+  let end = v.indexOf('\n', at); if(end < 0) end = v.length;
+  const old = v.slice(end).match(/^\n[ \t]*\[\s*(?:지문\s*)?요약\s*\][\s\S]*?\[\/\s*(?:지문\s*)?요약\s*\][^\n]*/);
+  if(old && !confirm('바로 아래에 있는 요약을 새 요약으로 바꿀까요?')) return;
+  const ins = `\n[요약]\n${lines.join('\n')}\n[/요약]`;
+  ta.value = v.slice(0, end) + ins + v.slice(old ? end + old[0].length : end);
+  S.text = ta.value; later();
+  ta.focus(); ta.setSelectionRange(end + 1, end + ins.length);
+  msg('지문 요약을 넣었습니다. 지문에서 중심 문장을 골라 뽑은 것이니, [요약] 안의 글은 마음대로 고쳐 쓰세요.', true);
+};
 
 $('#btnLogo').onclick = () => $('#fileLogo').click();
 $('#btnLogoReset').onclick = () => { S.logo = ''; later(); };
@@ -973,18 +1455,18 @@ $('#fileLogo').onchange = e => {
 };
 $('#btnPrint').onclick = () => {
   clearTimeout(timer); render();
-  if(!S.libId && S.text.trim() && S.text !== SAMPLE) libAdd(true);   // PDF로 만든 문제지는 저절로 보관함에 모인다
+  if(!S.libId && S.text.trim() && !isSample(S.text)) libAdd(true);   // PDF로 만든 문제지는 저절로 보관함에 모인다
   window.print();
 };
 const docTitle = document.title;
-window.addEventListener('beforeprint', () => { document.title = S.opt.title || '문제지'; }); // PDF 파일 이름
+window.addEventListener('beforeprint', () => { document.title = docName(); }); // PDF 파일 이름
 window.addEventListener('afterprint',  () => { document.title = docTitle; });
 
 $('#btnSave').onclick = () => {
   const blob = new Blob([JSON.stringify(S)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = (S.opt.title || '문제지') + '.json';
+  a.download = docName() + '.json';
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 $('#btnLoad').onclick = () => $('#fileLoad').click();
@@ -998,12 +1480,13 @@ $('#fileLoad').onchange = e => {
   fr.readAsText(f); e.target.value = '';
 };
 $('#btnSample').onclick = () => {
-  if(S.text.trim() && !confirm('지금 쓴 내용을 지우고 예시를 넣을까요?')) return;
-  S.text = SAMPLE; S.libId = ''; $('#src').value = SAMPLE; render(); libStatus();   // 보관함의 문제지는 그대로 둔다
+  if(S.text.trim() && !isSample(S.text) && !confirm('지금 쓴 내용을 지우고 예시를 넣을까요?')) return;
+  S.text = isNote() ? NOTE_SAMPLE : SAMPLE; S.libId = ''; $('#src').value = S.text; render(); libStatus();   // 보관함의 문제지는 그대로 둔다
 };
 $('#btnNew').onclick = () => {
-  if(!confirm(S.libId ? '새 문제지를 시작할까요? (지금 문제지는 보관함에 그대로 있습니다)'
-                      : '문제와 그림을 모두 지우고 새로 시작할까요? (설정은 그대로 둡니다)')) return;
+  const what = isNote() ? '정리 노트' : '문제지';
+  if(!confirm(S.libId ? `새 ${what}를 시작할까요? (지금 ${what}는 보관함에 그대로 있습니다)`
+                      : '쓴 글과 그림을 모두 지우고 새로 시작할까요? (설정은 그대로 둡니다)')) return;
   S.text = ''; S.images = {}; S.libId = ''; bindOptions(); render(); libStatus(); $('#src').focus();   // 보관함의 문제지는 그대로 둔다
 };
 // ─────────────────────────────────────────────
@@ -1016,12 +1499,16 @@ const frontOf = t => { const m = t.match(RE_BACK); return m ? t.slice(0, m.index
 const plain = s => (s || '').replace(/\[그림:[^\]]*\]/g, '[그림]').replace(/\*\*|__|\^\{|_\{|\}/g, '').trim();
 function sheetTitle(){
   if(S.opt.title.trim()) return S.opt.title.trim();
+  if(isNote()){
+    const first = S.text.split('\n').map(l => plain(l.replace(/^\s*(?:#+|[-*>]|Q[.:])\s*/i, ''))).find(Boolean);
+    return noteTitle() || (first || '').slice(0, 30) || '제목 없는 정리 노트';
+  }
   const q = parse(frontOf(S.text)).find(it => it.type === 'q' && it.parts.length);
   return q ? plain(q.parts[0].s || '').slice(0, 30) || '제목 없는 문제지' : '제목 없는 문제지';
 }
 function recOf(id){
   return { id, title: sheetTitle(), saved: stamp(),
-           count: parse(frontOf(S.text)).filter(it => it.type === 'q').length,
+           count: isNote() ? 0 : parse(frontOf(S.text)).filter(it => it.type === 'q').length,
            data: { opt: S.opt, text: S.text, images: S.images, logo: S.logo } };
 }
 function libStatus(t){
@@ -1106,19 +1593,20 @@ async function drawLib(){
   mode.classList.toggle('bad', Lib.mode === 'mem');
   mode.textContent = Lib.mode === 'mem'
     ? '⚠ 이 화면에서는 브라우저 저장이 막혀 있어, 창을 닫으면 보관함이 사라집니다. 이 파일을 내려받아 크롬·엣지·사파리로 직접 열어 쓰세요.'
-    : `문제지 ${libRecs.length}개 · 이 컴퓨터의 이 브라우저에 저장됩니다. 다른 기기로 옮길 때는 [백업 내보내기].`;
+    : `${libRecs.length}개 · 이 컴퓨터의 이 브라우저에 저장됩니다. 다른 기기로 옮길 때는 [백업 내보내기].`;
   const q = $('#libQ').value.trim();
   const shown = q ? libRecs.filter(r => (r.title + '\n' + (r.data.text || '')).includes(q)) : libRecs;
   list.innerHTML = shown.length ? '' : `<p class="hint" style="text-align:center;padding:28px 0">${q ? '찾는 문제지가 없습니다.'
-    : '아직 모아 둔 문제지가 없습니다.<br>[📥 보관함에 넣기]를 누르거나 PDF로 저장하면 여기에 모입니다.'}</p>`;
+    : '아직 모아 둔 문제지·정리 노트가 없습니다.<br>[📥 보관함에 넣기]를 누르거나 PDF로 저장하면 여기에 모입니다.'}</p>`;
   for(const r of shown){
     const cur = r.id === S.libId;
+    const rNote = (r.data.opt && r.data.opt.mode) === 'note', same = rNote === isNote();
     const d = el(`<div class="li${cur ? ' cur' : ''}">
-      <div class="lt"><b>${esc(r.title)}</b><span class="hint">${esc(r.saved || '')} · ${r.count || 0}문항${cur ? ' · 지금 편집 중' : ''}</span></div>
+      <div class="lt"><b>${rNote ? '📒 ' : ''}${esc(r.title)}</b><span class="hint">${esc(r.saved || '')} · ${rNote ? '정리 노트' : `${r.count || 0}문항`}${cur ? ' · 지금 편집 중' : ''}</span></div>
       <div class="la">
         ${cur ? '' : '<button data-a="open">열기</button>'}
-        <button data-a="pick">문제 골라 넣기</button>
-        ${cur ? '' : '<button data-a="all">통째로 이어 붙이기</button>'}
+        ${rNote || !same ? '' : '<button data-a="pick">문제 골라 넣기</button>'}
+        ${cur || !same ? '' : '<button data-a="all">통째로 이어 붙이기</button>'}
         <button data-a="copy">사본 만들기</button>
         <button data-a="del" class="del">삭제</button>
       </div>
@@ -1130,14 +1618,15 @@ async function drawLib(){
 async function libAct(a, r, d){
   if(a === 'open'){
     if(S.libId && libDirty) await libSync(true);
-    else if(!S.libId && S.text.trim() && S.text !== SAMPLE
+    else if(!S.libId && S.text.trim() && !isSample(S.text)
             && confirm('지금 쓰던 문제지를 먼저 보관함에 넣을까요?\n[취소]를 누르면 넣지 않고 바로 엽니다.')) await libAdd(true);
     adopt({...r.data, libId: r.id}); libDirty = false;
     bindOptions(); render(); libStatus(); $('#lib').close();
     msg(`'${r.title}'을(를) 열었습니다.`, true);
   } else if(a === 'all'){
     const renum = appendSheet(r.data.text || '', r.data.images); $('#lib').close();
-    msg(`'${r.title}'의 문제 ${r.count || 0}개를 끝에 이어 붙였습니다.${renum ? ' 번호는 자동으로 다시 매깁니다.' : ''}`, true);
+    msg(isNote() ? `'${r.title}'을(를) 끝에 이어 붙였습니다.`
+      : `'${r.title}'의 문제 ${r.count || 0}개를 끝에 이어 붙였습니다.${renum ? ' 번호는 자동으로 다시 매깁니다.' : ''}`, true);
   } else if(a === 'copy'){
     try { await Lib.put({...r, id: newId(), title: r.title + ' (사본)', saved: stamp()}); } catch(e){ libFail(); }
     drawLib();
