@@ -3315,6 +3315,16 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     title = with_subject_prefix(title, subject)
     safe_title = sanitize_doc_id(title)
 
+    # 오픈 일시: 원장님이 미리 여러 개 올려 두고, 정한 시각부터 학생이 풀게 한다 (비우면 바로 열림).
+    # 예전 제목 문서를 지우기 전에 확인해야, 잘못 적었을 때 퀴즈가 사라지지 않는다.
+    open_at = str(req.get("open_at") or "").strip()
+    open_dt, close_dt = parse_kst_time(open_at), parse_kst_time(req.get("deadline"), end_of_day=True)
+    if open_at and open_dt is None:
+        raise HTTPException(status_code=400, detail="오픈 일시를 읽지 못했습니다.")
+    if open_dt and close_dt and open_dt >= close_dt:
+        raise HTTPException(status_code=400, detail="오픈 일시가 마감 일시보다 앞서야 합니다.")
+    waiting = quiz_not_open(open_at)
+
     # 💡 수정하면서 제목을 바꾼 경우, 예전 이름의 퀴즈가 남아 둘 다 배포되어 버린다.
     #    또한 만든 날짜는 '예전 제목' 문서에서 이어받아야 한다 — 새 제목 문서는
     #    존재한 적이 없어 그냥 보면 늘 비어 있다(제목을 바꿀 때마다 만든 날짜가
@@ -3342,8 +3352,11 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
                 "title": title,
                 "subject": subject,
                 "target_classes": tclasses,
+                "open_at": open_at,
                 "deadline": req.get("deadline"),
                 "time_limit": int(req.get("time_limit", 0)),
+                # 열리기 전에는 AI 자료실에도 문항을 싣지 않는다 (처음 열릴 때 싣는다)
+                "knowledge_pending": waiting,
                 "questions": questions,
                 "created_at": created_at,
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3353,7 +3366,18 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     if is_new:
         await asyncio.to_thread(
             send_push_to_audience, subject, tclasses, "새 타임어택 퀴즈",
-            f"'{title}' 퀴즈가 올라왔어요. 도전해보세요!", "/#prog-classroom", "quiz")
+            f"'{title}' 퀴즈가 {deadline_label(open_at)}에 열려요. 그때 도전해보세요!" if waiting
+            else f"'{title}' 퀴즈가 올라왔어요. 도전해보세요!", "/#prog-classroom", "quiz")
+    if waiting:
+        # 💡 아직 열리지 않은 퀴즈의 문항을 AI가 미리 알면 학생이 물어서 캐낼 수 있다.
+        #    (고치면서 오픈을 미룬 경우 이미 실어 둔 것도 내린다)
+        await asyncio.to_thread(delete_synced_knowledge, f"quiz_{safe_title}")
+        return {"success": True, "title": title}
+    await asyncio.to_thread(sync_quiz_knowledge, safe_title, title, questions, subject)
+    return {"success": True, "title": title}
+
+
+def sync_quiz_knowledge(safe_title: str, title: str, questions: list, subject: str):
     # 💡 AI가 '이 퀴즈 몇 번 문제 이해가 안 돼요' 같은 질문을 받을 수 있으려면 문항
     # 내용을 알아야 한다. 다만 정답을 그대로 실으면 학생이 그걸 캐낼 수 있으니
     # (기존 knowledge 업로드의 '정답 필드 제외' 원칙과 동일하게) 문제·보기만 싣는다.
@@ -3365,8 +3389,7 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
         know_lines.append(f"{i + 1}. {q.get('q_text', '')}\n{opt_text}".strip())
     know_content = "\n\n".join(l for l in know_lines if l)
     if know_content:
-        await asyncio.to_thread(sync_knowledge_from_source, f"quiz_{safe_title}", f"[퀴즈] {title}", know_content, subject, "quiz")
-    return {"success": True, "title": title}
+        sync_knowledge_from_source(f"quiz_{safe_title}", f"[퀴즈] {title}", know_content, subject, "quiz")
 
 
 @app.post("/api/admin/quiz/image", dependencies=[Depends(verify_admin)])
@@ -3418,6 +3441,14 @@ def get_quizzes(student_name: str = ""):
         rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), student_name)]
         # 💡 API 응답을 직접 열어봐도 정답이 보이면 안 된다 — 문항 유형만 남기고 지운다.
         rows = [strip_quiz_answers(q) for q in rows]
+        # 💡 아직 열리지 않은 퀴즈는 목록에 '언제 열리는지'만 보여 주고 문항은 보내지 않는다.
+        #    열린 뒤에는 /api/quiz/start 가 문항을 함께 돌려준다.
+        if not is_preview(student_name):
+            for q in rows:
+                if quiz_not_open(q.get("open_at")):
+                    q["question_count"] = len(q.get("questions") or [])
+                    q["questions"] = []
+                    q["locked"] = True
     return {"success": True, "quizzes": rows}
 
 
@@ -3624,6 +3655,15 @@ async def start_quiz(req: QuizStartReq):
     free_pass = 허락 or is_preview(req.student_name)
     if deadline_passed(quiz_data.get("deadline")) and not free_pass:
         return {"success": False, "detail": "마감 시한이 지난 퀴즈입니다."}
+    # 오픈 전에는 아무도(재응시 허락을 받았어도) 시작할 수 없다. 원장님 미리보기만 예외.
+    if quiz_not_open(quiz_data.get("open_at")) and not is_preview(req.student_name):
+        return {"success": False, "not_open": True, "open_at": quiz_data.get("open_at", ""),
+                "detail": f"아직 열리지 않은 퀴즈입니다. {deadline_label(quiz_data.get('open_at'))}에 열려요."}
+    if quiz_data.get("knowledge_pending") and not quiz_not_open(quiz_data.get("open_at")):
+        # 예약해 둔 퀴즈가 열렸다 — 이제 AI 자료실에 문항을 싣는다 (한 번만)
+        await asyncio.to_thread(sync_quiz_knowledge, req.title, quiz_data.get("title", req.title),
+                                quiz_data.get("questions") or [], quiz_data.get("subject", "korean"))
+        await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).update({"knowledge_pending": False}))
     time_limit = int(quiz_data.get("time_limit", 0) or 0)
 
     if not await asyncio.to_thread(task_visible_to_student, quiz_data.get("subject", "korean"), task_target_classes(quiz_data), req.student_name):
@@ -3655,7 +3695,9 @@ async def start_quiz(req: QuizStartReq):
                 "student_name": req.student_name, "title": req.title, "started_at": started_at,
             })
         )
-    return {"success": True, "started_at": started_at, "time_limit": time_limit}
+    # 오픈 전에 목록을 열어 둔 학생은 문항을 받지 못했으니, 시작할 때 함께 준다 (정답은 뺀다)
+    return {"success": True, "started_at": started_at, "time_limit": time_limit,
+            "questions": strip_quiz_answers(quiz_data).get("questions", [])}
 
 
 class QuizSubmitReq(BaseModel):
@@ -3842,6 +3884,9 @@ async def submit_quiz(req: QuizSubmitReq):
     if (quiz_doc0.exists and deadline_passed((quiz_doc0.to_dict() or {}).get("deadline"))
             and not free_pass):
         return {"success": False, "detail": "마감 시한이 지나 제출할 수 없습니다."}
+    if (quiz_doc0.exists and quiz_not_open((quiz_doc0.to_dict() or {}).get("open_at"))
+            and not is_preview(req.student_name)):
+        return {"success": False, "detail": "아직 열리지 않은 퀴즈입니다."}
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     doc_data = doc.to_dict() or {}
@@ -7233,6 +7278,29 @@ def deadline_passed(deadline) -> bool:
     return False            # 읽지 못한 값 때문에 못 풀게 막지는 않는다
 
 
+def parse_kst_time(value, end_of_day: bool = False):
+    """원장님이 적은 '2026-10-05T18:00' / '2026-10-05 18:00' / '2026-10-05' 를 읽는다 (한국 시각).
+    날짜만 적었으면 오픈은 그날 0시, 마감(end_of_day)은 그날 끝으로 본다. 못 읽으면 None."""
+    t = str(value or "").strip().replace("T", " ")
+    if not t:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            when = datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d" and end_of_day:
+            when = when.replace(hour=23, minute=59, second=59)
+        return when
+    return None
+
+
+def quiz_not_open(open_at) -> bool:
+    """오픈 일시가 아직 안 됐는지. 비워 두었거나 읽지 못하면 이미 열린 것으로 본다."""
+    when = parse_kst_time(open_at)
+    return bool(when) and now_kst() < when
+
+
 def deadline_label(deadline) -> str:
     """'2026-10-05T18:00' → '10/5(일) 18:00' — 알림 글에 넣기 좋게 짧게."""
     t = str(deadline or "").strip().replace("T", " ")
@@ -7907,7 +7975,8 @@ def student_todo(student_name: str):
     for d in db.collection("quizzes").stream():
         q = d.to_dict() or {}
         title = q.get("title", "")
-        if not title or title in done["타임어택 퀴즈"] or deadline_passed(q.get("deadline")):
+        if (not title or title in done["타임어택 퀴즈"] or deadline_passed(q.get("deadline"))
+                or quiz_not_open(q.get("open_at"))):
             continue
         if not q.get("deadline") and not _created_within(q, TODO_RECENT_DAYS):
             continue
