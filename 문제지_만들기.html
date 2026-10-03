@@ -72,6 +72,20 @@
   .fmtbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}
   .fmtbar button{padding:4px 10px;font-size:13px}
   .fmtbar .hint{margin-left:2px}
+  /* ── 표 만들기 ── */
+  dialog#tbl{width:min(760px,calc(100% - 24px));max-height:calc(100% - 24px);padding:0;border:1px solid var(--line);
+       border-radius:12px;background:var(--panel);color:var(--ink);display:none;flex-direction:column}
+  dialog#tbl[open]{display:flex}
+  dialog#tbl::backdrop{background:rgba(0,0,0,.45)}
+  #tbl .lh label{display:flex;align-items:center;gap:4px;font-size:13px}
+  #tbl .lh input[type=number]{flex:0 0 58px;width:58px}
+  #tbl .lh input[type=checkbox]{flex:0 0 auto;width:auto}
+  #tblWrap{overflow:auto;padding:4px 14px 12px;flex:1 1 auto}
+  #tblGrid{border-collapse:collapse;margin-top:6px}
+  #tblGrid td{border:1px solid var(--line);padding:0}
+  #tblGrid input{border:0;border-radius:0;width:120px;padding:6px 7px;font:inherit;background:transparent;color:var(--ink)}
+  #tblGrid tr.hd input{background:rgba(127,127,127,.16);font-weight:700}
+  #tblGrid input:focus{outline:2px solid var(--accent);outline-offset:-2px}
 
   /* ── 보관함 ── */
   dialog#lib{width:min(720px,calc(100% - 24px));max-height:calc(100% - 24px);padding:0;border:1px solid var(--line);
@@ -218,6 +232,11 @@
   table.nt{border-collapse:collapse;width:100%;margin:1.6mm 0;font-size:.95em}
   table.nt th,table.nt td{border:.25mm solid #9aa1ab;padding:1mm 2mm;text-align:left;vertical-align:top;overflow-wrap:anywhere}
   table.nt th{background:var(--tl);color:var(--t1);font-weight:700}
+  table.qt{border-collapse:collapse;width:100%;margin:1.4mm 0;font-size:.95em;break-inside:avoid}
+  table.qt th,table.qt td{border:.3mm solid #333;padding:.8mm 1.6mm;text-align:center;vertical-align:middle;overflow-wrap:anywhere}
+  table.qt th{background:#ececec;font-weight:700}
+  table.qt td.l{text-align:left}
+  .box table.qt{width:100%}
   hr.nhr{border:0;border-top:.3mm dashed #aab;margin:2.4mm 0}
   .qb p.fig{text-align:center;margin:1.6mm 0}
   .qb p.fig img{max-height:200mm;border:.3mm solid #d4d7dd;border-radius:2mm;padding:1mm;background:#fff}
@@ -306,6 +325,7 @@
       <b><span class="qo">문제 넣기</span><span class="no">내용 넣기</span></b>
       <span>
         <button id="btnSum" title="고른 지문(또는 커서가 있는 [지문] 상자)에서 핵심어와 중심 문장을 뽑아 [요약] 상자로 넣기">✂ 지문 요약</button>
+        <button id="btnTbl" title="표를 만들어 커서 자리에 넣기 — 커서가 표 안에 있으면 그 표를 고칩니다">▦ 표 만들기</button>
         <button id="btnImg" title="그림 파일을 골라 커서 자리에 넣기">🖼 그림 넣기</button>
         <input type="file" id="fileImg" accept="image/*" multiple hidden>
       </span>
@@ -355,6 +375,12 @@
            <code>[정답 모아보기]</code> 한 줄을 쓰면 그 아래로 쓴 내용은 전부 새 종이(뒷장)에 쓴 그대로 실립니다.</p>
         <p><b>&lt;보기&gt; 상자</b> — <code>&lt;보기&gt;</code> 줄 다음부터 선택지 전까지 상자로 묶습니다.<br>
            <b>지문 상자</b> — <code>[지문]</code> … <code>[/지문]</code></p>
+        <p><b>표</b> — [▦ 표 만들기]를 눌러 칸에 쓰고 [넣기]. 한글·엑셀의 표를 복사해 칸에 붙여 넣어도 됩니다.
+           <code>&lt;보기&gt;</code> 상자 안처럼 표를 넣고 싶은 자리에 커서를 두고 누르면 그 자리에 들어갑니다.
+           커서를 표 줄에 두고 다시 누르면 그 표를 고치거나 지울 수 있습니다.<br>
+           표는 입력칸에 <code>| 구분 | 내용 |</code>처럼 보이며, 둘째 줄이 <code>|---|---|</code>이면 첫 줄이 회색 제목 줄이 됩니다.
+           칸에 <code>&lt;</code>만 쓰면 왼쪽 칸과, <code>^</code>만 쓰면 위 칸과 합쳐집니다.
+           한글·엑셀에서 표가 섞인 글을 통째로 복사해 붙여 넣어도 표 모양이 살아납니다.</p>
         <p><b>묶음 지문</b> — <code>[1~3] 다음 글을 읽고 물음에 답하시오.</code></p>
         <p><b>지문 요약</b> — 지문을 <code>[지문]</code> … <code>[/지문]</code>으로 묶어 두거나 마우스로 끌어 고른 뒤 [✂ 지문 요약]을 누르면,
            핵심어와 문단마다의 중심 문장을 뽑아 지문 바로 아래에 <code>[요약]</code> … <code>[/요약]</code> 상자로 넣습니다.
@@ -378,6 +404,26 @@
     <div id="pages"></div>
   </div>
 </div>
+
+<dialog id="tbl">
+  <div class="lh">
+    <b>▦ 표 만들기</b>
+    <label>줄 <input type="number" id="tblRows" min="1" max="30" value="3"></label>
+    <label>칸 <input type="number" id="tblCols" min="1" max="10" value="3"></label>
+    <label><input type="checkbox" id="tblHead" checked> 첫 줄은 제목 줄 (회색)</label>
+  </div>
+  <div id="tblWrap">
+    <p class="hint" style="margin:6px 0 0">칸을 눌러 글자를 쓰세요. 한글·엑셀·인터넷의 표를 복사해 칸에 붙여 넣으면 그 칸부터 한꺼번에 채워집니다.<br>
+      칸에 <code>&lt;</code> 만 쓰면 왼쪽 칸과, <code>^</code> 만 쓰면 위 칸과 합쳐집니다. 밑줄·굵게는 <code>__밑줄__</code> <code>**굵게**</code>.</p>
+    <table id="tblGrid"></table>
+  </div>
+  <div class="lf">
+    <button id="tblDel" title="입력칸에서 이 표를 지웁니다" style="color:var(--warn)">표 지우기</button>
+    <span class="sp"></span>
+    <button id="tblClose">닫기</button>
+    <button id="tblOk" class="primary">넣기</button>
+  </div>
+</dialog>
 
 <dialog id="lib">
   <div class="lh">
@@ -713,11 +759,57 @@ const lnHTML = (l, cls='', stem=false) => {
   if(h) return `<p class="hang${l.pg?' pg':''}"><span class="mk">${esc(h[1])}</span><span>${f(h[2])}</span></p>`;
   return `<p class="${(l.pg?'pg ':'') + cls}">${f(l.s) || '&nbsp;'}</p>`;
 };
+// ── 표: | 가 | 나 | 처럼 | 로 시작해 | 로 끝나는 줄이 이어지면 표 하나.
+//   둘째 줄이 |---|---| 이면 첫 줄은 제목 줄. 칸에 < 만 있으면 왼쪽 칸과, ^ 만 있으면 위 칸과 합친다.
+const RE_TBL  = /^\s*\|.*\|\s*$/;
+const RE_TSEP = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+const tcells = r => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+function gridHTML(rows, f, cls){
+  const head = rows.length > 1 && RE_TSEP.test(rows[1]);
+  const data = rows.filter(r => !RE_TSEP.test(r)).map(tcells);
+  if(!data.length) return '';
+  const n = Math.max(...data.map(r => r.length));
+  const g = data.map((r, i) => Array.from({length:n}, (_, j) => ({t:r[j] || '', i, j, cs:1, rs:1})));
+  const covers = (o, i, j) => i < o.i + o.rs && j < o.j + o.cs;
+  g.forEach((r, i) => r.forEach((c, j) => {          // 합칠 수 없는 < · ^ 는 빈 칸으로 둔다
+    if(c.t === '<' && j > 0){
+      const o = r[j-1].own || r[j-1];
+      if(o.i === i){ o.cs = j - o.j + 1; c.own = o; } else if(covers(o, i, j)) c.own = o; else c.t = '';
+    } else if(c.t === '^' && i > 0){
+      const o = g[i-1][j].own || g[i-1][j];
+      if(o.j === j){ o.rs = i - o.i + 1; c.own = o; } else if(covers(o, i, j)) c.own = o; else c.t = '';
+    }
+  }));
+  return `<table class="${cls}">` + g.map((r, i) => '<tr>' + r.filter(c => !c.own).map(c => {
+    const tag = head && i === 0 ? 'th' : 'td';
+    const span = (c.cs > 1 ? ` colspan="${c.cs}"` : '') + (c.rs > 1 ? ` rowspan="${c.rs}"` : '');
+    const left = cls === 'qt' && tag === 'td' && vlen(c.t) > 14 * c.cs ? ' class="l"' : '';
+    return `<${tag}${span}${left}>${f(c.t) || '&nbsp;'}</${tag}>`;
+  }).join('') + '</tr>').join('') + '</table>';
+}
+// 줄들 → HTML. 이어진 표 줄은 표 하나로 묶는다 (빈 줄이 끼면 다른 표).
+function linesHTML(ls, stem=false){
+  let out = '';
+  for(let i = 0; i < ls.length;){
+    if(RE_TBL.test(ls[i].s)){
+      let j = i + 1;
+      while(j < ls.length && RE_TBL.test(ls[j].s) && !ls[j].pg) j++;
+      out += gridHTML(ls.slice(i, j).map(l => l.s), fmt, 'qt'); i = j;
+    } else out += lnHTML(ls[i++], '', stem);
+  }
+  return out;
+}
 function partsHTML(parts, stem=false){
-  return parts.map(p => p.t === 'ln' ? lnHTML(p, '', stem)
-    : p.sum ? `<div class="box call sum"><span class="lbl">${p.label}</span>${p.lines.map(l=>lnHTML(l)).join('') || '<p>&nbsp;</p>'}</div>`
-    : `<div class="box${p.label?' lb':''}">${p.label?`<span class="lbl">&lt;${p.label}&gt;</span>`:''}${p.lines.map(l=>lnHTML(l)).join('')}</div>`
-  ).join('');
+  let out = '', run = [];
+  const flush = () => { if(run.length) out += linesHTML(run, stem); run = []; };
+  for(const p of parts){
+    if(p.t === 'ln'){ run.push(p); continue; }
+    flush();
+    out += p.sum ? `<div class="box call sum"><span class="lbl">${p.label}</span>${linesHTML(p.lines) || '<p>&nbsp;</p>'}</div>`
+         : `<div class="box${p.label?' lb':''}">${p.label?`<span class="lbl">&lt;${p.label}&gt;</span>`:''}${linesHTML(p.lines)}</div>`;
+  }
+  flush();
+  return out;
 }
 // 한글은 1, 영문·숫자는 약 0.55, 빈칸·쉼표는 0.3 칸으로 어림
 const vlen = s => { let n = 0; for(const ch of s) n += /[ᄀ-ᇿ①-⓿　-鿿가-힯＀-￯]/.test(ch) ? 1 : /[\s,.·]/.test(ch) ? .3 : .55; return n; };
@@ -851,15 +943,7 @@ function noteLine(line, pg){
   }
   return `<p class="${g.trim()}">${nfmt(line.trim()) || '&nbsp;'}</p>`;
 }
-function tableHTML(rows){
-  const cells = r => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
-  const sep = r => /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(r);
-  let head = null, body = rows;
-  if(rows.length > 1 && sep(rows[1])){ head = cells(rows[0]); body = rows.slice(2); }
-  body = body.filter(r => !sep(r));
-  return `<table class="nt">${head ? `<tr>${head.map(c => `<th>${nfmt(c)}</th>`).join('')}</tr>` : ''}`
-       + body.map(r => `<tr>${cells(r).map(c => `<td>${nfmt(c) || '&nbsp;'}</td>`).join('')}</tr>`).join('') + '</table>';
-}
+const tableHTML = rows => gridHTML(rows, nfmt, 'nt');
 // 글 → 쪽에 실을 덩어리들. 제목(#)마다 새 덩어리를 시작하고, 긴 덩어리는 쪽 나누기에서 줄 단위로 나뉜다.
 function noteBlocks(text){
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
@@ -1158,7 +1242,7 @@ function Pager(root, nc, docTitle){
   }
   // 상자를 줄 단위로 나눠 body 에 들어가는 만큼만 싣는다. 나머지 상자를 돌려준다(두 줄도 못 실으면 null).
   function splitBox(bx, body){
-    const lines = [...bx.children].filter(c => c.tagName === 'P');
+    const lines = [...bx.children].filter(c => c.tagName === 'P' || c.tagName === 'TABLE');
     if(lines.length < 3) return null;
     const head = bx.cloneNode(false);
     const lbl = bx.querySelector(':scope>.lbl'); if(lbl) head.appendChild(lbl.cloneNode(true));
@@ -1169,7 +1253,7 @@ function Pager(root, nc, docTitle){
       if(over(col())){ bx.insertBefore(lines[k], lines[k+1]); break; }
       k++;
     }
-    if(k < 2){ while(head.lastChild && head.lastChild.tagName === 'P') bx.insertBefore(head.lastChild, bx.querySelector(':scope>p')); body.removeChild(head); return null; }
+    if(k < 2){ while(head.lastChild && /^(P|TABLE)$/.test(head.lastChild.tagName)) bx.insertBefore(head.lastChild, bx.querySelector(':scope>p,:scope>table')); body.removeChild(head); return null; }
     head.style.borderBottomStyle = 'dashed';
     const restBox = bx.cloneNode(false); restBox.classList.remove('lb');
     restBox.style.borderTopStyle = 'dashed';
@@ -1273,7 +1357,7 @@ function quizInto(pager){
       pager.place(el(`<table class="ak"><colgroup>${(list.some(it => it.sep) ? '<col style="width:14mm"><col>' : '<col style="width:7mm"><col>').repeat(per)}</colgroup>${rows}</table>`));
     }
     if(o.explain) withAns.filter(it => it.explain.length).forEach(it => {
-      const lines = it.explain.map((s, i) => lnHTML({s, pg: !s.trim() ? false : (i > 0 && !it.explain[i-1].trim())})).join('');
+      const lines = linesHTML(it.explain.map((s, i) => ({s, pg: !s.trim() ? false : (i > 0 && !it.explain[i-1].trim())})));
       const head = it.answer ? `<p><b>정답</b> ${fmt(answerText(it))}</p>` : '';
       pager.place(el(`<div class="q"><div class="qn">${it.label}.</div><div class="qb">${head}${lines}</div></div>`));
     });
@@ -1488,6 +1572,162 @@ function refreshImgList(){
     box.appendChild(s);
   });
 }
+// ─────────────────────────────────────────────
+// 표 만들기 / 표 붙여 넣기
+// ─────────────────────────────────────────────
+const cellTxt = t => String(t).replace(/\s+/g, ' ').trim().replace(/\|/g, '｜');
+// 칸 배열 → | 가 | 나 | 줄들
+function gridToText(grid, head){
+  const rows = grid.map(r => '| ' + r.map(c => cellTxt(c) || ' ').join(' | ') + ' |');
+  if(head && rows.length > 1) rows.splice(1, 0, '|' + grid[0].map(() => '---').join('|') + '|');
+  return rows.join('\n');
+}
+// HTML 표 → 칸 배열 (합친 칸은 < · ^ 로)
+function tableToGrid(t){
+  const grid = [];
+  [...t.rows].forEach((tr, i) => {
+    grid[i] = grid[i] || [];
+    let j = 0;
+    for(const td of tr.cells){
+      while(grid[i][j] !== undefined) j++;
+      const cs = Math.min(+td.colSpan || 1, 10), rs = Math.min(+td.rowSpan || 1, 30);
+      const txt = [...td.querySelectorAll('p,div,br')].length
+        ? td.innerHTML.replace(/<br\s*\/?>|<\/(p|div)>/gi, ' ').replace(/<[^>]+>/g, '') : td.textContent;
+      const d = document.createElement('textarea'); d.innerHTML = txt;
+      for(let a = 0; a < rs; a++) for(let b = 0; b < cs; b++){
+        (grid[i+a] = grid[i+a] || [])[j+b] = a === 0 && b === 0 ? cellTxt(d.value) : a === 0 ? '<' : '^';
+      }
+      j += cs;
+    }
+  });
+  const n = Math.max(0, ...grid.map(r => r.length));
+  return grid.filter(Boolean).map(r => Array.from({length:n}, (_, j) => r[j] ?? ''));
+}
+// 클립보드 HTML → 글. 표는 | | 줄로, 나머지는 줄 바꿈만 살린다.
+function htmlTablesToText(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('style,script,title,meta').forEach(n => n.remove());
+  let out = '';
+  const nl = () => { if(out && !out.endsWith('\n')) out += '\n'; };
+  const walk = n => {
+    if(n.nodeType === 3){ out += n.nodeValue.replace(/[\r\n]+/g, ' '); return; }
+    if(n.nodeType !== 1) return;
+    const tag = n.tagName;
+    if(tag === 'TABLE'){ nl(); out += gridToText(tableToGrid(n), !!n.querySelector('th')) + '\n'; return; }
+    if(tag === 'BR'){ out += '\n'; return; }
+    const block = /^(P|DIV|LI|H[1-6]|TR|UL|OL|BLOCKQUOTE|PRE|SECTION|ARTICLE)$/.test(tag);
+    if(block) nl();
+    n.childNodes.forEach(walk);
+    if(block) nl();
+  };
+  walk(doc.body);
+  return out.replace(/ /g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+// 엑셀처럼 탭으로 나뉜 줄이 둘 이상 이어지면 표로 바꾼다
+function tabsToTables(text){
+  const ls = text.replace(/\r\n?/g, '\n').split('\n');
+  const isRow = l => /\S\t/.test(l) && !RE_CHOICE.test(l) && !RE_Q.test(l);   // 들여쓰기 탭·선택지 줄은 표가 아니다
+  const out = []; let changed = false;
+  for(let i = 0; i < ls.length;){
+    let j = i;
+    while(j < ls.length && isRow(ls[j])) j++;
+    if(j - i >= 2){
+      const rows = ls.slice(i, j).map(l => l.split('\t'));
+      out.push(gridToText(rows.map(r => Array.from({length:Math.max(...rows.map(x => x.length))}, (_, k) => r[k] ?? '')), false));
+      changed = true; i = j;
+    } else out.push(ls[i++]);
+  }
+  return changed ? out.join('\n') : null;
+}
+
+// ── 표 만들기 창 ──
+const TB = {grid:[], from:-1, to:-1};
+function tblFindAt(v, pos){            // 커서가 있는 표 줄 덩어리 [시작, 끝)
+  const ls = v.split('\n'); let off = 0, at = -1;
+  const starts = ls.map(l => { const o = off; off += l.length + 1; return o; });
+  for(let i = 0; i < ls.length; i++) if(pos >= starts[i] && pos <= starts[i] + ls[i].length){ at = i; break; }
+  if(at < 0 || !RE_TBL.test(ls[at])) return null;
+  let a = at, b = at;
+  while(a > 0 && RE_TBL.test(ls[a-1])) a--;
+  while(b < ls.length - 1 && RE_TBL.test(ls[b+1])) b++;
+  return {from:starts[a], to:starts[b] + ls[b].length, rows:ls.slice(a, b + 1)};
+}
+function tblDraw(){
+  const head = $('#tblHead').checked;
+  $('#tblGrid').innerHTML = TB.grid.map((r, i) => `<tr${head && i === 0 ? ' class="hd"' : ''}>` +
+    r.map((c, j) => `<td><input data-i="${i}" data-j="${j}" value="${esc(c)}"></td>`).join('') + '</tr>').join('');
+  $('#tblRows').value = TB.grid.length; $('#tblCols').value = TB.grid[0].length;
+}
+function tblResize(nr, nc){
+  nr = Math.max(1, Math.min(30, nr | 0 || 1)); nc = Math.max(1, Math.min(10, nc | 0 || 1));
+  TB.grid = Array.from({length:nr}, (_, i) => Array.from({length:nc}, (_, j) => TB.grid[i]?.[j] ?? ''));
+  tblDraw();
+}
+function tblOpen(){
+  const ta = $('#src'), f = tblFindAt(ta.value, ta.selectionStart);
+  if(f){
+    const head = f.rows.length > 1 && RE_TSEP.test(f.rows[1]);
+    const data = f.rows.filter(r => !RE_TSEP.test(r)).map(tcells);
+    const n = Math.max(...data.map(r => r.length));
+    TB.grid = data.map(r => Array.from({length:n}, (_, j) => (r[j] || '').replace(/｜/g, '|')));
+    TB.from = f.from; TB.to = f.to;
+    $('#tblHead').checked = head; $('#tblOk').textContent = '고치기'; $('#tblDel').hidden = false;
+  } else {
+    TB.grid = [['','',''],['','',''],['','','']]; TB.from = TB.to = -1;
+    $('#tblHead').checked = true; $('#tblOk').textContent = '넣기'; $('#tblDel').hidden = true;
+  }
+  tblDraw(); $('#tbl').showModal();
+  $('#tblGrid input')?.focus();
+}
+$('#btnTbl').onclick = tblOpen;
+$('#tblClose').onclick = () => $('#tbl').close();
+$('#tblRows').onchange = $('#tblCols').onchange = () => tblResize(+$('#tblRows').value, +$('#tblCols').value);
+$('#tblHead').onchange = tblDraw;
+$('#tblGrid').addEventListener('input', e => {
+  const t = e.target; if(t.dataset.i != null) TB.grid[+t.dataset.i][+t.dataset.j] = t.value;
+});
+$('#tblGrid').addEventListener('keydown', e => {      // Enter: 아래 칸 (마지막 줄이면 줄 추가)
+  const t = e.target; if(e.key !== 'Enter' || t.dataset.i == null) return;
+  e.preventDefault();
+  const i = +t.dataset.i + 1, j = +t.dataset.j;
+  if(i >= TB.grid.length) tblResize(i + 1, TB.grid[0].length);
+  $(`#tblGrid input[data-i="${i}"][data-j="${j}"]`)?.focus();
+});
+$('#tblGrid').addEventListener('paste', e => {
+  const t = e.target; if(t.dataset.i == null) return;
+  const html = e.clipboardData.getData('text/html'), txt = e.clipboardData.getData('text/plain');
+  let rows = null;
+  if(/<table/i.test(html)){
+    const tb = new DOMParser().parseFromString(html, 'text/html').querySelector('table');
+    if(tb) rows = tableToGrid(tb);
+  }
+  if(!rows && /[\t\n]/.test(txt.trim())) rows = txt.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(l => l.split('\t'));
+  if(!rows) return;
+  e.preventDefault();
+  const i0 = +t.dataset.i, j0 = +t.dataset.j;
+  if(!TB.grid.some(r => r.some(c => c.trim()))) TB.grid = [['']];    // 빈 표에 붙이면 붙인 크기 그대로
+  tblResize(Math.max(TB.grid.length, i0 + rows.length), Math.max(TB.grid[0].length, j0 + Math.max(...rows.map(r => r.length))));
+  rows.forEach((r, a) => r.forEach((c, b) => { if(TB.grid[i0+a] && j0 + b < TB.grid[0].length) TB.grid[i0+a][j0+b] = cellTxt(c); }));
+  tblDraw();
+});
+function tblPut(t){
+  const ta = $('#src'); ta.focus();
+  if(TB.from >= 0) ta.setSelectionRange(TB.from, TB.to + (!t && ta.value[TB.to] === '\n' ? 1 : 0));
+  else {
+    const v = ta.value, a = ta.selectionStart, b = ta.selectionEnd;
+    if(t){ if(a > 0 && v[a-1] !== '\n') t = '\n' + t; if(b < v.length && v[b] !== '\n') t += '\n'; }
+  }
+  insertAtCursor(t);
+  $('#tbl').close();
+}
+$('#tblOk').onclick = () => {
+  let g = TB.grid.filter(r => r.some(c => c.trim()));
+  while(g.length && g[0].length > 1 && g.every(r => !r[r.length-1].trim())) g = g.map(r => r.slice(0, -1));   // 오른쪽 빈 칸 줄 버리기
+  if(!g.length){ alert('표에 글자를 하나 이상 써 주세요.'); return; }
+  tblPut(gridToText(g, $('#tblHead').checked));
+};
+$('#tblDel').onclick = () => { if(confirm('이 표를 입력칸에서 지울까요?')) tblPut(''); };
+
 $('#btnImg').onclick = () => $('#fileImg').click();
 $('#fileImg').onchange = async e => { for(const f of e.target.files) await addImage(f); e.target.value = ''; };
 $('#src').addEventListener('paste', async e => {
@@ -1497,6 +1737,14 @@ $('#src').addEventListener('paste', async e => {
     let t = '';
     try { t = htmlToNote(html); } catch(err){}
     if(t){ e.preventDefault(); insertAtCursor(t + '\n'); return; }
+  }
+  // 문제지: 한글·엑셀·인터넷에서 표가 섞인 글을 복사해 오면 표는 | | 줄로 살린다
+  if(!isNote() && e.clipboardData){
+    const plain = e.clipboardData.getData('text/plain'), h = e.clipboardData.getData('text/html');
+    let t = null;
+    if(/<table/i.test(h)){ try { t = htmlTablesToText(h); } catch(err){} }
+    if(!t && /\t/.test(plain)) t = tabsToTables(plain);
+    if(t){ e.preventDefault(); insertAtCursor(t); return; }
   }
   const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
   if(!files.length) return;
