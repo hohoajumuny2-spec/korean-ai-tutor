@@ -68,6 +68,10 @@
   .tabs button{flex:1;font-weight:700;padding:9px 10px}
   .tabs button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
   .left.note .qo,.left:not(.note) .no{display:none!important}
+  /* 고른 글자 꾸미기 (밑줄·굵게) */
+  .fmtbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}
+  .fmtbar button{padding:4px 10px;font-size:13px}
+  .fmtbar .hint{margin-left:2px}
 
   /* ── 보관함 ── */
   dialog#lib{width:min(720px,calc(100% - 24px));max-height:calc(100% - 24px);padding:0;border:1px solid var(--line);
@@ -306,6 +310,11 @@
         <input type="file" id="fileImg" accept="image/*" multiple hidden>
       </span>
     </div>
+    <div class="fmtbar">
+      <button id="btnUl" title="고른 글자에 밑줄 (Ctrl+U) — 한 번 더 누르면 지웁니다"><u>가</u> 밑줄</button>
+      <button id="btnBold" title="고른 글자를 굵게 (Ctrl+B) — 한 번 더 누르면 지웁니다"><b>가</b> 굵게</button>
+      <span class="hint">글자를 입력칸이나 오른쪽 미리보기에서 마우스로 고른 뒤 누르세요.</span>
+    </div>
     <textarea id="src" spellcheck="false" placeholder="여기에 문제를 붙여 넣으세요.&#10;&#10;1. 문제 내용&#10;① 보기 ② 보기 ③ 보기 ④ 보기 ⑤ 보기&#10;정답: 3"></textarea>
     <div id="msg"></div>
     <div class="imgs" id="imgList"></div>
@@ -351,6 +360,8 @@
            핵심어와 문단마다의 중심 문장을 뽑아 지문 바로 아래에 <code>[요약]</code> … <code>[/요약]</code> 상자로 넣습니다.
            인터넷·AI 없이 지문 속 문장을 골라 뽑는 방식이니 필요하면 고쳐 쓰세요. 직접 써 넣어도 됩니다.
            요약 상자를 문제지에 둘지 정답지(뒷장)로 보낼지는 설정의 '지문 요약 싣는 곳'에서 고릅니다.</p>
+        <p><b>밑줄·굵게</b> — 글자를 마우스로 고르고 [<u>가</u> 밑줄](Ctrl+U)·[<b>가</b> 굵게](Ctrl+B)를 누르세요.
+           입력칸에서 골라도 되고, 오른쪽 미리보기(시험지)에서 골라도 됩니다. 밑줄 친 글자를 다시 골라 누르면 밑줄이 지워집니다.</p>
         <p><b>꾸미기</b> — <code>**굵게**</code> <code>__밑줄__</code> <code>x^{2}</code>(위첨자) <code>a_{1}</code>(아래첨자)<br>
            발문의 <code>적절하지 않은</code> · <code>옳지 않은</code> · <code>없는 것</code> · <code>아닌 것</code> · <code>틀린 것</code> · <code>거리가 먼 것</code>에는 저절로 밑줄이 쳐집니다.</p>
         <p><b>그림</b> — 그림을 복사해 입력칸에 붙여 넣거나 [🖼 그림 넣기]. <code>[그림:그림1 50%]</code>처럼 쓰면 폭을 줄일 수 있습니다.</p>
@@ -1353,6 +1364,84 @@ async function setMode(m){
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
 $('#src').addEventListener('input', e => { S.text = e.target.value; later(); });
+
+// ─────────────────────────────────────────────
+// 고른 글자에 밑줄·굵게 — 입력칸에서 고르거나, 오른쪽 미리보기(시험지)에서 골라도 된다.
+//   글 속에는 __밑줄__ · **굵게** 표시로 들어간다. 이미 표시된 글자를 고르면 지운다.
+// ─────────────────────────────────────────────
+const MARKS = { ul:'__', bold:'**' };
+const LEAD_MARK = /^(\s*(?:(?:(?:문제|Q)\s*\d{1,3}\s*[.．:)]?|\d{1,3}\s*[.．)]|\d{1,3}\s*번|[①-⑩]|\(\d{1,2}\)|[ㄱ-ㅎ][.)]|[가나다라마바사아자차카타파하][.)]|\([ㄱ-ㅎ가-힣a-zA-Z0-9]{1,2}\)|[a-eA-E][.)]|[•·▪◦※-]|(?:정답|해설|답)\s*[:：])(?=\s|$)\s*)?)(.*?)(\s*)$/;
+function toggleMark(kind){
+  const mk = MARKS[kind], ta = $('#src');
+  const sel = window.getSelection();
+  if(sel && !sel.isCollapsed && $('#pages').contains(sel.anchorNode)){
+    if(!pickFromPreview(sel)) return;          // 미리보기에서 고른 글자를 입력칸에서 찾아 고른다
+  }
+  let a = ta.selectionStart, b = ta.selectionEnd, v = ta.value;
+  if(a === b){
+    msg(`${kind === 'ul' ? '밑줄을 그을' : '굵게 할'} 글자를 먼저 마우스로 고르세요 (입력칸이나 오른쪽 미리보기에서).`); return;
+  }
+  // 고른 앞뒤의 빈칸은 빼고 글자만 감싼다
+  while(a < b && /\s/.test(v[a])) a++;
+  while(b > a && /\s/.test(v[b - 1])) b--;
+  let inner = v.slice(a, b);
+  // 이미 표시된 글자면 지운다: 고른 것 바로 바깥이 표시이거나, 고른 것이 표시로 시작·끝나는 경우
+  if(v.slice(a - mk.length, a) === mk && v.slice(b, b + mk.length) === mk){
+    v = v.slice(0, a - mk.length) + inner + v.slice(b + mk.length);
+    a -= mk.length; b = a + inner.length;
+  } else if(inner.length > mk.length * 2 && inner.startsWith(mk) && inner.endsWith(mk) && !inner.includes('\n')){
+    inner = inner.slice(mk.length, -mk.length);
+    v = v.slice(0, a) + inner + v.slice(b); b = a + inner.length;
+  } else {
+    // 여러 줄을 골랐으면 줄마다 따로 감싼다 (표시는 한 줄 안에서만 읽힌다)
+    // 줄 맨 앞의 문제 번호·선택지 기호·ㄱ. 같은 표시는 밖에 둔다 (안에 넣으면 번호·내어쓰기가 깨진다)
+    const out = inner.split('\n').map(line => {
+      const m = line.match(LEAD_MARK);
+      return m && m[2] ? m[1] + mk + m[2] + mk + m[3] : line;
+    }).join('\n');
+    v = v.slice(0, a) + out + v.slice(b); b = a + out.length;
+  }
+  ta.value = v; S.text = v;
+  ta.focus(); ta.setSelectionRange(a, b);
+  clearTimeout(timer); libDirty = true; render();
+}
+// 미리보기에서 고른 글자 → 입력칸의 같은 글자를 고른다. 같은 글자가 여러 번 나오면 미리보기에서 몇 번째인지로 맞춘다.
+function pickFromPreview(sel){
+  const want = sel.toString().replace(/\s+/g, ' ').trim();
+  if(!want){ return false; }
+  const reEsc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+');
+  const found = [...S.text.matchAll(new RegExp(reEsc, 'g'))];
+  if(!found.length){
+    msg('미리보기에서 고른 글자를 입력칸에서 찾지 못했습니다. 문제 번호·선택지 기호처럼 저절로 붙은 글자는 빼고 고르거나, 왼쪽 입력칸에서 골라 주세요.');
+    return false;
+  }
+  let k = 0;
+  if(found.length > 1){
+    const r = sel.getRangeAt(0), pre = document.createRange();
+    pre.selectNodeContents($('#pages')); pre.setEnd(r.startContainer, r.startOffset);
+    const before = pre.toString().replace(/\s+/g, ' ');
+    let i = 0; while((i = before.indexOf(want, i)) !== -1){ k++; i += want.length; }
+    k = Math.min(k, found.length - 1);
+  }
+  const ta = $('#src');
+  sel.removeAllRanges();                       // 먼저 풀어야 입력칸에 새로 고른 것이 지워지지 않는다
+  ta.focus(); ta.setSelectionRange(found[k].index, found[k].index + found[k][0].length);
+  return true;
+}
+// 버튼을 눌러도 고른 것이 풀리지 않게 (누르는 순간 선택이 사라지지 않도록)
+['#btnUl', '#btnBold'].forEach(id => $(id).addEventListener('mousedown', e => e.preventDefault()));
+$('#btnUl').onclick = () => toggleMark('ul');
+$('#btnBold').onclick = () => toggleMark('bold');
+document.addEventListener('keydown', e => {
+  if(!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  const k = e.key.toLowerCase();
+  if(k !== 'u' && k !== 'b') return;
+  const sel = window.getSelection();
+  const inPreview = sel && !sel.isCollapsed && $('#pages').contains(sel.anchorNode);
+  if(document.activeElement !== $('#src') && !inPreview) return;
+  e.preventDefault();
+  toggleMark(k === 'u' ? 'ul' : 'bold');
+});
 
 function insertAtCursor(t){
   const ta = $('#src');
