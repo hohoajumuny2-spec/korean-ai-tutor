@@ -7561,6 +7561,9 @@ async def create_homework(
     target_classes: str = Form(""),
     # 💡 제출 기한 ('2026-10-05T18:00'). 비우면 기한 없음. 지나도 낼 수는 있고 '기한 후 제출'로 남는다.
     deadline: str = Form(""),
+    # 💡 묶음 이름 ('10월 4일 과제'). 같은 날 낸 과제 여러 개를 학생 화면에서 게시물 하나로 모은다.
+    #    비우면 지금처럼 과제 하나가 게시물 하나.
+    group: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -7568,6 +7571,7 @@ async def create_homework(
         return {"success": False}
 
     answer_list = parse_answer_list(answers)
+    group = normalize_homework_group(group)
     safe_title = sanitize_doc_id(title)
     kind_norm = normalize_homework_kind(kind)
     deadline_str = str(deadline or "").strip().replace(" ", "T")[:16]
@@ -7610,6 +7614,7 @@ async def create_homework(
                 "explanations": parse_explanation_map(explanations),
                 "question_count": len(answer_list),
                 "deadline": deadline_str,
+                "group": group,
                 # 고치기로 저장해도 숨겨 둔 과제는 계속 숨긴다
                 "hidden": bool(prev_data.get("hidden", False)),
                 "created_at": created_at,
@@ -7619,11 +7624,42 @@ async def create_homework(
     if is_new:
         kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
         due = f" 마감 {deadline_label(deadline_str)}." if deadline_str else ""
-        await asyncio.to_thread(
-            send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
-            f"'{title}' {kind_label}가 올라왔어요.{due} 확인해보세요!", "/#prog-classroom", "homework")
+        body = f"'{title}' {kind_label}가 올라왔어요.{due} 확인해보세요!"
+        push = True
+        if group:
+            # 💡 묶음에 과제를 잇달아 올릴 때 하나마다 알림이 울리지 않게 —
+            #    같은 묶음에 방금(30분 안에) 올린 과제가 있으면 알림을 건너뛴다.
+            siblings = await asyncio.to_thread(homework_group_siblings, group, safe_title)
+            recent = [h for h in siblings if homework_created_within(h, 30)]
+            push = not recent
+            body = (f"'{group}'에 '{title}' 과제가 더 올라왔어요.{due} 확인해보세요!" if siblings
+                    else f"'{group}' 과제가 올라왔어요.{due} 확인해보세요!")
+        if push:
+            await asyncio.to_thread(
+                send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
+                body, "/#prog-classroom", "homework")
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
+
+
+def normalize_homework_group(v) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip()[:60]
+
+
+def homework_group_siblings(group: str, safe_title: str) -> list:
+    """같은 묶음에 든 다른 과제들 (숨긴 것은 뺀다)."""
+    if not group:
+        return []
+    return [d.to_dict() or {} for d in db.collection("homeworks").where("group", "==", group).stream()
+            if d.id != safe_title and not (d.to_dict() or {}).get("hidden")]
+
+
+def homework_created_within(hw: dict, minutes: int) -> bool:
+    try:
+        made = datetime.strptime(str(hw.get("created_at") or "")[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return datetime.now() - made < timedelta(minutes=minutes)
 
 
 class HomeworkFileDeleteReq(BaseModel):
