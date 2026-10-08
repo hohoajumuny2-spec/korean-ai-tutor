@@ -11283,7 +11283,54 @@ def normalize_univ_kind(value: str) -> str:
     return "susi"
 
 
-UNIV_CHUNK_SIZE = 700          # Firestore 문서 하나에 담을 행 수
+UNIV_CHUNK_SIZE = 700          # Firestore 문서 하나에 담을 행 수(최대)
+# 💡 Firestore 문서 하나는 1MiB를 넘을 수 없다. 비고·주요사항처럼 긴 칸이 많은 자료는
+#    700줄이 1MiB를 넘어 저장이 통째로 실패했다. 줄 수와 함께 크기로도 끊는다.
+UNIV_CHUNK_BYTES = 600_000
+
+
+def _univ_chunks(rows: list) -> list:
+    """입결 줄을 Firestore 문서 하나에 들어갈 만큼씩 나눈다."""
+    chunks, cur, size = [], [], 0
+    for r in rows:
+        n = len(json.dumps(r, ensure_ascii=False).encode("utf-8")) + 16
+        if cur and (len(cur) >= UNIV_CHUNK_SIZE or size + n > UNIV_CHUNK_BYTES):
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(r)
+        size += n
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def save_univ_rows(rows: list) -> None:
+    """입결 자료 전체를 새로 저장한다.
+
+    💡 예전에는 기존 문서를 먼저 다 지우고 새로 썼다. 그러다 중간에 쓰기가 실패하면
+       (문서가 너무 크거나 연결이 끊기면) 기존 자료까지 사라졌다. 이제는 새 자료를
+       다른 이름의 문서에 먼저 다 쓰고, 다 써진 다음에만 예전 문서를 지운다.
+       실패하면 새로 쓴 것만 지우고 예전 자료는 그대로 둔다."""
+    old_ids = [d.id for d in db.collection("univ_table").stream()]
+    gen = datetime.now().strftime("g%Y%m%d%H%M%S%f")
+    written = []
+    try:
+        for i, chunk in enumerate(_univ_chunks(rows)):
+            doc_id = f"{gen}_{i:04d}"
+            db.collection("univ_table").document(doc_id).set({"rows": chunk})
+            written.append(doc_id)
+    except Exception:
+        for doc_id in written:
+            try:
+                db.collection("univ_table").document(doc_id).delete()
+            except Exception:
+                pass
+        invalidate_univ_cache()
+        raise
+    for doc_id in old_ids:
+        if doc_id not in written:
+            db.collection("univ_table").document(doc_id).delete()
+    invalidate_univ_cache()
 UNIV_MAX_ROWS = 30000
 
 
@@ -11925,15 +11972,16 @@ async def import_univ_table(
 
     existing = []
     if append:
+        invalidate_univ_cache()          # 덧붙일 때는 캐시 말고 DB에 실제로 있는 자료에 붙인다
         existing = load_univ_table()
-    for d in list(db.collection("univ_table").stream()):
-        d.reference.delete()
 
     merged = (existing + entries)[:UNIV_MAX_ROWS]
-    for i in range(0, len(merged), UNIV_CHUNK_SIZE):
-        db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
-            {"rows": merged[i:i + UNIV_CHUNK_SIZE]}
-        )
+    try:
+        save_univ_rows(merged)
+    except Exception as e:
+        print("[univ_table/import] 저장 실패:", repr(e))
+        return {"success": False,
+                "detail": f"DB에 저장하지 못했습니다. 기존 자료는 그대로 남아 있습니다. ({type(e).__name__}: {str(e)[:200]})"}
     meta_prev = load_univ_meta() if append else {}
     labels = [x for x in [meta_prev.get("label", ""), (label or file.filename or "").strip()] if x]
     kinds = {}
@@ -12067,12 +12115,7 @@ def fix_univ_metric(kind: str = Form(...), from_metric: str = Form(...), to_metr
         r["metric"] = to_metric
         changed += 1
     if changed:
-        for d in list(db.collection("univ_table").stream()):
-            d.reference.delete()
-        for i in range(0, len(rows), UNIV_CHUNK_SIZE):
-            db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
-                {"rows": rows[i:i + UNIV_CHUNK_SIZE]}
-            )
+        save_univ_rows(rows)
         # 목록 화면 위쪽에 뜨는 '등급 기준/백분위 기준' 문구도, 자료 전체가 이번에
         # 바뀐 갈래 하나뿐이었다면 함께 맞춰준다 (수시·정시가 섞여 있으면 그대로 둠)
         meta = load_univ_meta()
@@ -12112,12 +12155,7 @@ def fix_univ_kind(from_kind: str = Form(...), to_kind: str = Form(...)):
         r["kind"] = to_n
         changed += 1
     if changed:
-        for d in list(db.collection("univ_table").stream()):
-            d.reference.delete()
-        for i in range(0, len(rows), UNIV_CHUNK_SIZE):
-            db.collection("univ_table").document(f"chunk_{i // UNIV_CHUNK_SIZE:04d}").set(
-                {"rows": rows[i:i + UNIV_CHUNK_SIZE]}
-            )
+        save_univ_rows(rows)
     if changed:
         invalidate_univ_cache()
     return {"success": True, "changed": changed}
