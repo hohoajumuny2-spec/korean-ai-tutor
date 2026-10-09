@@ -51,8 +51,11 @@
   .grid .full{grid-column:1/-1}
   input[type=text],input[type=number],select,textarea{font:inherit;color:var(--ink);background:var(--bg);
        border:1px solid var(--line);border-radius:7px;padding:6px 8px;width:100%}
-  textarea#src{height:52vh;min-height:280px;resize:vertical;line-height:1.55;
-       font-family:ui-monospace,"D2Coding","Consolas","Malgun Gothic",monospace;font-size:13.5px}
+  #src{height:52vh;min-height:280px;resize:vertical;line-height:1.55;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;
+       font-family:ui-monospace,"D2Coding","Consolas","Malgun Gothic",monospace;font-size:13.5px;
+       color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:6px 8px;width:100%;outline:none}
+  #src:focus{border-color:var(--accent)}
+  #src.empty::before{content:attr(data-ph);color:var(--sub);pointer-events:none;position:absolute}
   .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
   .hint{font-size:12px;color:var(--sub);line-height:1.6}
   .hint code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px}
@@ -132,6 +135,10 @@
          border-bottom:.3mm solid #222;padding-bottom:1.2mm;margin-bottom:4mm;flex:0 0 auto}
   .cols{flex:1 1 auto;min-height:0;display:flex}
   .col{flex:1 1 0;min-width:0;height:100%;overflow:hidden}
+  /* 화면에 안 보이는 쪽은 그리지 않고 건너뛴다 (쪽이 많아도 빠르게) */
+  @media screen{ #pages .page{content-visibility:auto;contain-intrinsic-size:210mm 297mm} }
+  /* 블록 높이를 미리 재 두는 곳 (보이지 않는다) */
+  #measure{position:absolute;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:210mm}
   .cols.two .col:first-child{padding-right:4mm}
   .cols.two .col+.col{padding-left:4mm;border-left:.3mm solid #888}
   .band{position:relative;overflow:hidden;display:flex;align-items:center;gap:3mm;flex:0 0 auto;
@@ -250,7 +257,9 @@
     .bar,.left,.noprint{display:none!important}
     .main{display:block;height:auto}
     .right{padding:0;overflow:visible}
-    #pages{zoom:1!important;margin:0}
+    #pages{zoom:1!important;transform:none!important;margin:0!important}
+    #pages .page{content-visibility:visible!important}
+    #measure{display:none!important}
     .page{margin:0;box-shadow:none;break-after:page}
     .page:last-child{break-after:auto}
     .tall{outline:none}
@@ -336,7 +345,7 @@
       <button id="btnBold" title="고른 글자를 굵게 (Ctrl+B) — 한 번 더 누르면 지웁니다"><b>가</b> 굵게</button>
       <span class="hint">글자를 입력칸이나 오른쪽 미리보기에서 마우스로 고른 뒤 누르세요.</span>
     </div>
-    <textarea id="src" spellcheck="false" placeholder="여기에 문제를 붙여 넣으세요.&#10;&#10;1. 문제 내용&#10;① 보기 ② 보기 ③ 보기 ④ 보기 ⑤ 보기&#10;정답: 3"></textarea>
+    <div id="src" contenteditable="plaintext-only" spellcheck="false" autocorrect="off" role="textbox" aria-multiline="true" data-ph="여기에 문제를 붙여 넣으세요.&#10;&#10;1. 문제 내용&#10;① 보기 ② 보기 ③ 보기 ④ 보기 ⑤ 보기&#10;정답: 3"></div>
     <div id="msg"></div>
     <div class="imgs" id="imgList"></div>
 
@@ -403,6 +412,7 @@
 
   <div class="right" id="preview">
     <div id="pages"></div>
+    <div id="measure"></div>
   </div>
 </div>
 
@@ -446,6 +456,146 @@
 (() => {
 'use strict';
 const $ = s => document.querySelector(s);
+
+// ─────────────────────────────────────────────
+// 입력칸 — 💡 textarea 는 글자 하나를 칠 때마다 글 전체(수만 자)를 다시 배치해서, 문제지가 길면
+//   치는 것부터 느렸다. 줄마다 따로 된 편집 칸으로 바꾸고, 다른 코드는 그대로 쓸 수 있게
+//   textarea 와 같은 이름(value, selectionStart, setSelectionRange, setRangeText …)을 달아 준다.
+// ─────────────────────────────────────────────
+(function lineEditor(ed){
+  if(ed.contentEditable !== 'plaintext-only') ed.contentEditable = 'true';
+  const plainOnly = ed.contentEditable === 'plaintext-only';
+  const isBlock = n => n.nodeType === 1 && (n.tagName === 'DIV' || n.tagName === 'P');
+  // 글로 읽기. rec 가 있으면 노드마다 글 속 자리를 적어 둔다.
+  function scan(rec){
+    const st = {out: '', any: false, after: false};
+    const walk = box => {
+      const kids = box.childNodes;
+      for(let i = 0; i < kids.length; i++){
+        const n = kids[i];
+        if(n.nodeType === 3){
+          if(st.after){ st.out += '\n'; st.after = false; }
+          if(rec) rec.set(n, {s: st.out.length, t: 1});
+          st.out += n.data; st.any = true;
+        } else if(n.nodeName === 'BR'){
+          if(st.after){ st.out += '\n'; st.after = false; }
+          if(rec) rec.set(n, {s: st.out.length});
+          if(!(box !== ed && i === kids.length - 1)) st.out += '\n';   // 줄 끝의 BR 은 빈 줄 자리표시일 뿐
+          st.any = true;
+        } else if(isBlock(n)){
+          if(st.any) st.out += '\n';
+          st.after = false;
+          const r = {s: st.out.length}; if(rec) rec.set(n, r);
+          walk(n); r.e = st.out.length;
+          st.any = true; st.after = true;
+        } else if(n.nodeType === 1){
+          const r = {s: st.out.length}; if(rec) rec.set(n, r);
+          walk(n); r.e = st.out.length;
+        }
+      }
+    };
+    walk(ed);
+    return st.out;
+  }
+  function posOf(rec, total, node, off){
+    if(node.nodeType === 3){ const r = rec.get(node); return r ? r.s + Math.min(off, node.data.length) : total; }
+    const kids = node.childNodes;
+    if(off < kids.length){
+      let k = kids[off];
+      while(k && !rec.has(k)) k = k.firstChild;
+      if(k) return rec.get(k).s;
+    }
+    if(node === ed) return total;
+    const r = rec.get(node); return r ? (r.e != null ? r.e : r.s) : total;
+  }
+  function pointAt(pos){
+    const rec = new Map(); const total = scan(rec).length;
+    pos = Math.max(0, Math.min(pos, total));
+    let lastText = null;
+    for(const [n, r] of rec){
+      if(r.t){
+        if(pos >= r.s && pos <= r.s + n.data.length){
+          // 글자 사이 줄바꿈(\n)에 걸리면 다음 글 덩어리의 맨 앞으로
+          return [n, pos - r.s];
+        }
+        lastText = [n, r];
+      } else if(isBlock(n) && r.s === pos && r.e === pos) return [n, 0];
+      else if(n.nodeName === 'BR' && r.s === pos) return [n.parentNode, [...n.parentNode.childNodes].indexOf(n)];
+    }
+    return [ed, ed.childNodes.length];
+  }
+  let lastSel = [0, 0];
+  function readSel(){
+    const sel = getSelection();
+    if(!sel.rangeCount || !ed.contains(sel.anchorNode)) return lastSel;
+    const r = sel.getRangeAt(0), rec = new Map(), total = scan(rec).length;
+    const a = posOf(rec, total, r.startContainer, r.startOffset), b = posOf(rec, total, r.endContainer, r.endOffset);
+    return (lastSel = [Math.min(a, b), Math.max(a, b)]);
+  }
+  document.addEventListener('selectionchange', () => { const sel = getSelection(); if(sel.rangeCount && ed.contains(sel.anchorNode)) readSel(); });
+  function setSel(a, b){
+    const p = pointAt(a), q = b === a ? p : pointAt(b);
+    const sel = getSelection(); sel.setBaseAndExtent(p[0], p[1], q[0], q[1]);
+    lastSel = [a, b];
+    const line = (p[0].nodeType === 3 ? p[0].parentNode : p[0]);
+    if(line && line !== ed && line.scrollIntoView){
+      const er = ed.getBoundingClientRect(), lr = line.getBoundingClientRect();
+      if(lr.top < er.top || lr.bottom > er.bottom) ed.scrollTop += lr.top - er.top - ed.clientHeight / 3;
+    }
+  }
+  function build(v){
+    const f = document.createDocumentFragment();
+    v.split('\n').forEach(l => { const d = document.createElement('div'); if(l) d.textContent = l; else d.appendChild(document.createElement('br')); f.appendChild(d); });
+    ed.textContent = ''; if(v) ed.appendChild(f);
+    lastSel = [0, 0]; ph();
+  }
+  const ph = () => ed.classList.toggle('empty', !ed.textContent && !ed.querySelector('br + br, div + div'));
+  Object.defineProperties(ed, {
+    value: { get: () => scan(), set: v => build(String(v == null ? '' : v)) },
+    selectionStart: { get: () => readSel()[0] },
+    selectionEnd: { get: () => readSel()[1] },
+    placeholder: { get: () => ed.dataset.ph || '', set: v => { ed.dataset.ph = v; } },
+  });
+  ed.setSelectionRange = (a, b) => setSel(a, b == null ? a : b);
+  // 바꿔 넣기 — 되돌리기(Ctrl+Z)가 되도록 브라우저 편집 명령을 쓴다. 아주 긴 글만 통째로 다시 만든다.
+  ed.setRangeText = (text, a, b, mode) => {
+    if(a == null){ [a, b] = readSel(); }
+    if(text.length > 8000){
+      const v = scan();
+      build(v.slice(0, a) + text + v.slice(b));
+      const end = a + text.length;
+      if(mode === 'select') setSel(a, end); else if(mode === 'end') setSel(end, end); else setSel(a, a);
+      return;
+    }
+    if(document.activeElement !== ed) ed.focus({preventScroll: true});
+    setSel(a, b);
+    if(text) document.execCommand('insertText', false, text);
+    else if(a !== b) document.execCommand('delete');
+    if(mode === 'select') setSel(a, a + text.length);
+    else if(mode !== 'end') setSel(a, a);
+    ph();
+  };
+  // textarea 처럼, 다른 곳을 눌렀다 돌아와도 커서 자리를 기억한다
+  const nativeFocus = HTMLElement.prototype.focus;
+  ed.focus = opts => {
+    const keep = lastSel, sel = getSelection();
+    const inside = sel.rangeCount && ed.contains(sel.anchorNode);
+    nativeFocus.call(ed, Object.assign({preventScroll: true}, opts));
+    if(!inside) setSel(keep[0], keep[1]);
+  };
+  ed.addEventListener('input', ph);
+  // 붙여 넣기는 늘 글자만 (다른 붙여 넣기 처리가 먼저 가져가지 않았을 때 — 그래서 맨 나중에 단다)
+  setTimeout(() => ed.addEventListener('paste', e => {
+    if(e.defaultPrevented || !e.clipboardData) return;
+    const t = e.clipboardData.getData('text/plain');
+    if(!t || (plainOnly && t.length <= 8000)) return;   // 짧은 글은 브라우저가 글자로 붙인다 (되돌리기 됨)
+    e.preventDefault();
+    const [a, b] = readSel();
+    ed.setRangeText(t.replace(/\r\n?/g, '\n'), a, b, 'end');
+    ed.dispatchEvent(new Event('input', {bubbles: true}));
+  }), 0);
+  ph();
+})(document.getElementById('src'));
 const CIRC = '①②③④⑤⑥⑦⑧⑨⑩';
 const STORE = 'munjeji.v1';
 
@@ -1192,13 +1342,49 @@ function findPassage(v, pos){
 // ─────────────────────────────────────────────
 // 쪽 나누기 — 실제 A4 크기로 채워 보며 넘친 문항을 다음 단·쪽으로 보낸다
 // ─────────────────────────────────────────────
-function Pager(root, nc, docTitle){
+// 💡 블록마다 높이를 한 번 재 두고(글이 같으면 다시 재지 않는다), 남은 자리에 들어가는지는
+//    셈으로 판단한다. 고칠 때마다 수십 쪽의 블록을 하나하나 다시 재느라 느렸다.
+const HCACHE = new Map();
+let measureKey = '';
+function measureCols(nc){
+  const box = $('#measure'), root = $('#pages');
+  const k = nc + '|' + root.style.cssText.replace(/transform[^;]*;?|margin-bottom[^;]*;?|transform-origin[^;]*;?/g, '');
+  if(k !== measureKey || !box.firstChild){
+    measureKey = k; HCACHE.clear();
+    box.style.cssText = root.style.cssText; box.style.transform = ''; box.style.marginBottom = '';
+    box.innerHTML = `<div class="page"><div class="cols${nc == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(nc == 2 ? 2 : 1)}</div></div>`;
+  }
+  return [...box.querySelectorAll('.col')];
+}
+function Pager(root, nc, docTitle, resume, onPage, before){
   const o = S.opt, note = isNote();
   let page, cols, ci, first = true, section = '';
   const pages = [];
+  // 쪽마다: 그 쪽을 연 블록 번호(op), 그 블록이 쪽 맨 위에서 온전히 시작했는지(clean), 그때의 머리말 제목
+  const meta = [];
+  let curOp = 0, opFresh = true;   // opFresh: 지금 블록을 아직 한 조각도 싣지 않았다
+  let sigRest = null;              // 긴 블록을 잘라 싣다가 쪽을 넘길 때, 아직 남은 조각들 (같으면 뒤 쪽들도 같다)
+  let fill = 0, cap = 0;           // 지금 단에 실은 높이, 단 높이
+  const mcols = measureCols(nc);
+  // 블록 높이 (다시 쓸 수 있는 블록만 — 위아래 여백 없이 안쪽 여백만 쓰는 문항·묶음·제목)
+  const blockH = b => {
+    if(!b.classList || !(b.classList.contains('q') || b.classList.contains('g') || b.classList.contains('sect'))) return null;
+    const key = ci + '|' + (b._h || b.outerHTML);
+    let h = HCACHE.get(key);
+    if(h == null){
+      const m = mcols[ci] || mcols[0];
+      m.appendChild(b); h = b.getBoundingClientRect().height; m.removeChild(b);
+      if(HCACHE.size > 4000) HCACHE.clear();
+      HCACHE.set(key, h);
+    }
+    return h;
+  };
+  // 지금 단에 실린 높이 (scrollHeight 는 단 높이보다 작아지지 않아 쓸 수 없다)
+  const colFill = () => { const c = col(), l = c.lastElementChild; return l ? l.offsetTop + l.offsetHeight - c.offsetTop + 1 : 0; };
+  if(resume){ resume.forEach(m => { pages.push(m.el); meta.push(m); }); first = false; }
   const over = c => c.scrollHeight > c.clientHeight + 1;
 
-  function newPage(){
+  function newPage(clean){
     page = document.createElement('div'); page.className = 'page';
     const hasBand = !!(o.bandL || o.bandR);
     const logo = S.logo ? `<img src="${blobURL(S.logo)}" alt="">` : EMBLEM;
@@ -1216,32 +1402,46 @@ function Pager(root, nc, docTitle){
       head = `<div class="rhead"><span>${esc(docTitle)}</span><span>${esc(section || o.subject)}</span></div>`;
     }
     page.innerHTML = head + `<div class="cols${nc == 2 ? ' two' : ''}">${'<div class="col"></div>'.repeat(nc == 2 ? 2 : 1)}</div><div class="foot">${o.motto ? `<div class="motto">${WAVE_ICON}<span>${esc(o.motto)}</span>${WAVE_ICON}</div>` : ''}<div class="pno">${o.pageNo ? '0 / 0' : ''}</div></div>`;   // 쪽 번호는 다 채운 뒤에 적지만, 자리는 미리 잡아 둔다 (꼬리말 높이가 바뀌면 단 아래가 잘린다)
-    root.appendChild(page); pages.push(page);
+    root.insertBefore(page, before || null); pages.push(page);
+    meta.push({el: page, op: curOp, clean: !!clean, section, rest: clean ? '' : sigRest});
     cols = [...page.querySelectorAll('.col')]; ci = 0;
+    fill = 0; cap = cols[0].clientHeight;
+    if(onPage) onPage(meta.length - 1);
   }
   const col = () => cols[ci];
-  function next(){ if(++ci >= cols.length) newPage(); }
+  function next(){ if(++ci >= cols.length) newPage(opFresh); else { fill = 0; cap = col().clientHeight; } }
   const used = () => col().children.length > 0;
 
   function place(b){
+    const h = blockH(b);
+    if(h != null){
+      if(fill + h <= cap - .5){ col().appendChild(b); fill += h; return; }
+      if(h <= cap - .5){ next(); col().appendChild(b); fill = h; return; }
+      split(b); fill = colFill(); return;   // 한 단보다 긴 문항·지문은 줄 단위로 이어서 싣는다
+    }
     col().appendChild(b);
-    if(!over(col())) return;
+    if(!over(col())){ fill = colFill(); return; }
     const tooBig = b.offsetHeight > col().clientHeight;
     col().removeChild(b);
-    if(!tooBig){ next(); col().appendChild(b); return; }
+    if(!tooBig){ next(); col().appendChild(b); fill = colFill(); return; }
     split(b);                         // 한 단보다 긴 문항·지문은 줄 단위로 이어서 싣는다
+    fill = colFill();
   }
   // 정리 노트: 덩어리째 다음 단으로 넘기지 않고, 남은 자리부터 줄 단위로 채워 싣는다
   function flow(b){
+    const h = blockH(b);
+    if(h != null && fill + h <= cap - .5){ col().appendChild(b); fill += h; return; }
     col().appendChild(b);
-    if(!over(col())) return;
+    if(!over(col())){ fill = colFill(); return; }
     col().removeChild(b);
     split(b);
+    fill = colFill();
   }
   function split(b){
     const qn = b.querySelector(':scope>.qn');
     let rest = [...b.querySelector(':scope>.qb').children];
     let firstPart = true;
+    const go = () => { sigRest = firstPart + '|' + rest.map(e => e.outerHTML).join(''); next(); sigRest = null; };
     while(rest.length){
       const part = b.cloneNode(false);
       if(!firstPart) part.classList.add('cont');
@@ -1263,15 +1463,15 @@ function Pager(root, nc, docTitle){
       const lastEl = body.lastElementChild;
       if(placed && rest.length && lastEl && (lastEl.classList.contains('nh') || lastEl.classList.contains('gt')) && (placed > 1 || col().children.length > 1)){
         body.removeChild(lastEl); rest.unshift(lastEl); placed--;
-        if(!placed){ col().removeChild(part); next(); continue; }
+        if(!placed){ col().removeChild(part); go(); continue; }
       }
       if(!placed){
-        if(col().children.length > 1){ col().removeChild(part); next(); continue; }
+        if(col().children.length > 1){ col().removeChild(part); go(); continue; }
         body.appendChild(rest.shift()); part.classList.add('tall');  // 한 덩어리가 한 단보다 크다
         tall++;
       }
-      firstPart = false;
-      if(rest.length) next();
+      firstPart = false; opFresh = false;
+      if(rest.length) go();
     }
   }
   // 상자를 줄 단위로 나눠 body 에 들어가는 만큼만 싣는다. 나머지 상자를 돌려준다(두 줄도 못 실으면 null).
@@ -1349,7 +1549,17 @@ function Pager(root, nc, docTitle){
       }
       section = title || ''; newPage();
     },
-    place, flow, pages, get tall(){ return tall; },
+    place, flow, pages, meta, get tall(){ return tall; },
+    // 블록 하나를 싣는다 (i: 블록 번호)
+    run(op, i){
+      curOp = i; opFresh = true;
+      if(op.k === 'start') this.start(op.t);
+      else if(op.k === 'sheet') this.newSheet(op.t);
+      else if(op.k === 'flow') flow(op.b);
+      else place(op.b);
+    },
+    // 이어 그리기: 블록 i 를 새 쪽 맨 위에서 시작한다
+    resumeAt(i, sec){ curOp = i; opFresh = true; section = sec; newPage(true); },
   };
 }
 
@@ -1443,11 +1653,11 @@ function quizInto(pager){
 
 }
 
+let PREV = null;   // 지난번에 그린 것: 블록 목록과 쪽마다의 기록 (바뀐 곳부터만 다시 짜려고)
 function render(){
   const t0 = performance.now();
   const o = S.opt;
   const root = $('#pages');
-  root.style.zoom = 1;
   root.style.setProperty('--fs', o.fs + 'pt');
   root.style.setProperty('--lh', o.lh);
   root.style.setProperty('--gap', o.gap + 'mm');
@@ -1455,27 +1665,80 @@ function render(){
   root.style.fontFamily = FONTS[o.font] || FONTS.gothic;
   const th = THEMES[o.theme] || THEMES.ocean;
   root.style.setProperty('--t1', th[0]); root.style.setProperty('--t2', th[1]); root.style.setProperty('--tl', th[2]);
-  root.innerHTML = '';
 
   const note = isNote();
-  const pager = Pager(root, note ? o.noteCols : o.cols, docName());
-  pager.start();
-  if(note) noteBlocks(noteBody()).forEach(b => pager.flow(b));
-  else quizInto(pager);
+  // 1) 실을 블록들을 먼저 목록으로 만든다 (아직 쪽에 넣지 않는다)
+  const ops = [];
+  const rec = { start: t => ops.push({k:'start', t: t || ''}), newSheet: t => ops.push({k:'sheet', t: t || ''}),
+                place: b => ops.push({k:'place', b}), flow: b => ops.push({k:'flow', b}) };
+  rec.start();
+  if(note) noteBlocks(noteBody()).forEach(b => rec.flow(b));
+  else quizInto(rec);
+  ops.forEach(op => { if(op.b){ op.b._h = op.b.outerHTML; op.h = op.k + '|' + op.b._h; } else op.h = op.k + '|' + op.t; });
+  const key = JSON.stringify([o, note, docName(), S.logo.length, S.logo.slice(-32)]);
+
+  // 2) 💡 지난번과 비교해, 바뀐 블록이 있는 쪽부터만 다시 짠다. 그 뒤에서 예전과 똑같이
+  //    새 쪽이 시작되면 거기부터는 예전 쪽을 그대로 다시 붙인다 (긴 문제지에서 고칠 때 빠르게).
+  const prev = PREV && PREV.key === key && PREV.root === root && root.children.length === PREV.pages.length ? PREV : null;
+  const n = ops.length;
+  let from = 0, R = 0, d = 0, L = 0, old = [];
+  if(prev){
+    const a = prev.ops, m = a.length;
+    while(d < n && d < m && a[d] === ops[d].h) d++;
+    if(d === n && d === m){ fitZoom(); save(); renderMs = performance.now() - t0; return; }   // 바뀐 것이 없다
+    while(L < n - d && L < m - d && a[m-1-L] === ops[n-1-L].h) L++;
+    for(let p = prev.pages.length - 1; p > 0; p--) if(prev.pages[p].clean && prev.pages[p].op < d){ R = p; break; }
+    old = prev.pages;
+    if(R > 0) from = prev.pages[R].op;
+  }
+  const shift = prev ? n - prev.ops.length : 0;
+  // 새 쪽을 열 때마다: 예전에 같은 쪽 번호가 똑같은 상태(같은 블록, 같은 남은 조각)로 시작했다면
+  // 그 뒤는 예전 쪽과 똑같으니 짜기를 멈추고 예전 쪽들을 다시 붙인다
+  const CONV = {}; let convAt = -1, pager;
+  const onPage = q => {
+    if(!old.length || q <= R) return;
+    const nm = pager.meta[q], om = old[q];
+    if(!om || nm.op < n - L || nm.op !== om.op + shift || nm.section !== om.section) return;
+    if(nm.clean ? om.clean : (!om.clean && om.rest != null && nm.rest != null && nm.rest === om.rest)){ convAt = q; throw CONV; }
+  };
+  // 💡 예전 쪽은 떼어 내지 않고 그 앞에 새 쪽을 끼워 넣는다 (떼었다 다시 붙이면 브라우저가 처음부터 다시 그린다)
+  if(R > 0){
+    pager = Pager(root, note ? o.noteCols : o.cols, docName(), old.slice(0, R), onPage, old[R].el);
+    pager.resumeAt(from, old[R].section);
+  } else {
+    if(!old.length) root.innerHTML = '';
+    pager = Pager(root, note ? o.noteCols : o.cols, docName(), null, onPage, old.length ? old[0].el : null);
+  }
+  try { for(let i = from; i < n; i++) pager.run(ops[i], i); }
+  catch(e){
+    if(e !== CONV) throw e;
+    pager.meta.slice(convAt).forEach(x => x.el.remove());
+    pager.meta.length = convAt; pager.pages.length = convAt;
+    old.slice(R, convAt).forEach(x => x.el.remove());
+    old.slice(convAt).forEach(x => { pager.meta.push({...x, op: x.op + shift}); pager.pages.push(x.el); });
+  }
+  if(old.length && convAt < 0) old.slice(R).forEach(x => x.el.remove());
+  PREV = {key, root, ops: ops.map(op => op.h), pages: pager.meta.slice()};
 
   const N = pager.pages.length;
-  pager.pages.forEach((p, i) => { p.querySelector('.pno').textContent = o.pageNo ? `${i+1} / ${N}` : ''; });
-  if(pager.tall) msg('빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.');
+  pager.pages.forEach((p, i) => { const t = o.pageNo ? `${i+1} / ${N}` : ''; const e = p.querySelector('.pno'); if(e.textContent !== t) e.textContent = t; });
+  if(root.querySelector('.tall')) msg('빨간 점선 부분은 한 단에 다 들어가지 않아 잘립니다. 글자를 줄이거나 1단으로 바꾸거나 그림 폭을 줄여 주세요.');
   else if(Date.now() > okUntil) msg('');
   fitZoom();
   save();
   renderMs = performance.now() - t0;
 }
 
+// 💡 예전에는 CSS zoom 으로 줄였는데, zoom 을 바꾸면 모든 쪽을 처음부터 다시 짜야 했다.
+//    transform 으로 줄이면 쪽 나누기(실제 A4 크기로 잰다)와 상관없이 보이는 크기만 바뀐다.
 function fitZoom(){
+  const root = $('#pages');
   const avail = $('#preview').clientWidth - 32;
-  const pw = $('.page') ? $('.page').offsetWidth : 794;
-  $('#pages').style.zoom = Math.min(1, Math.max(.3, avail / pw));
+  const pw = root.offsetWidth || 794;
+  const z = Math.min(1, Math.max(.3, avail / pw));
+  root.style.transformOrigin = 'top center';
+  root.style.transform = z < 1 ? `scale(${z})` : '';
+  root.style.marginBottom = z < 1 ? `${-Math.round(root.offsetHeight * (1 - z))}px` : '';
 }
 
 // ─────────────────────────────────────────────
@@ -1792,6 +2055,7 @@ $('#tblGrid').addEventListener('paste', e => {
   tblDraw();
 });
 function tblPut(t){
+  $('#tbl').close();                       // 창이 열려 있는 동안에는 입력칸을 고칠 수 없다
   const ta = $('#src'); ta.focus();
   if(TB.from >= 0) ta.setSelectionRange(TB.from, TB.to + (!t && ta.value[TB.to] === '\n' ? 1 : 0));
   else {
@@ -1799,7 +2063,6 @@ function tblPut(t){
     if(t){ if(a > 0 && v[a-1] !== '\n') t = '\n' + t; if(b < v.length && v[b] !== '\n') t += '\n'; }
   }
   insertAtCursor(t);
-  $('#tbl').close();
 }
 $('#tblOk').onclick = () => {
   let g = TB.grid.filter(r => r.some(c => c.trim()));
