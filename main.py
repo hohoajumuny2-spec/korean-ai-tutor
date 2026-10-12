@@ -2826,6 +2826,7 @@ async def create_exam(
         await asyncio.to_thread(
             send_push_to_audience, subj_key, tclasses, "새 모의고사",
             f"'{title}' 모의고사가 열렸어요. 응시해보세요!", "/#prog-classroom", "exam")
+        kakao_new_post("모의고사", title, "", subj_key, tclasses)
     return {"success": True, "title": title, "is_new": is_new}
 
 
@@ -3430,6 +3431,9 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
             send_push_to_audience, subject, tclasses, "새 타임어택 퀴즈",
             f"'{title}' 퀴즈가 {deadline_label(open_at)}에 열려요. 그때 도전해보세요!" if waiting
             else f"'{title}' 퀴즈가 올라왔어요. 도전해보세요!", "/#prog-classroom", "quiz")
+        kakao_new_post("타임어택 퀴즈", title,
+                       (f"{deadline_label(open_at)} 열림" if waiting else deadline_label(req.get("deadline")) if req.get("deadline") else ""),
+                       subject, tclasses)
     if waiting:
         # 💡 아직 열리지 않은 퀴즈의 문항을 AI가 미리 알면 학생이 물어서 캐낼 수 있다.
         #    (고치면서 오픈을 미룬 경우 이미 실어 둔 것도 내린다)
@@ -6251,6 +6255,49 @@ def send_push_to_audience(subject: str, target_class, title: str, body: str, url
     return sent
 
 
+# ─────────────────────────────────────────────────────────
+# 새 글 → 학생 카카오 알림톡
+#   학생 휴대폰 번호와 솔라피(알림톡) 키는 홈페이지 서버(logyedu.com)에 있다.
+#   여기서는 '누구에게(이 글이 보이는 학생 이름)'만 골라 그 서버에 넘기고, 보내기는 그쪽이 한다.
+#     LOGYEDU_SITE_URL  홈페이지 서버 주소 (비우면 https://logyedu.com)
+#     NOTIFY_SECRET     두 서버가 같이 아는 비밀 글자. 비우면 카톡은 보내지 않는다(앱 알림은 그대로).
+# ─────────────────────────────────────────────────────────
+def audience_names(subject: str, target_class) -> list:
+    """이 글이 보이는 학생 이름(퇴원생 · 다른 반 제외)."""
+    if db is None:
+        return []
+    targets = normalize_target_classes(target_class)
+    out = []
+    for d in db.collection("students").stream():
+        data = d.to_dict() or {}
+        if task_visible_to_student(subject, targets, d.id, info=targeting_info_from(data)):
+            out.append(d.id)
+    return out
+
+
+def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_class) -> None:
+    """새 공지 · 과제 · 퀴즈 · 모의고사를 학생 카톡으로 알린다. 게시는 기다리지 않게 따로 돌린다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or db is None:
+        return
+
+    def run():
+        try:
+            names = audience_names(subject, target_class)
+            if not names:
+                return
+            base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
+            r = requests.post(f"{base}/api/notify/new-post",
+                              json={"kind": kind, "title": str(title or "")[:60],
+                                    "deadline": str(deadline or ""), "names": names},
+                              headers={"X-Notify-Secret": secret}, timeout=90)
+            print(f"[카톡 새 글 알림] {kind} '{title}' {len(names)}명 → {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            print(f"[카톡 새 글 알림] 실패: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 class PushSubscribeReq(BaseModel):
     student_name: str
     endpoint: str
@@ -7700,6 +7747,8 @@ async def create_homework(
             await asyncio.to_thread(
                 send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
                 body, "/#prog-classroom", "homework")
+            kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
+                           "", normalize_target_classes(target_classes))
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
@@ -9006,6 +9055,7 @@ async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
     await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, **board_file_fields(urls), "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
     await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
+    kakao_new_post("공지", title, "", "", tclasses)
     return {"success": True}
 
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
