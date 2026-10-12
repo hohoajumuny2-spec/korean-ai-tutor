@@ -969,6 +969,8 @@ async def authenticate(req: AuthRequest):
         return {"success": True, "is_admin": False, "preview": True, "level_up": None}
 
     doc = await asyncio.to_thread(lambda: db.collection("students").document(student_name).get())
+    if doc.exists and is_withdrawn(doc.to_dict()):
+        return {"success": False, "withdrawn": True, "detail": WITHDRAWN_DETAIL}
     if doc.exists:
         data = doc.to_dict()
         # 💡 '대치고'와 '대치 고'처럼 띄어쓰기만 다른 것 때문에 로그인이 막히면
@@ -1261,6 +1263,9 @@ async def student_checkin(req: CheckinReq):
     if not doc.exists:
         return {"success": False, "granted": False, "detail": "명단에 없는 학생입니다."}
     data = doc.to_dict() or {}
+    # 저장된 세션으로 들어와도 퇴원한 학생은 들여보내지 않는다(화면이 로그아웃시킨다)
+    if is_withdrawn(data):
+        return {"success": False, "granted": False, "withdrawn": True, "detail": WITHDRAWN_DETAIL}
 
     # 이름을 바꿔 남의 점수를 올리지 못하도록 학교·학년이 맞는지 확인한다
     if req.school and str(data.get("school", "")).strip() != req.school.strip():
@@ -1696,6 +1701,8 @@ def get_classes():
     classes = []
     for d in db.collection("students").stream():
         data = d.to_dict()
+        if is_withdrawn(data):
+            continue
         school, grade = str(data.get("school", "")).strip(), str(data.get("grade", "")).strip()
         if not school and not grade:
             continue
@@ -1734,6 +1741,8 @@ async def register_student(req: StudentRegisterRequest):
     doc = await asyncio.to_thread(s_ref.get)
     if doc.exists:
         data = doc.to_dict()
+        if is_withdrawn(data):
+            return {"success": False, "detail": WITHDRAWN_DETAIL}
         existing_school = str(data.get("school", "")).strip()
         existing_grade = normalize_grade(str(data.get("grade", "")))
         if existing_school == school and existing_grade == normalize_grade(grade):
@@ -1782,6 +1791,38 @@ def delete_students_bulk(req: BulkDeleteReq, _: bool = Depends(verify_admin)):
     if db and req.ids:
         for t in req.ids: db.collection("students").document(t).delete()
     return {"success": True}
+
+class WithdrawReq(BaseModel):
+    ids: list = []
+    withdrawn: bool = True
+
+
+@app.post("/api/admin/student/withdraw", dependencies=[Depends(verify_admin)])
+def withdraw_students(req: WithdrawReq):
+    """퇴원 처리 / 다시 다니기.
+
+    💡 지우면 성적 · 과제 · 상담 기록과 이어진 이름이 명단에서 사라진다. 퇴원은 지우지 않고
+       표시만 해서 기록은 그대로 두고, 로그인 · 과제 · 알림 대상에서만 뺀다. 다시 다니면 되돌린다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    ids = [str(x).strip() for x in (req.ids or []) if str(x).strip()][:500]
+    if not ids:
+        return {"success": False, "detail": "학생을 골라주세요."}
+    done = 0
+    for sid in ids:
+        ref = db.collection("students").document(sanitize_doc_id(sid))
+        if not ref.get().exists:
+            continue
+        if req.withdrawn:
+            ref.set({"withdrawn": True, "withdrawn_at": now_kst().strftime("%Y-%m-%d")}, merge=True)
+            # 공지 알림(전체 보내기)도 가지 않게 그 학생 기기 알림 등록을 지운다. 돌아오면 다시 켜면 된다.
+            for p in db.collection("push_subs").where("student_name", "==", sid).stream():
+                p.reference.delete()
+        else:
+            ref.update({"withdrawn": firestore.DELETE_FIELD, "withdrawn_at": firestore.DELETE_FIELD})
+        done += 1
+    return {"success": True, "count": done}
+
 
 class StudentUpdateReq(BaseModel):
     old_id: str
@@ -2066,11 +2107,13 @@ def schedule_overview(days: int = 7):
     span = max(1, min(int(days or 7), 31))
     today = _today()
 
+    # 퇴원한 학생의 클리닉은 '오늘 누가 오지?'에 넣지 않는다(기록은 남겨 둔다)
+    left_names = {d.id for d in db.collection("students").where("withdrawn", "==", True).stream()}
     rows = []
     for d in db.collection("clinics").stream():
         r = d.to_dict() or {}
         who = str(r.get("student_name", "")).strip()
-        if not who:
+        if not who or who in left_names:
             continue
         base = {"id": d.id, "student_name": who, "time": str(r.get("time", "")),
                 "subject": str(r.get("subject", "")), "memo": str(r.get("memo", ""))}
@@ -2364,7 +2407,8 @@ def targeting_info_from(data: dict) -> dict:
             val = legacy
         classes[key] = val
     return {"subjects": subjects, "classes": classes,
-            "all_classes": [c for c in dict.fromkeys(classes.values()) if c]}
+            "all_classes": [c for c in dict.fromkeys(classes.values()) if c],
+            "withdrawn": is_withdrawn(data)}
 
 
 # ─────────────────────────────────────────────────────────
@@ -2377,6 +2421,14 @@ def targeting_info_from(data: dict) -> dict:
 #       순위, 오답 목록에 섞여 들어간다
 # ─────────────────────────────────────────────────────────
 PREVIEW_NAME = "원장님(체험)"
+
+
+WITHDRAWN_DETAIL = "퇴원 처리된 학생이라 들어올 수 없습니다. 다시 다니게 되면 원장님께 말씀해 주세요."
+
+
+def is_withdrawn(data) -> bool:
+    """퇴원 처리된 학생인지(관리자 → 학생 명단 → 선택 퇴원)."""
+    return bool((data or {}).get("withdrawn"))
 
 
 def is_preview(student_name) -> bool:
@@ -2422,6 +2474,9 @@ def task_visible_to_student(subject: str, target_class, student_name: str, info=
     # 💡 여러 자료를 한꺼번에 따질 때는 명단을 한 번만 읽어 넘겨받는다 (info)
     if info is _NO_INFO:
         info = student_targeting_info(student_name)
+    # 퇴원한 학생에게는 아무 자료도 보이지 않는다(과제 · 시험 · 알림 대상에서도 빠진다)
+    if info is not None and info.get("withdrawn"):
+        return False
     subj_key = normalize_subject(subject) if subject else ""
     if subj_key and info is not None and subj_key not in info["subjects"]:
         return False
