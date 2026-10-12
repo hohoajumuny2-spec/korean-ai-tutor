@@ -41,6 +41,7 @@ if hasattr(time, "tzset"):      # 윈도우에는 없다 — 윈도우 PC는 원
     time.tzset()
 
 import fitz
+import omr_sheet
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
 import imageio_ffmpeg
@@ -2346,7 +2347,11 @@ def student_targeting_info(student_name: str):
     doc = db.collection("students").document(student_name).get()
     if not doc.exists:
         return None
-    data = doc.to_dict() or {}
+    return targeting_info_from(doc.to_dict() or {})
+
+
+def targeting_info_from(data: dict) -> dict:
+    """학생 명단 한 줄(이미 읽어 둔 것)에서 student_targeting_info 와 같은 것을 만든다."""
     subs = data.get("subjects")
     subjects = [normalize_subject(s) for s in subs] if subs else ["korean"]
     class_names = data.get("class_names") or {}
@@ -3030,16 +3035,18 @@ async def submit_exam(req: ExamSubmitRequest):
     unsures = []
 
     details = []
+    mine = []          # 문항 순서 그대로의 내 답('-' 문항 자리도 지킨다)
     total_possible = 0
     if data:
         exam_data = json.loads(data.get("exam_data", "{}"))
         for i, q in enumerate(exam_data.get("questions", [])):
             student_ans = str(req.answers[i]).strip() if i < len(req.answers) else ""
             correct_ans = str(q.get("ans", "")).strip()
-            # 답을 안 내도 되는 문항('-')은 총점에도, 오답에도 넣지 않는다
+            mine.append(student_ans)
+            # 답을 안 내도 되는 문항('-')은 총점에도, 오답에도, 문항별 결과에도 넣지 않는다.
+            # 💡 예전에는 이 문항을 다른 열쇠 이름(is_ok)으로 결과에 넣어, 아래 정답 개수를
+            #    셀 때(d["ok"]) 오류가 나서 '-' 문항이 있는 모의고사는 제출이 되지 않았다.
             if is_skip_slot(correct_ans):
-                details.append({"no": i + 1, "mine": student_ans, "answer": correct_ans,
-                                "score": 0, "is_ok": None, "skipped": True})
                 continue
             point = int(q.get("score", 0) or 0)
             total_possible += point
@@ -3079,7 +3086,7 @@ async def submit_exam(req: ExamSubmitRequest):
                 "total_score": total_possible,
                 "question_count": len(details),
                 "correct_count": sum(1 for d in details if d["ok"]),
-                "mine": [d["my"] for d in details],
+                "mine": mine,
             }
         )
     )
@@ -7786,6 +7793,269 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
             "expl_locked": homework_expl_locked(data), "expl_open_at": data.get("deadline", "") if homework_expl_locked(data) else ""}
+
+
+# ─────────────────────────────────────────────────────────
+# 종이 OMR 답안지
+#   화면 OMR 대신 종이에 칠하게 하고 싶을 때. 원장님이 학생 이름이 인쇄된 답안지를
+#   뽑아 나눠 주고, 칠한 답안지를 폰으로 찍거나 복합기로 스캔해 올리면 읽어서
+#   학생이 화면에서 낸 것과 똑같이 채점 · 기록한다(omr_sheet.py 참고).
+#   읽은 답은 바로 저장하지 않고 원장님이 확인 화면에서 보고 고친 뒤 저장한다.
+# ─────────────────────────────────────────────────────────
+OMR_KINDS = {"exam": "모의고사", "homework": "과제"}
+
+
+def omr_task(kind: str, title: str):
+    """(제목, 정답표 목록) — 없거나 정답표가 비었으면 (제목, [])."""
+    if kind == "exam":
+        d = db.collection("exams").document(sanitize_doc_id(title)).get()
+        if not d.exists:
+            return title, []
+        data = d.to_dict() or {}
+        try:
+            qs = json.loads(data.get("exam_data") or "{}").get("questions") or []
+        except (ValueError, TypeError, AttributeError):
+            qs = []
+        return data.get("title") or title, [str(q.get("ans", "")).strip() for q in qs]
+    if kind == "homework":
+        d = db.collection("homeworks").document(sanitize_doc_id(title)).get()
+        if not d.exists:
+            return title, []
+        return title, parse_answer_list((d.to_dict() or {}).get("answers") or [])
+    return title, []
+
+
+def omr_task_meta(kind: str, title: str) -> dict:
+    coll = "exams" if kind == "exam" else "homeworks"
+    d = db.collection(coll).document(sanitize_doc_id(title)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+def omr_preview(key: list, answers: list) -> dict:
+    """확인 화면에 보여 줄 미리 채점(저장은 하지 않는다)."""
+    correct, total, wrongs = 0, 0, []
+    for i, k in enumerate(key):
+        if is_skip_slot(k):
+            continue
+        total += 1
+        got = answers[i] if i < len(answers) else ""
+        if got and answer_matches(got, k):
+            correct += 1
+        else:
+            wrongs.append(i + 1)
+    return {"correct": correct, "total": total, "wrongs": wrongs}
+
+
+@app.get("/api/admin/omr/roster", dependencies=[Depends(verify_admin)])
+def omr_roster(kind: str, title: str):
+    """답안지를 뽑을 학생 — 이 시험 · 과제가 보이는 학생만, 이미 낸 학생 표시와 함께."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if kind not in OMR_KINDS:
+        return {"success": False, "detail": "모의고사나 과제만 됩니다."}
+    title, key = omr_task(kind, title)
+    if not key:
+        return {"success": False, "detail": "정답표가 등록되어 있지 않아 OMR 채점을 할 수 없습니다."}
+    meta = omr_task_meta(kind, title)
+    subject = meta.get("subject", "korean") if kind == "exam" else ""
+    targets = task_target_classes(meta)
+    report_type = "모의고사" if kind == "exam" else "과제 제출"
+    done = {(r.to_dict() or {}).get("student_name") for r in
+            db.collection("reports").where("task_name", "==", title).where("type", "==", report_type).stream()}
+    rows = []
+    for d in db.collection("students").stream():
+        data = d.to_dict() or {}
+        if not task_visible_to_student(subject, targets, d.id, info=targeting_info_from(data)):
+            continue
+        rows.append({"name": d.id, "school": data.get("school", ""), "grade": data.get("grade", ""),
+                     "done": d.id in done})
+    rows.sort(key=lambda r: (r["school"], str(r["grade"]), r["name"]))
+    return {"success": True, "title": title, "students": rows,
+            "kinds": [slot_kind(k) for k in key]}
+
+
+class OmrSheetsReq(BaseModel):
+    kind: str
+    title: str
+    students: list = []
+    blank: int = 0
+
+
+def _new_omr_code(kind: str, title: str, name: str) -> int:
+    """답안지 번호를 하나 새로 받는다. 번호 → (시험, 학생)은 omr_sheets 에 적어 둔다."""
+    for _ in range(8):
+        code = secrets.randbelow((1 << 20) - 1) + 1
+        ref = db.collection("omr_sheets").document(str(code))
+        if not ref.get().exists:
+            ref.set({"kind": kind, "title": title, "student_name": name,
+                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            return code
+    raise HTTPException(status_code=500, detail="답안지 번호를 만들지 못했습니다. 다시 눌러 주세요.")
+
+
+@app.post("/api/admin/omr/sheets", dependencies=[Depends(verify_admin)])
+async def omr_sheets(req: OmrSheetsReq):
+    """학생마다 이름이 인쇄된 답안지(PDF). blank 장수만큼 이름 없는 답안지도 붙인다."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB 연결 오류")
+    if req.kind not in OMR_KINDS:
+        raise HTTPException(status_code=400, detail="모의고사나 과제만 됩니다.")
+    title, key = await asyncio.to_thread(omr_task, req.kind, req.title)
+    if not key:
+        raise HTTPException(status_code=400, detail="정답표가 등록되어 있지 않습니다.")
+    if len(key) > omr_sheet.MAX_Q:
+        raise HTTPException(status_code=400, detail=f"답안지 한 장에는 {omr_sheet.MAX_Q}문항까지만 들어갑니다.")
+    names = [str(n).strip() for n in (req.students or []) if str(n).strip()][:200]
+    blank = max(0, min(int(req.blank or 0), 100))
+    if not names and not blank:
+        raise HTTPException(status_code=400, detail="학생을 고르거나 빈 답안지 장수를 적어 주세요.")
+
+    def build():
+        sheets = []
+        for name in names:
+            d = db.collection("students").document(sanitize_doc_id(name)).get()
+            data = (d.to_dict() or {}) if d.exists else {}
+            info = " ".join(str(x) for x in (data.get("school", ""), data.get("grade", "")) if x)
+            sheets.append({"code": _new_omr_code(req.kind, title, name), "name": name, "info": info})
+        sheets += [{"code": 0} for _ in range(blank)]
+        return omr_sheet.render_sheets_pdf(sheets, [slot_kind(k) for k in key], title)
+
+    pdf = await asyncio.to_thread(build)
+    fname = urllib.parse.quote(f"OMR_{title}.pdf")
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"})
+
+
+OMR_MAX_PAGES = 80
+
+
+@app.post("/api/admin/omr/read", dependencies=[Depends(verify_admin)])
+async def omr_read(kind: str = Form(...), title: str = Form(...), files: List[UploadFile] = File(...)):
+    """찍은 사진 · 스캔한 PDF 를 읽어 학생별 답을 돌려준다. 저장은 하지 않는다(/api/admin/omr/save)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if kind not in OMR_KINDS:
+        return {"success": False, "detail": "모의고사나 과제만 됩니다."}
+    title, key = await asyncio.to_thread(omr_task, kind, title)
+    if not key:
+        return {"success": False, "detail": "정답표가 등록되어 있지 않아 OMR 채점을 할 수 없습니다."}
+    kinds = [slot_kind(k) for k in key]
+    blobs = []
+    for f in files[:OMR_MAX_PAGES]:
+        data = await f.read()
+        if len(data) > 30 * 1024 * 1024:
+            blobs.append((f.filename or "", None, "파일이 너무 큽니다(30MB까지)."))
+        else:
+            blobs.append((f.filename or "", data, ""))
+
+    def run():
+        out, seen, pages = [], {}, 0
+        for fname, data, err in blobs:
+            if err:
+                out.append({"file": fname, "page": 1, "ok": False, "detail": err})
+                continue
+            try:
+                images = omr_sheet.load_images(data, fname)
+            except omr_sheet.OmrError as e:
+                out.append({"file": fname, "page": 1, "ok": False, "detail": str(e)})
+                continue
+            except Exception:
+                out.append({"file": fname, "page": 1, "ok": False, "detail": "파일을 열지 못했습니다."})
+                continue
+            for p, img in enumerate(images, start=1):
+                pages += 1
+                if pages > OMR_MAX_PAGES:
+                    out.append({"file": fname, "page": p, "ok": False,
+                                "detail": f"한 번에 {OMR_MAX_PAGES}장까지만 읽습니다. 나머지는 따로 올려 주세요."})
+                    break
+                row = {"file": fname, "page": p}
+                try:
+                    r = omr_sheet.read_sheet(img, kinds)
+                except omr_sheet.OmrError as e:
+                    row.update(ok=False, detail=str(e))
+                    out.append(row)
+                    continue
+                except Exception:
+                    row.update(ok=False, detail="이 사진을 읽다가 문제가 생겼습니다. 다시 찍어 올려 주세요.")
+                    out.append(row)
+                    continue
+                answers = r["answers"]
+                row.update(ok=True, answers=answers, flags=r["flags"], student_name="", note="")
+                if r["code"] is None:
+                    row["note"] = "답안지 번호를 읽지 못했습니다. 학생을 골라 주세요."
+                elif r["code"] == 0:
+                    row["note"] = "이름 없는 답안지입니다. 학생을 골라 주세요."
+                else:
+                    d = db.collection("omr_sheets").document(str(r["code"])).get()
+                    info = (d.to_dict() or {}) if d.exists else {}
+                    if not info:
+                        row["note"] = "등록되지 않은 답안지 번호입니다. 학생을 골라 주세요."
+                    elif info.get("kind") != kind or info.get("title") != title:
+                        row["note"] = f"다른 시험의 답안지입니다({info.get('title', '')}). 맞는 시험에서 올려 주세요."
+                        row["ok"] = False
+                    else:
+                        row["student_name"] = info.get("student_name", "")
+                name = row["student_name"]
+                if name:
+                    if name in seen:
+                        row["note"] = f"{name} 학생 답안지가 두 장입니다({seen[name]}). 하나만 저장하세요."
+                    seen[name] = f"{fname} {p}쪽" if len(images) > 1 else fname
+                row["preview"] = omr_preview(key, answers)
+                out.append(row)
+        return out
+
+    rows = await asyncio.to_thread(run)
+    return {"success": True, "title": title, "kinds": kinds, "rows": rows,
+            "count": sum(1 for r in rows if r.get("ok"))}
+
+
+class OmrSaveReq(BaseModel):
+    kind: str
+    title: str
+    items: list = []
+
+
+@app.post("/api/admin/omr/save", dependencies=[Depends(verify_admin)])
+async def omr_save(req: OmrSaveReq):
+    """확인을 마친 답을 학생이 직접 낸 것과 똑같이 채점 · 기록한다(점수 · 경험치 · 알림 모두 같다)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    if req.kind not in OMR_KINDS:
+        return {"success": False, "detail": "모의고사나 과제만 됩니다."}
+    title, key = await asyncio.to_thread(omr_task, req.kind, req.title)
+    if not key:
+        return {"success": False, "detail": "정답표가 등록되어 있지 않습니다."}
+    results = []
+    for item in (req.items or [])[:200]:
+        name = str((item or {}).get("student_name") or "").strip()
+        answers = [str(a or "").strip() for a in ((item or {}).get("answers") or [])][:len(key)]
+        answers += [""] * (len(key) - len(answers))
+        if not name:
+            results.append({"student_name": "", "ok": False, "detail": "학생을 고르지 않았습니다."})
+            continue
+        s_doc = await asyncio.to_thread(lambda: db.collection("students").document(sanitize_doc_id(name)).get())
+        if not s_doc.exists:
+            results.append({"student_name": name, "ok": False, "detail": "학생 명단에 없는 이름입니다."})
+            continue
+        sd = s_doc.to_dict() or {}
+        school, grade = str(sd.get("school", "")), str(sd.get("grade", ""))
+        try:
+            if req.kind == "exam":
+                r = await submit_exam(ExamSubmitRequest(school=school, grade=grade, student_name=name,
+                                                         title=title, answers=answers))
+                score = f"{r.get('score', 0)}/{r.get('total_score', 0)}점" if r.get("success") else ""
+            else:
+                r = await submit_homework_omr(HomeworkOmrReq(school=school, grade=grade, student_name=name,
+                                                             title=title, answers=answers))
+                score = f"{r.get('correct', 0)}/{r.get('total', 0)}" if r.get("success") else ""
+        except Exception as e:
+            print(f"[OMR 저장] {name}: {e}")
+            r, score = {"success": False, "detail": "저장하다가 문제가 생겼습니다."}, ""
+        results.append({"student_name": name, "ok": bool(r.get("success")),
+                        "detail": r.get("detail", "") if not r.get("success") else
+                                  ("고쳐 낸 답으로 바꿨습니다" if r.get("edited") else ""),
+                        "score": score})
+    return {"success": True, "saved": sum(1 for x in results if x["ok"]), "results": results}
 
 
 @app.delete("/api/admin/homework/{title}")

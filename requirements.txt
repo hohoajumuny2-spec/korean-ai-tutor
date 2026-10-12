@@ -12,3 +12,6 @@ gTTS
 imageio-ffmpeg
 pywebpush
 py-vapid
+opencv-python-headless
+numpy
+fonttools
