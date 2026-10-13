@@ -10905,7 +10905,10 @@ async def analyze_tendency(req: TendencyAnalyzeReq):
  {"과목 특성이 드러나는 행동으로" if subject_hint else "생활 습관 수준의 행동으로"})
 
 ## 5. 원장님께 드리는 지도 제안
-(이 학생을 가르칠 때 어떤 점을 신경 써야 하는지 3가지)
+(학원이 수업과 관리에서 이 학생에게 보완해 줄 점 3가지.
+ 이 칸은 인쇄물과 학생 화면에 '로지에듀에서는 이런 점을 보완하겠습니다.'라는 제목으로 나갑니다.
+ 그러니 원장님을 부르는 말 없이, 학원이 할 일을 '~하겠습니다' 문체로 쓰세요.
+ 예: '비문학 지문은 문단 요약을 수업마다 확인하겠습니다.')
 """
     try:
         res = await asyncio.to_thread(lambda: safe_generate(prompt))
