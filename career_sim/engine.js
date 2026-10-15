@@ -244,10 +244,21 @@ function normalizeProfile(p) {
     hobbies: [], interest: 'unknown', goal: 'inseoul',
     pStyle: 'warm', pDesire: 'free', wealth: 'mid', sibling: 'none',
     friendGroup: 'club', bestFriend: true,
+    startTurn: null, subject: null, subj: null,
+    pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2,
   };
   const out = Object.assign({}, d, p || {});
   out.hobbies = (out.hobbies || []).filter(h => HOBBIES[h]).slice(0, 3);
-  out.grade = clamp(parseInt(out.grade, 10) || 1, 1, 3);
+  // 시작 시점: 고1 1학기(0) ~ 고3 2학기(10). 없으면 학년의 1학기로
+  let st = parseInt(out.startTurn, 10);
+  if (!(st >= 0 && st < HS_TURNS.length)) st = (clamp(parseInt(out.grade, 10) || 1, 1, 3) - 1) * 4;
+  if (st > 9) st = 9;   // 원서(고3 여름)는 건너뛸 수 없다
+  out.startTurn = st;
+  out.grade = st < 4 ? 1 : st < 8 ? 2 : 3;
+  out.screen = clamp(parseInt(out.screen, 10) || 2, 1, 4);
+  out.academies = clamp(parseInt(out.academies, 10) || 0, 0, 3);
+  out.clarity = clamp(parseInt(out.clarity, 10) || 2, 1, 3);
+  if (out.subj) ['kor', 'math', 'eng', 'inq'].forEach(k => { out.subj[k] = clamp(+out.subj[k] || 5, 1, 9); });
   ['diligence', 'grit', 'social', 'curiosity', 'confidence', 'impulse', 'focus', 'comprehension', 'memory', 'recordLv']
     .forEach(k => { out[k] = clamp(parseInt(out[k], 10) || 3, 1, 5); });
   out.gpaPct = clamp(+out.gpaPct || 30, 0.5, 99);
@@ -274,6 +285,7 @@ function initState(p, seed) {
     social: clamp(20 + p.social * 10 + (p.bestFriend ? 6 : -6), 5, 95),
     friendGroup: p.friendGroup, bestFriend: !!p.bestFriend,
     bestName: r.pick(FRIEND_NAMES),
+    rivalName: null,
     romance: { status: 'none', partner: null, studious: false, since: 0, score: 0, count: 0, firstLove: null },
     interest: {}, talent: { art: 15, perf: 15, sport: 25, code: 12, verbal: 20, people: 15 + p.social * 5, media: 12, game: 15, craft: 10 },
     money: { high: 110, mid: 60, low: 22 }[p.wealth] || 60,
@@ -287,9 +299,30 @@ function initState(p, seed) {
     uni: null, col: null, career: null, ending: null,
     attempts: 0,
   };
-  s.pressure = ps.pressure + (p.pDesire !== 'free' ? 14 : 0) + (p.sibling === 'better' ? 10 : 0);
+  s.rivalName = r.pick(FRIEND_NAMES.filter(n => n !== s.bestName));
+  s.pressure = ps.pressure + (p.pDesire !== 'free' ? 14 : 0) + (p.sibling === 'better' ? 10 : 0) + (p.pJob === 'pro' ? 6 : 0);
+  // 스마트폰·학원·부모님 사이·직업
+  s.lazy = clamp(s.lazy + (p.screen - 2) * 7, 0, 100);
+  s.money -= p.academies * 6;
+  if (p.pBond === 'fight') { s.mental -= 8; s.stress += 6; }
+  if (p.pBond === 'cold') { s.parentRel -= 6; }
+  if (p.pBond === 'single') { s.money -= 14; s.mental -= 3; s.parentRel += 4; s.flags.singleParent = true; }
+  if (p.pJob === 'labor') s.money -= 8;
+  if (p.pJob === 'pro') s.money += 10;
+  if (p.pJob === 'self') s.flags.familyBiz = true;
+  s.money = Math.max(4, s.money);
+  // 과목별 모의고사 등급
+  if (p.subj) {
+    const avg = (p.subj.kor + p.subj.math + p.subj.eng + p.subj.inq) / 4;
+    if (p.subj.math - avg >= 1.5) s.flags.mathWeak = true;
+    if (avg - p.subj.math >= 1.5) s.flags.mathStrong = true;
+    s.talent.verbal += (5 - p.subj.kor) * 4 + (5 - p.subj.eng) * 2;
+  }
+  if (p.subject) { s.subject = p.subject; if (p.subject === 'phys' || p.subject === 'bio') s.track = '자연'; else if (p.subject !== 'easy') s.track = '인문'; }
+  if (p.romanceNow === 'dating') { const nm = r.pick(NAMES); startDating(s, nm, r.chance(0.45)); s.romance.since = 1; s.romance.score = 60; }
+  if (p.romanceNow === 'crush') s.flags.crushNow = r.pick(NAMES);
   FIELD_KEYS.forEach(f => { s.interest[f] = 5 + r.int(0, 6); s.recFit[f] = 0; });
-  if (FIELDS[p.interest]) { s.interest[p.interest] += 40; s.recFit[p.interest] += p.recordLv * 3; }
+  if (FIELDS[p.interest]) { s.interest[p.interest] += 25 + p.clarity * 8; s.recFit[p.interest] += p.recordLv * (p.clarity + 1); }
   p.hobbies.forEach(h => {
     const H = HOBBIES[h];
     Object.keys(H.talent).forEach(t => { s.talent[t] = (s.talent[t] || 0) + H.talent[t] + r.int(0, 12); });
@@ -300,8 +333,8 @@ function initState(p, seed) {
   if (desire && desire.field) s.interest[desire.field] += 8;   // 자라면서 스며든 부모님 기대
   if (p.track === '자연') ['med', 'eng', 'cs', 'sci', 'nurse'].forEach(f => { s.interest[f] += 4; });
   else ['biz', 'law', 'hum', 'soc', 'media', 'edu'].forEach(f => { s.interest[f] += 4; });
-  // 고2·고3으로 시작하면 지난 학기 내신은 입력값으로 채운다
-  const prevSem = (p.grade - 1) * 2;
+  // 중간에서 시작하면 지난 학기 내신은 입력값으로 채운다
+  const prevSem = HS_TURNS.slice(0, p.startTurn).filter(t => t.type === 'sem').length;
   for (let i = 0; i < prevSem; i++) s.naesinRec.push(clamp(p.gpaPct * (0.9 + r.next() * 0.2), 0.5, 99));
   return s;
 }
@@ -385,7 +418,7 @@ function defaultAlloc(s, cats) {
   const p = s.p, ids = cats.map(c => c.id);
   const w = {
     study: 2 + p.diligence * 0.7 - p.impulse * 0.2,
-    academy: s.money > 30 ? 1.2 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 1 : 0) + (p.wealth === 'high' ? 0.8 : 0) : 0,
+    academy: s.money > 30 ? 0.6 + p.academies * 0.7 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.6 : 0) : p.academies * 0.3,
     activity: 0.4 + p.curiosity * 0.3,
     hobby: 0.6 + p.impulse * 0.35,
     friends: 0.3 + p.social * 0.35,
@@ -545,17 +578,19 @@ function vacationTurn(ctx, turn) {
   const s = ctx.s, p = s.p, r = makeRng(s.seed, turn.id + ':vac');
   const big = turn.big ? 1.6 : 1;
   const opts = [
-    { id: 'cram', label: s.money > 15 ? '방학 특강·선행 학원 (학원비 부담)' : '무리해서 방학 특강 등록', tags: ['study', 'obey'] },
-    { id: 'self', label: '스터디카페에서 독학 계획표대로', tags: ['study', 'self'] },
-    { id: 'activity', label: '탐구 보고서·캠프·봉사로 생기부 채우기', tags: ['record'] },
-    { id: 'hobby', label: p.hobbies.length ? HOBBIES[p.hobbies[0]].name + '에 푹 빠져 보기' : '하고 싶던 것 해 보기', tags: ['fun', 'self'] },
-    { id: 'rest', label: '가족 여행·푹 쉬기', tags: ['rest'] },
-    { id: 'game', label: '폰·게임 몰아서 하기', tags: ['fun'] },
-    (p.wealth !== 'high' || s.flags.work) ? { id: 'work', label: '아르바이트로 돈 벌기', tags: ['work'] } : null,
+    { id: 'cram', label: s.money > 15 ? '방학 특강·선행 학원 (주 5일, 아침 9시~밤 10시)' : '무리해서라도 방학 특강 등록', hint: s.money > 15 ? '진도와 실력이 확실히 나감 · 학원비와 피로' : '실력은 오름 · 집에 큰 부담', tags: ['study', 'obey'] },
+    { id: 'self', label: '스터디카페 독학, 하루 계획표대로', hint: '돈 안 들고 내 페이스 · 지키는 건 오로지 내 의지', tags: ['study', 'self'] },
+    { id: 'activity', label: '탐구 보고서·캠프·봉사로 생기부 채우기', hint: '학종에 쓸 이야기 · 수능 공부는 멈춘다', tags: ['record'] },
+    { id: 'hobby', label: p.hobbies.length ? HOBBIES[p.hobbies[0]].name + '에 제대로 빠져 보기' : '하고 싶던 것 해 보기', hint: '재능과 진로를 발견할 수도 · 공부 감각이 무뎌진다', tags: ['fun', 'self'] },
+    { id: 'rest', label: '가족 여행 가고 푹 쉬기', hint: '멘탈·체력·가족 관계 회복 · 남들은 달리는 중', tags: ['rest'] },
+    { id: 'game', label: '폰·게임 몰아서 하기', hint: '스트레스 해소 · 습관이 무너진다', tags: ['fun'] },
+    (p.wealth !== 'high' || s.flags.work) ? { id: 'work', label: '아르바이트로 돈 벌기', hint: '용돈과 사회 경험 · 공부 시간 감소', tags: ['work'] } : null,
   ];
-  const o = choose(ctx, turn.id + ':vac', turn.label, turn.big
-    ? '고3 직전 겨울. 다들 "이번 방학이 수능을 결정한다"고 말한다. 이 방학을 어떻게 보낼까?'
-    : '방학이다. 어떻게 보낼까?', opts);
+  const lastN = s.naesinRec.length ? s.naesinRec[s.naesinRec.length - 1] : p.gpaPct;
+  const vtext = turn.big
+    ? `고3 직전 겨울. 학원마다 "고3 수능은 이번 겨울에 결정된다"는 현수막이 걸렸다. 지금 내신은 상위 ${lastN.toFixed(0)}%, 모의고사는 ${grade9(topFromZ(s.zC))}등급. 친구들은 벌써 독서실 정기권을 끊었다. ${p.pStyle === 'strict' || p.pStyle === 'anxious' ? '부모님은 윈터스쿨(기숙 학원) 전단지를 식탁에 올려 두셨다.' : ''} 이 방학을 어떻게 보낼까?`
+    : `${turn.label}. 방학은 5주. 학원 상담 문자가 하루에 세 통씩 온다. ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '은/는')} "이번 방학엔 놀자"고 하고,` : ''} 담임 선생님은 "방학에 생기부 활동 하나는 꼭 하라"고 하셨다. 지난 학기 내신은 상위 ${lastN.toFixed(0)}%.`;
+  const o = choose(ctx, turn.id + ':vac', turn.label, vtext, opts);
   const ab = (p.focus + p.comprehension) / 6;
   switch (o.id) {
     case 'cram':
@@ -598,24 +633,24 @@ function fixedEvents(ctx, turn) {
   const s = ctx.s, p = s.p;
   if (turn.id === 'g1s1') {
     const ti = topInterest(s);
-    const o = choose(ctx, 'g1s1:club', '동아리 정하기', '입학 2주 차. 동아리 신청서를 내야 한다.', [
-      { id: 'major', label: `${FIELDS[ti].name} 탐구 동아리 (생기부용)`, tags: ['record', 'study'] },
-      { id: 'band', label: '방송부·밴드·댄스 동아리', tags: ['fun', 'social'] },
-      { id: 'follow', label: s.bestFriend ? `${s.bestName}${jo(s.bestName, '이/가')} 들어가는 곳으로` : '아무 데나 자리 남는 곳', tags: ['social'] },
-      { id: 'none', label: '동아리는 최소한만. 공부 시간 확보', tags: ['study', 'safe'] },
+    const o = choose(ctx, 'g1s1:club', '동아리 신청서', `입학 2주 차. 동아리 박람회 날, 강당에 부스가 서른 개쯤 있다. 선배들이 귓속말로 알려 준다. "학종 갈 거면 전공 관련 동아리 들어가. 근데 거긴 매주 보고서 써야 돼." 방송부 부스에서는 음악이 크게 나오고, ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '은/는')} 벌써 거기 줄을 섰다.` : '아는 얼굴이 하나도 없다.'}`, [
+      { id: 'major', label: `${FIELDS[ti].name} 탐구 동아리`, hint: '생기부 전공 적합성 · 매주 보고서, 재미는 덜하다', tags: ['record', 'study'] },
+      { id: 'band', label: '방송부·밴드·댄스 동아리', hint: '학교생활이 즐거워짐 · 행사 때마다 시간이 많이 든다', tags: ['fun', 'social'] },
+      { id: 'follow', label: s.bestFriend ? `${s.bestName}${jo(s.bestName, '이/가')} 들어가는 곳으로` : '자리 남는 아무 데나', hint: '친구와 함께 · 생기부에 남는 건 애매하다', tags: ['social'] },
+      { id: 'none', label: '이름만 걸어 두고 공부 시간 확보', hint: '내신 집중 · 3년 동안 쓸 이야기가 부족해질 수 있다', tags: ['study', 'safe'] },
     ]);
     if (o.id === 'major') { s.record += 9; s.recFit[ti] += 10; s.interest[ti] += 5; s.flags.club = 'major'; L(s, `${FIELDS[ti].name} 동아리에 들어갔다. 선배들이 생기부 쓰는 법부터 알려줬다.`); }
     if (o.id === 'band') { s.record += 4; s.talent.perf += 8; s.talent.media += 8; inc(s, 'social', 8); inc(s, 'mental', 5); s.flags.club = 'band'; L(s, '동아리방에서 보내는 시간이 학교생활의 낙이 됐다.'); }
     if (o.id === 'follow') { s.record += 2; inc(s, 'social', 6); s.flags.club = 'follow'; L(s, '친구 따라 들어간 동아리. 활동은 그냥 그렇지만 같이 있어서 좋다.'); }
     if (o.id === 'none') { s.zN += 0.03; s.record -= 2; s.flags.club = 'none'; L(s, '동아리는 이름만 걸었다. 그 시간에 문제집을 풀었다.'); }
   }
-  if (turn.id === 'g1s2' && p.grade === 1) {
-    const o = choose(ctx, 'g1s2:subject', '고2 선택과목', '고교학점제. 고2 때 들을 과목을 골라야 한다. 대학은 이걸 보고 "이 학생이 전공을 준비했는지"를 본다.', [
-      { id: 'phys', label: '미적분·물리·화학 (공대·자연대 정석)', tags: ['study', 'risk'] },
-      { id: 'bio', label: '생명과학·화학 (의약·생명)', tags: ['study'] },
-      { id: 'soc', label: '경제·정치와 법·사회문화 (상경·사회)', tags: ['safe'] },
-      { id: 'lang', label: '언어와 매체·윤리·제2외국어 (인문·교육)', tags: ['safe'] },
-      { id: 'easy', label: '내신 따기 쉬운 과목 위주로', tags: ['fun', 'safe'] },
+  if (turn.id === 'g1s2' && !s.subject) {
+    const o = choose(ctx, 'g1s2:subject', '고2 선택과목 신청', `고교학점제. 다음 주까지 고2 선택과목을 내야 한다. 대학은 '권장 과목'을 들었는지로 "전공을 준비한 학생인지"를 본다. 그런데 물리는 이과 최상위권이 몰려서 수강생이 30명뿐이다. 30명 중 1등급은 3명. ${FIELDS[topInterest(s)].name}에 끌리는 지금, 무엇을 고를까?`, [
+      { id: 'phys', label: '미적분·물리·화학 (공대·자연대 권장)', hint: '이공계 지원에 유리 · 내신 경쟁이 가장 치열하다', tags: ['study', 'risk'] },
+      { id: 'bio', label: '생명과학·화학 (의약·생명 권장)', hint: '의대·간호·생명 지원에 유리 · 의대 지망생들과 경쟁', tags: ['study'] },
+      { id: 'soc', label: '경제·정치와 법·사회문화 (상경·사회 권장)', hint: '경영·행정에 유리 · 이과 학과는 사실상 어렵다', tags: ['safe'] },
+      { id: 'lang', label: '언어와 매체·윤리·제2외국어 (인문·교육 권장)', hint: '인문·교대에 유리 · 이과 학과는 사실상 어렵다', tags: ['safe'] },
+      { id: 'easy', label: '수강생 많고 1등급 따기 쉬운 과목 위주', hint: '내신 등급이 오름 · 학종에서 "왜 이 과목?" 질문을 받는다', tags: ['fun', 'safe'] },
     ]);
     s.subject = o.id;
     if (o.id === 'phys' || o.id === 'bio') s.track = '자연'; else if (o.id !== 'easy') s.track = '인문';
@@ -628,10 +663,10 @@ function fixedEvents(ctx, turn) {
     const r = makeRng(s.seed, 'g2s1:class');
     const vibe = r.pick(['rival', 'party', 'club']);
     const vName = { rival: '면학 분위기가 빡센', party: '시끌벅적 노는 분위기의', club: '두루두루 친한' }[vibe];
-    const o = choose(ctx, 'g2s1:class', '고2 반 배정', `새 반은 ${vName} 반이다. ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '와/과')}는 다른 반이 됐다.` : ''}`, [
-      { id: 'blend', label: '새 반 친구들과 어울린다', tags: ['social'] },
-      { id: 'keep', label: '원래 친구들과 계속 다닌다', tags: ['safe'] },
-      { id: 'solo', label: '이참에 혼자 공부에 집중한다', tags: ['study'] },
+    const o = choose(ctx, 'g2s1:class', '고2 반 배정', `고2 첫날. 새 반은 ${vName} 반이다. ${vibe === 'rival' ? '쉬는 시간에도 문제집을 펴는 애들이 절반이다.' : vibe === 'party' ? '첫날부터 뒷자리에서 PC방 약속이 잡힌다.' : '첫날부터 반 단톡방이 시끌시끌하다.'} ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '와/과')}는 다른 반이 됐다. 점심시간마다 같이 먹자고 연락이 온다.` : ''}`, [
+      { id: 'blend', label: '새 반 친구들과 어울린다', hint: '새 무리가 생긴다 · 반 분위기에 그대로 물든다', tags: ['social'] },
+      { id: 'keep', label: '원래 친구들과 계속 다닌다', hint: '익숙한 관계 · 우리 반에서는 겉돌 수 있다', tags: ['safe'] },
+      { id: 'solo', label: '이참에 혼자 다니며 공부에 집중한다', hint: '흔들림 없음 · 외롭고 정보가 줄어든다', tags: ['study'] },
     ]);
     if (o.id === 'blend') { s.friendGroup = vibe; inc(s, 'social', 5); L(s, `새 친구들이 생겼다. 반 분위기에 금방 물들었다.`); }
     if (o.id === 'keep') { inc(s, 'social', 1); L(s, '쉬는 시간마다 옆 반에 간다.'); }
@@ -656,95 +691,289 @@ function breakUp(s, turnId) {
   if (turnId === 'g3s1' || turnId === 'g3v1' || turnId === 'g3s2') s.flags.breakupG3 = true;
 }
 
+// 선택지 하나 = { id, label, hint(얻는 것과 잃을 수 있는 것), tags(성향대로 고를 때 쓰는 꼬리표) }
+const O = (id, label, hint, tags, w) => ({ id, label, hint, tags, w });
+const semIs = (s, ids) => ids.indexOf(HS_TURNS[s.turnIdx] && HS_TURNS[s.turnIdx].id) >= 0;
+const examSeason = s => s.turnIdx >= 8;
+
 const HS_EVENTS = [
-  { id: 'pc', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 4 : hasHobby(s, 'game') ? 2 : 0.6),
+  // ── 친구 ─────────────────────────────────────────
+  { id: 'pc', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 3.2 : hasHobby(s, 'game') ? 1.6 : 0.5),
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestName;
+      const o = choose(ctx, key, '학원 가는 길, 단톡방',
+        `밤 9시 40분, 학원 버스를 기다리는데 단톡방이 울린다. ${b}: "오늘 학원 쌤 출장이래 ㅋㅋ 대타 쌤은 출석 안 부름. PC방 ㄱ?" 다들 "ㄱㄱ"를 보낸다. 오늘 진도는 다음 주 단원평가 범위고, 엄마는 학원 앱으로 출결 알림을 받는다.`, [
+        O('go', '같이 간다. 출석은 친구한테 대신 부탁', '친구들과 가까워짐 · 학원에서 집에 연락이 갈 수도', ['fun', 'social']),
+        O('half', '1시간만 하고 학원 자습실로 간다', '둘 다 챙기는 척 · 어느 쪽도 제대로는 못 함', ['social', 'safe']),
+        O('skip', '"난 오늘 패스" 하고 학원에 간다', '진도는 지킴 · 다음 날 단톡방 대화에 못 낀다', ['study']),
+        O('distance', '요즘 이 무리랑 너무 논다. 단톡방 알림을 끈다', '공부 시간이 늘어남 · 한동안 외로울 수 있다', ['study', 'self']),
+      ]);
+      if (o.id === 'go') { inc(s, 'social', 6); inc(s, 'mental', 4); inc(s, 'lazy', 6); s.zC -= 0.03; s.flags.skippedAcademy = (s.flags.skippedAcademy || 0) + 1; L(s, '새벽 1시에 들어왔다. 다음 날 1교시부터 졸았다. 그래도 오랜만에 크게 웃었다.'); }
+      if (o.id === 'half') { inc(s, 'social', 2); s.zC -= 0.01; inc(s, 'lazy', 2); L(s, '1시간은 2시간이 됐다. 자습실에 도착했을 땐 집중이 안 됐다.'); }
+      if (o.id === 'skip') { inc(s, 'social', -3); inc(s, 'lazy', -2); L(s, '다음 날 아침, 어제 PC방 얘기로 다들 웃는데 혼자 못 끼었다.'); }
+      if (o.id === 'distance') { inc(s, 'social', -10); inc(s, 'mental', -4); inc(s, 'lazy', -7); s.flags.distanced = true; L(s, '알림을 껐다. 처음 몇 주는 점심시간이 길게 느껴졌다.', 'warn'); }
+    } },
+  { id: 'academyCall', w: s => ((s.flags.skippedAcademy || 0) >= 1 && !s.seen.academyCall ? 4 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '학원에서 온 전화',
+        `저녁 식탁. ${pw}의 휴대폰이 울린다. "어머님, ○○이가 이번 달에 두 번 결석해서요…" 전화를 끊은 ${pw}${jo(pw, '이/가')} 숟가락을 내려놓는다. "어디 갔었니?"`, [
+        O('truth', '사실대로 말한다. PC방에 갔다고', '거짓말은 안 함 · 크게 혼날 수 있다', ['self']),
+        O('lie', '"몸이 안 좋아서 독서실에 있었어요"', '오늘은 넘어감 · 들키면 신뢰가 무너진다', ['fun', 'safe']),
+        O('turn', '"솔직히 그 학원 나랑 안 맞아요" 하고 학원 얘기를 꺼낸다', '진짜 문제를 꺼냄 · 반항으로 보일 수 있다', ['rebel', 'self']),
+      ]);
+      if (o.id === 'truth') { inc(s, 'parentRel', s.p.pStyle === 'strict' ? -6 : 2); s.pressure += 3; L(s, s.p.pStyle === 'strict' ? '한 달 동안 휴대폰을 뺏겼다.' : '"다음부턴 미리 말해." 생각보다 덜 혼났다.'); if (s.p.pStyle === 'strict') inc(s, 'lazy', -6); }
+      if (o.id === 'lie') { if (r.chance(0.45)) { inc(s, 'parentRel', -14); s.flags.liar = true; L(s, '독서실 출입 기록을 확인한 엄마가 아무 말도 하지 않았다. 그게 더 무서웠다.', 'bad'); } else { L(s, '넘어갔다. 하지만 거짓말이 하나 늘었다.', 'warn'); s.flags.liar = true; } }
+      if (o.id === 'turn') { const ok = s.p.pStyle === 'warm' || s.p.pStyle === 'lax' || r.chance(0.3); if (ok) { s.money += 4; s.autonomy += 1; inc(s, 'parentRel', 3); L(s, '학원을 바꾸기로 했다. 처음으로 내 공부 방식을 내가 정했다.', 'good'); } else { inc(s, 'parentRel', -8); L(s, '"핑계 대지 마." 대화는 거기서 끝났다.', 'bad'); } }
+    } },
+  { id: 'fight', w: s => (s.bestFriend ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestName;
+      const o = choose(ctx, key, '절친과의 싸움',
+        `${b}${jo(b, '이/가')} 다른 친구들 앞에서 내 성적 얘기를 했다. "얘 이번에 수학 망했잖아 ㅋㅋ" 농담이었다는 건 안다. 그런데 웃음이 안 나왔다. 그날 저녁부터 서로 DM을 읽고 답하지 않는다. 사흘째다.`, [
+        O('sorry', '먼저 연락한다. "그때 내가 예민했어"', '우정은 지킴 · 내 서운함은 묻힌다', ['kind', 'social']),
+        O('honest', '만나서 왜 서운했는지 정확히 말한다', '관계가 깊어질 수도 · 더 크게 싸울 수도', ['self', 'risk']),
+        O('wait', '걔가 먼저 연락할 때까지 기다린다', '자존심은 지킴 · 그대로 멀어질 수 있다', ['safe']),
+        O('cut', '이참에 손절한다', '감정 소모 끝 · 학교생활이 쓸쓸해진다', ['rebel']),
+      ]);
+      if (o.id === 'sorry') { inc(s, 'social', 5); inc(s, 'mental', 1); L(s, `"아 미안 ㅠ 나도 생각 없었어." ${b}${jo(b, '와/과')} 편의점 앞에서 라면을 먹었다.`, 'good'); }
+      if (o.id === 'honest') { if (r.chance(0.55 + s.p.social * 0.05)) { inc(s, 'social', 8); inc(s, 'mental', 5); s.flags.friendForever = true; L(s, `${b}${jo(b, '이/가')} 진지하게 사과했다. 그날 처음으로 서로 진로 고민을 털어놨다.`, 'good'); } else { s.bestFriend = false; s.flags.lostBest = true; inc(s, 'social', -10); inc(s, 'mental', -8); L(s, '"그걸 그렇게까지 받아들여?" 말다툼은 더 커졌고, 그렇게 멀어졌다.', 'bad'); } }
+      if (o.id === 'wait') { if (r.chance(0.5)) L(s, `일주일 뒤 ${b}${jo(b, '이/가')} 아무 일 없었다는 듯 말을 걸었다. 둘 다 그 일은 다시 꺼내지 않았다.`); else { s.bestFriend = false; s.flags.lostBest = true; inc(s, 'social', -10); inc(s, 'mental', -8); L(s, '아무도 먼저 연락하지 않았다. 다음 학기, 우리는 그냥 아는 사이가 됐다.', 'bad'); } }
+      if (o.id === 'cut') { s.bestFriend = false; s.flags.lostBest = true; inc(s, 'mental', -6); inc(s, 'social', -6); L(s, '차단 버튼을 눌렀다. 같은 반이라 매일 마주친다.', 'bad'); }
+    } },
+  { id: 'cheat', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 1.3 : 0.6), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestName;
+      const o = choose(ctx, key, '수행평가 보고서',
+        `수행평가 마감 전날 밤 11시. ${b}에게서 카톡이 온다. "나 진짜 하나도 못 했어… 네 거 파일만 보내 주면 문장 다 바꿔서 낼게. 진짜 한 번만." 이 보고서는 3주 동안 쓴 거고, 세특에 들어갈 내용이다.`, [
+        O('give', '보내 준다', '친구에게 고마운 사람이 됨 · 걸리면 둘 다 0점', ['social', 'kind']),
+        O('outline', '파일 대신 목차와 참고자료만 보내 준다', '선은 지킴 · 친구는 서운할 수 있다', ['kind', 'safe']),
+        O('call', '전화해서 같이 밤새 써 준다', '우정이 깊어짐 · 내 잠과 컨디션을 잃는다', ['kind', 'social']),
+        O('no', '"미안, 이건 안 돼"', '내 노력은 지킴 · 관계가 서먹해진다', ['self']),
+      ]);
+      if (o.id === 'give') { if (r.chance(0.3)) { s.record -= 12; inc(s, 'parentRel', -8); inc(s, 'mental', -8); s.flags.caught = true; L(s, '표절 검사에 걸렸다. 둘 다 0점. 담임 선생님이 행동특성란 얘기를 꺼냈다.', 'bad'); } else { inc(s, 'social', 4); s.flags.owedFavor = true; L(s, '무사히 넘어갔다. 친구는 "평생 은인"이라고 했다. 찜찜했다.'); } }
+      if (o.id === 'outline') { inc(s, 'social', 1); L(s, '친구는 "고마워"라고 했지만 답장이 조금 늦었다.'); }
+      if (o.id === 'call') { inc(s, 'social', 5); inc(s, 'health', -6); s.talent.people += 4; s.flags.friendForever = true; L(s, '새벽 3시에 둘 다 제출 버튼을 눌렀다. 다음 날 수업은 기억이 없다.', 'good'); }
+      if (o.id === 'no') { inc(s, 'social', -5); L(s, '"치사하네." 며칠 동안 단톡방에서 내 말에만 답이 없었다.'); }
+    } },
+  { id: 'favorBack', w: s => (s.flags.owedFavor && s.turnIdx >= 4 ? 3 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestName;
+      const o = choose(ctx, key, '그때의 빚',
+        `${b}${jo(b, '이/가')} 조용히 USB를 건넨다. "우리 학원 쌤이 너희 학교 기출 3년 치 정리해 둔 거야. 지난번에 네가 도와줬잖아." 다른 애들은 이 자료가 있는 줄도 모른다.`, [
+        O('take', '받는다. 기출 정리는 불법도 아니다', '내신에 확실히 도움 · 다른 친구들에겐 비밀이 하나 생김', ['study']),
+        O('share', '받아서 반 단톡방에 공유한다', '반 분위기가 좋아짐 · 내 상대 등수는 오르지 않는다', ['kind', 'social']),
+        O('no', '"괜찮아, 그건 너 해"', '깔끔하다 · 기회를 놓친다', ['self', 'safe']),
+      ]);
+      if (o.id === 'take') { s.zN += 0.06; L(s, '기출 유형이 그대로 나왔다. 이번 기말은 쉬웠다.', 'good'); }
+      if (o.id === 'share') { s.zN += 0.01; inc(s, 'social', 8); s.talent.people += 4; L(s, '"너 천사냐?" 반 분위기가 확 좋아졌다.', 'good'); }
+      if (o.id === 'no') L(s, '친구는 머쓱해했다.');
+    } },
+  { id: 'studyGroup', w: s => (s.friendGroup === 'rival' ? 2 : s.p.social >= 3 ? 0.9 : 0.4), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, nm = s.rivalName;
+      const o = choose(ctx, key, '전교 1등의 제안',
+        `점심시간, 전교 1등 ${nm}${jo(nm, '이/가')} 다가온다. "토요일마다 수학 스터디 하는데 한 자리 비었어. 대신 매주 서로 문제 출제하고, 못 하면 나가는 거야." 토요일은 지금 유일하게 쉬는 날이다.`, [
+        O('join', '들어간다', '실력이 확 늘 수 있음 · 쉬는 날이 사라지고 비교가 시작된다', ['study', 'social']),
+        O('maybe', '한 달만 해 보겠다고 한다', '부담은 적음 · 어중간하면 금방 밀려난다', ['safe']),
+        O('no', '"나는 혼자가 편해"', '내 페이스 유지 · 좋은 자극 하나를 놓친다', ['self']),
+      ]);
+      if (o.id === 'join') { s.zC += 0.05; s.zN += 0.035; inc(s, 'stress', 7); inc(s, 'social', 3); s.flags.studyGroup = true; L(s, `${nm}${jo(nm, '은/는')} 한 문제를 세 가지 방법으로 풀었다. 처음엔 기가 죽었고, 나중엔 따라 하게 됐다.`, 'good'); }
+      if (o.id === 'maybe') { if (s.p.diligence >= 3) { s.zC += 0.025; L(s, '한 달은 버텼다. 출제한 문제가 칭찬받은 날도 있었다.'); } else { inc(s, 'mental', -4); L(s, '두 번째 주에 숙제를 못 해 와서 조용히 빠졌다.', 'warn'); } }
+      if (o.id === 'no') L(s, '토요일 늦잠은 지켰다.');
+    } },
+  { id: 'rivalGap', w: s => (s.flags.studyGroup || s.friendGroup === 'rival' ? 1.6 : 0.5), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, nm = s.rivalName;
+      const o = choose(ctx, key, '한 등급 차이',
+        `성적표가 나왔다. ${nm}${jo(nm, '은/는')} 1등급, 나는 2등급. 원점수 차이는 단 2점. 서술형 한 문제에서 부분 점수가 갈렸다. 채점 기준표를 보니 내 답도 맞다고 볼 여지가 있다.`, [
+        O('appeal', '선생님께 이의 신청을 한다', '등급이 바뀔 수도 · 선생님과 어색해질 수 있다', ['risk', 'self']),
+        O('accept', '받아들이고 다음 시험을 준비한다', '마음 정리 · 2점이 계속 마음에 남는다', ['safe', 'study']),
+        O('envy', '그날은 아무것도 손에 안 잡힌다', '솔직한 감정 · 하루가 날아간다', ['rest']),
+      ]);
+      if (o.id === 'appeal') { if (r.chance(0.35)) { s.zN += 0.07; L(s, '부분 점수가 인정됐다. 1등급 컷에 걸렸다!', 'good'); } else { s.record -= 2; inc(s, 'mental', -4); L(s, '"채점 기준대로 한 거야." 선생님 표정이 굳었다. 그 과목 세특이 걱정된다.', 'warn'); } }
+      if (o.id === 'accept') { s.zN += 0.015; inc(s, 'stress', 3); L(s, '오답노트 첫 줄에 서술형 채점 기준을 적었다.'); }
+      if (o.id === 'envy') { inc(s, 'mental', -5); inc(s, 'lazy', 2); L(s, '잠들기 전까지 2점을 생각했다.', 'warn'); }
+    } },
+  { id: 'bully', w: () => 0.6, once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '오늘 PC방 콜?', `단톡방에 ${s.bestName}${jo(s.bestName, '이/가')} 올렸다. "오늘 학원 째고 PC방 ㄱ?" 다들 간다는 분위기다.`, [
-        { id: 'go', label: '간다. 오늘 하루쯤은', tags: ['fun', 'social'] },
-        { id: 'skip', label: '학원은 간다. 다음에 갈게', tags: ['study'] },
-        { id: 'distance', label: '요즘 너무 노는 것 같다. 이 무리와 거리를 둔다', tags: ['study', 'self'] },
+      const o = choose(ctx, key, '단톡방에서 빠진 이름',
+        `반 단톡방이 새로 만들어졌는데 한 친구만 초대되지 않았다. 일부러라는 걸 다들 안다. 그 친구는 요즘 쉬는 시간마다 엎드려 있다. 무리의 중심에는 반에서 가장 목소리 큰 애가 있다.`, [
+        O('invite', '내가 그 친구를 단톡방에 초대한다', '옳은 일 · 무리에게 찍힐 수 있다', ['kind', 'risk']),
+        O('private', '단톡방은 건드리지 않고, 따로 그 친구에게 말을 건다', '그 친구에겐 힘이 됨 · 상황은 그대로', ['kind', 'safe']),
+        O('report', 'Wee클래스 선생님께 조용히 알린다', '어른이 해결 · 누가 말했는지 알려질 위험', ['kind', 'safe']),
+        O('ignore', '괜히 끼어들었다가 나까지 당할라', '내 학교생활은 무사 · 마음에 무언가가 남는다', ['safe']),
       ]);
-      if (o.id === 'go') { inc(s, 'social', 6); inc(s, 'mental', 4); inc(s, 'lazy', 6); s.zC -= 0.03; L(s, '새벽 1시에 들어왔다. 다음 날 1교시부터 졸았다. 그래도 재밌었다.'); }
-      if (o.id === 'skip') { inc(s, 'social', -2); inc(s, 'lazy', -2); L(s, '"ㅇㅋ 담에 와" 단톡방이 잠깐 조용해졌다.'); }
-      if (o.id === 'distance') { inc(s, 'social', -10); inc(s, 'mental', -4); inc(s, 'lazy', -7); s.flags.distanced = true; L(s, '단톡방 알림을 껐다. 처음 몇 주는 어색하고 외로웠다.', 'warn'); }
+      if (o.id === 'invite') { inc(s, 'social', -6); inc(s, 'mental', 3); s.talent.people += 8; s.record += 3; s.interest.soc += 6; s.flags.kind = true; L(s, '단톡방이 잠깐 조용해졌다. 일주일 뒤, 그 친구가 내 책상에 음료수를 놓고 갔다.', 'good'); }
+      if (o.id === 'private') { inc(s, 'mental', 2); s.talent.people += 4; s.flags.kind = true; L(s, '같이 매점에 갔다. 별말 없었지만 그 친구가 조금 웃었다.'); }
+      if (o.id === 'report') { s.flags.kind = true; if (r.chance(0.3)) { inc(s, 'social', -6); L(s, '누가 말했는지 소문이 돌았다. 그래도 단톡방 일은 정리됐다.', 'warn'); } else L(s, '선생님이 조용히 해결해 주셨다.'); }
+      if (o.id === 'ignore') { inc(s, 'mental', -3); s.flags.ignoredBully = true; L(s, '그 친구는 다음 학기에 전학을 갔다. 가끔 생각난다.', 'warn'); }
     } },
-  { id: 'confess', w: s => (s.romance.status !== 'dating' && (s.romance.count < 2) ? 0.8 + s.p.social * 0.35 : 0),
+  { id: 'sns', w: s => (s.p.social >= 3 ? 0.8 : 0.3), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '캡처 한 장',
+        `누군가 캡처 한 장을 보내왔다. 나 빼고 만든 단톡방. "걔 요즘 공부하는 척 오지지 않냐 ㅋㅋ" 그 밑에 웃는 이모티콘을 단 사람 중에는 매일 같이 급식 먹는 친구도 있다.`, [
+        O('confront', '그 친구를 따로 불러 직접 묻는다', '진실을 알게 됨 · 일이 커질 수 있다', ['rebel', 'self']),
+        O('ignore', '못 본 척한다', '평화 유지 · 혼자 삭인다', ['safe']),
+        O('reset', '친구 관계를 정리하고, 진짜 내 편에게 집중한다', '관계가 단단해짐 · 무리에서 멀어진다', ['self']),
+      ]);
+      if (o.id === 'confront') { if (r.chance(0.5)) { inc(s, 'mental', 4); inc(s, 'social', 2); L(s, '"미안… 분위기에 휩쓸렸어." 사과를 받았다.'); } else { inc(s, 'social', -7); inc(s, 'mental', -8); L(s, '"캡처 돌린 애가 더 나쁜 거 아니야?" 말다툼은 반 전체로 번졌다.', 'bad'); } }
+      if (o.id === 'ignore') { inc(s, 'mental', -8); L(s, '아무렇지 않은 척했다. 하나도 안 괜찮았다.', 'bad'); }
+      if (o.id === 'reset') { inc(s, 'mental', s.p.grit >= 3 ? -2 : -6); inc(s, 'social', -3); if (s.bestFriend) s.flags.friendForever = true; L(s, '친구 수는 줄었다. 대신 누가 진짜 친구인지 알게 됐다.'); }
+    } },
+  { id: 'dropoutFriend', w: s => (s.turnIdx >= 2 && s.turnIdx <= 6 ? 0.9 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestName;
+      const o = choose(ctx, key, '자퇴하고 정시 하자',
+        `${b}${jo(b, '이/가')} 진지하게 말한다. "나 자퇴하고 검정고시 본 다음 정시만 할 거야. 내신 이미 망했잖아. 학교 다니는 시간이 아까워. 너도 같이 할래? 재종반 같이 다니면 되잖아." 요즘 실제로 이렇게 하는 애들이 꽤 있다.`, [
+        O('join', '나도 자퇴하고 정시에 올인한다', '하루 전체를 수능에 쓸 수 있음 · 학종·교과는 끝, 혼자 버텨야 한다', ['risk', 'rebel']),
+        O('think', '부모님과 담임 선생님께 상담해 본다', '신중한 결정 · 시간이 걸린다', ['safe', 'obey']),
+        O('stop', '친구를 말린다', '친구를 위한 말 · 친구가 서운해할 수 있다', ['kind']),
+        O('respect', '"너는 너대로, 나는 나대로" 응원만 한다', '관계 유지 · 나는 아무것도 바꾸지 않는다', ['safe']),
+      ]);
+      if (o.id === 'join') { s.flags.ged = true; inc(s, 'parentRel', s.p.pStyle === 'warm' ? -3 : -12); inc(s, 'social', -12); s.zC += 0.08; s.autonomy += 2; L(s, '자퇴서를 냈다. 다음 날부터 아침 8시에 재종반으로 간다. 교복이 옷장에 걸려 있다.', 'warn'); }
+      if (o.id === 'think') { inc(s, 'parentRel', 3); L(s, '담임 선생님이 내 생기부를 펼쳐 보이며 말했다. "너는 아직 수시 카드가 있어."'); }
+      if (o.id === 'stop') { if (r.chance(0.5)) { inc(s, 'social', 4); L(s, `${b}${jo(b, '은/는')} 학교에 남기로 했다. "네 말 듣길 잘한 것 같아."`, 'good'); } else { inc(s, 'social', -4); L(s, `${b}${jo(b, '은/는')} 결국 자퇴했다. 빈자리가 크다.`); } }
+      if (o.id === 'respect') L(s, `${b}${jo(b, '은/는')} 다음 달 자퇴했다. 가끔 재종반 사진을 보낸다.`);
+    } },
+
+  // ── 연애 ─────────────────────────────────────────
+  { id: 'confess', w: s => (s.romance.status !== 'dating' && s.romance.count < 2 ? 0.8 + s.p.social * 0.35 : 0),
     run: (ctx, key, r) => {
       const s = ctx.s, pt = newPartner(s, r);
-      const o = choose(ctx, key, '갑작스러운 고백', `체육대회가 끝난 저녁, 같은 학년 ${pt.name}에게서 DM이 왔다. "나 너 좋아하는 것 같아. 사귈래?" ${pt.studious ? '전교권 성적의 성실한 아이다.' : '같이 있으면 웃긴 분위기 메이커다.'}`, [
-        { id: 'yes', label: '사귄다', tags: ['romance'] },
-        { id: 'no', label: '"미안, 지금은 공부에 집중하고 싶어"', tags: ['study', 'safe'] },
-        { id: 'later', label: '"시험 끝나고 대답해도 될까?"', tags: ['safe'] },
+      const o = choose(ctx, key, '체육대회가 끝난 저녁',
+        `체육대회 계주에서 우리 반이 1등을 했다. 집에 가는 길, ${pt.name}에게서 DM이 온다. "오늘 너 뛰는 거 멋있었어. 사실 예전부터 좋아했어. 나랑 사귈래?" ${pt.studious ? `${pt.name}${jo(pt.name, '은/는')} 전교권 성적에 늘 독서실 마감까지 있는 아이다.` : `${pt.name}${jo(pt.name, '은/는')} 있으면 반 분위기가 밝아지는 아이다. 공부에는 별 관심이 없다.`} 기말까지는 3주 남았다.`, [
+        O('yes', '"나도 좋아." 사귄다', '설렘과 위로 · 시간과 감정이 많이 든다', ['romance']),
+        O('later', '"시험 끝나고 대답해도 될까?"', '시험은 지킴 · 상대가 기다려 줄지는 모른다', ['safe']),
+        O('no', '"고마워. 그런데 지금은 공부에 집중하고 싶어"', '흔들림 없음 · 복도에서 마주칠 때마다 어색하다', ['study']),
       ]);
       if (o.id === 'yes') { startDating(s, pt.name, pt.studious); inc(s, 'mental', 10); L(s, `${pt.name}${jo(pt.name, '와/과')} 사귀기 시작했다. 하루 종일 폰만 본다.`, 'good'); }
-      if (o.id === 'no') { inc(s, 'mental', -2); L(s, `${pt.name}${jo(pt.name, '은/는')} "알겠어"라고만 했다. 복도에서 마주칠 때마다 어색하다.`); }
+      if (o.id === 'no') { inc(s, 'mental', -2); s.flags.rejectedName = pt.name; L(s, `${pt.name}${jo(pt.name, '은/는')} "알겠어"라고만 했다.`); }
       if (o.id === 'later') {
         if (r.chance(0.5)) { startDating(s, pt.name, pt.studious); L(s, `${pt.name}${jo(pt.name, '은/는')} 기다려 줬다. 시험이 끝난 날 사귀기 시작했다.`, 'good'); }
-        else { inc(s, 'mental', -4); L(s, `시험이 끝났을 때 ${pt.name}에게는 이미 다른 사람이 있었다.`, 'warn'); }
+        else { inc(s, 'mental', -4); s.flags.rejectedName = pt.name; L(s, `시험이 끝났을 때 ${pt.name}에게는 이미 다른 사람이 있었다.`, 'warn'); }
       }
     } },
-  { id: 'crush', w: s => (s.romance.status !== 'dating' && s.romance.count < 2 ? 0.9 : 0),
+  { id: 'seeAgain', w: s => (s.flags.rejectedName && s.romance.status !== 'dating' && s.turnIdx >= 4 ? 2 : 0), once: true,
     run: (ctx, key, r) => {
-      const s = ctx.s, pt = newPartner(s, r), p = s.p;
-      const o = choose(ctx, key, '짝사랑', `요즘 자꾸 ${pt.name}에게 눈이 간다. 수업 시간에도 생각난다.`, [
-        { id: 'confess', label: '용기 내서 고백한다', tags: ['romance', 'risk'] },
-        { id: 'keep', label: '마음속에만 담아 둔다', tags: ['safe'] },
-        { id: 'fuel', label: '이 감정을 공부 동력으로 바꾼다', tags: ['study'] },
+      const s = ctx.s, nm = s.flags.rejectedName;
+      const o = choose(ctx, key, '같은 조',
+        `고2 수행평가 조 편성표에 내 이름 옆에 ${nm}${jo(nm, '이/가')} 있다. 예전에 내가 거절했던 그 사람이다. 첫 회의 날, ${nm}${jo(nm, '이/가')} 아무렇지 않게 웃으며 말한다. "오랜만이다. 잘 해 보자." 이상하게 그 웃음이 계속 생각난다.`, [
+        O('confess', '이번엔 내가 먼저 마음을 말한다', '두 번째 기회 · 이번엔 내가 거절당할 수도', ['romance', 'risk']),
+        O('friend', '좋은 친구로 지낸다', '편한 관계 · 마음은 정리되지 않는다', ['safe']),
+        O('focus', '수행평가만 깔끔하게 끝낸다', '흔들리지 않음 · 기회는 지나간다', ['study']),
+      ]);
+      if (o.id === 'confess') { if (r.chance(0.45)) { startDating(s, nm, r.chance(0.5)); inc(s, 'mental', 12); L(s, `"너 진짜 늦었다." ${nm}${jo(nm, '이/가')} 웃었다.`, 'good'); } else { inc(s, 'mental', -12); L(s, '"이제는 그냥 친구가 좋아." 이번엔 내가 들었다.', 'bad'); } }
+      if (o.id === 'friend') { inc(s, 'social', 4); L(s, '조 활동은 즐거웠다. 가끔 아쉬웠다.'); }
+      if (o.id === 'focus') { s.record += 3; L(s, '수행평가는 A를 받았다.'); }
+    } },
+  { id: 'crush', w: s => (s.romance.status !== 'dating' && s.romance.count < 2 ? (s.flags.crushNow ? 4 : 0.9) : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, p = s.p;
+      const nm = s.flags.crushNow || newPartner(s, r).name;
+      const o = choose(ctx, key, '짝사랑',
+        `${nm}. 요즘 수업 시간에도 그 사람 뒤통수만 보인다. 인스타 스토리에 올린 노래를 하루에 열 번 듣는다. 친구들은 "그냥 말해 봐, 너 티 다 나"라고 한다. 다음 주가 ${nm}의 생일이다.`, [
+        O('confess', '생일에 편지와 함께 고백한다', '잘되면 연애 시작 · 안 되면 소문까지 감당해야 한다', ['romance', 'risk']),
+        O('gift', '고백은 말고 작은 선물만 준다', '관계를 조금 가깝게 · 마음은 그대로 남는다', ['safe', 'romance']),
+        O('keep', '마음속에만 담아 둔다', '아무 일도 안 일어남 · 계속 신경 쓰인다', ['safe']),
+        O('fuel', '"멋진 사람이 되자." 공부로 마음을 돌린다', '동기가 될 수도 · 그냥 핑계일 수도', ['study']),
       ]);
       if (o.id === 'confess') {
-        const ok = r.chance(0.28 + p.social * 0.06 + p.confidence * 0.04);
-        if (ok) { startDating(s, pt.name, pt.studious); inc(s, 'mental', 14); L(s, `"사실 나도." ${pt.name}${jo(pt.name, '이/가')} 웃었다.`, 'good'); }
-        else { inc(s, 'mental', -14); inc(s, 'social', -3); s.flags.rejected = true; L(s, '거절당했다. 다음 날 반 애들이 다 알고 있었다.', 'bad'); }
+        if (r.chance(0.28 + p.social * 0.06 + p.confidence * 0.04)) { startDating(s, nm, r.chance(0.45)); inc(s, 'mental', 14); L(s, `편지를 다 읽은 ${nm}${jo(nm, '이/가')} 말했다. "사실 나도."`, 'good'); }
+        else { inc(s, 'mental', -14); inc(s, 'social', -3); s.flags.rejected = true; L(s, '"미안, 너는 좋은 친구야." 다음 날 반 애들이 다 알고 있었다.', 'bad'); }
       }
+      if (o.id === 'gift') { inc(s, 'mental', 3); if (r.chance(0.35)) { startDating(s, nm, r.chance(0.45)); L(s, `일주일 뒤, ${nm}${jo(nm, '이/가')} 먼저 "주말에 뭐 해?"라고 물었다.`, 'good'); } else L(s, '"고마워!" 그게 다였다.'); }
       if (o.id === 'keep') { inc(s, 'lazy', 3); inc(s, 'mental', -2); L(s, '말 못 한 마음은 생각보다 오래 갔다.'); }
-      if (o.id === 'fuel') { if (p.diligence >= 3) { s.zN += 0.04; L(s, '이상하게 집중이 잘 됐다. 멋있는 사람이 되고 싶었다.', 'good'); } else { inc(s, 'lazy', 3); L(s, '공부하려고 앉으면 그 사람 인스타를 보고 있었다.', 'warn'); } }
+      if (o.id === 'fuel') { if (p.diligence >= 3) { s.zN += 0.04; L(s, '이상하게 집중이 잘 됐다.', 'good'); } else { inc(s, 'lazy', 3); L(s, '공부하려고 앉으면 그 사람 인스타를 보고 있었다.', 'warn'); } }
+      delete s.flags.crushNow;
     } },
-  { id: 'dateExam', w: s => (s.romance.status === 'dating' ? 3 : 0),
+  { id: 'dateExam', w: s => (s.romance.status === 'dating' ? 2.5 : 0),
     run: (ctx, key, r) => {
       const s = ctx.s, nm = s.romance.partner;
-      const o = choose(ctx, key, '시험 2주 전, 데이트 신청', `${nm}${jo(nm, '이/가')} "이번 주말에 영화 보자"고 한다. 기말까지 2주.`, [
-        { id: 'go', label: '간다. 하루쯤은 괜찮다', tags: ['romance'] },
-        { id: 'study', label: '"스터디카페 같이 가자"', tags: ['study', 'romance'] },
-        { id: 'no', label: '"시험 끝나고 보자"', tags: ['study'] },
+      const o = choose(ctx, key, '기말 2주 전, 주말',
+        `${nm}: "이번 주말에 우리 100일이야. 나 진짜 오래 기다렸어. 영화 예매해 놨어 🥹" 기말까지 2주. 수학은 아직 한 단원이 남았다. ${s.romance.studious ? `${nm}${jo(nm, '은/는')} 어차피 공부를 다 해 놨다.` : ''}`, [
+        O('go', '간다. 100일은 한 번뿐이다', '관계가 깊어짐 · 하루가 통째로 사라진다', ['romance']),
+        O('short', '영화만 보고 저녁엔 독서실에 간다', '둘 다 챙김 · 상대가 아쉬워할 수 있다', ['safe', 'romance']),
+        O('study', '"스터디카페에서 같이 공부하자, 끝나고 케이크 먹자"', '둘 다 성장할 수도 · 결국 수다만 떨 수도', ['study', 'romance']),
+        O('no', '"미안, 시험 끝나고 제대로 하자"', '시험은 지킴 · 상대는 크게 서운하다', ['study']),
       ]);
-      if (o.id === 'go') { s.romance.score += 10; inc(s, 'mental', 5); s.zN -= 0.04; L(s, '영화 보고, 밥 먹고, 카페까지. 집에 오니 밤 11시였다.'); }
-      if (o.id === 'study') {
-        if (s.romance.studious) { s.zN += 0.03; s.romance.score += 6; L(s, `${nm}${jo(nm, '은/는')} 진짜 공부했다. 덩달아 나도 했다.`, 'good'); }
-        else { s.zN -= 0.015; s.romance.score += 4; L(s, '결국 둘이 수다만 떨다 나왔다.'); }
-      }
+      if (o.id === 'go') { s.romance.score += 12; inc(s, 'mental', 6); s.zN -= 0.04; L(s, '영화, 밥, 카페, 인생네컷까지. 집에 오니 밤 11시였다. 행복했다.'); }
+      if (o.id === 'short') { s.romance.score += 5; s.zN -= 0.01; L(s, `헤어질 때 ${nm}${jo(nm, '이/가')} 조금 아쉬운 얼굴이었다.`); }
+      if (o.id === 'study') { if (s.romance.studious) { s.zN += 0.03; s.romance.score += 6; L(s, `${nm}${jo(nm, '은/는')} 진짜 공부했다. 덩달아 나도 했다.`, 'good'); } else { s.zN -= 0.015; s.romance.score += 4; L(s, '결국 둘이 수다만 떨다 나왔다. 그래도 즐거웠다.'); } }
       if (o.id === 'no') {
-        s.romance.score -= 14; s.zN += 0.025;
+        s.romance.score -= 16; s.zN += 0.025;
         if (s.romance.score < 30 && r.chance(0.5)) { breakUp(s, ctx.turn.id); inc(s, 'mental', -12); L(s, `"너는 맨날 공부가 먼저지." 그날 ${nm}${jo(nm, '와/과')} 헤어졌다.`, 'bad'); }
-        else L(s, `${nm}${jo(nm, '이/가')} 서운해했다.`, 'warn');
+        else L(s, `${nm}${jo(nm, '이/가')} 하루 종일 답장을 짧게 했다.`, 'warn');
       }
     } },
-  { id: 'breakup', w: s => (s.romance.status === 'dating' && s.romance.since >= 1 ? 1 + (100 - s.romance.score) / 50 : 0),
+  { id: 'partnerGrade', w: s => (s.romance.status === 'dating' && s.romance.since >= 1 ? 1.4 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s, nm = s.romance.partner;
-      const o = choose(ctx, key, '이별 통보', `밤 12시, ${nm}에게서 긴 메시지가 왔다. "우리 잠깐 시간을 갖자. 요즘 너무 지쳐."`, [
-        { id: 'hold', label: '붙잡는다', tags: ['romance'] },
-        { id: 'cool', label: '"알겠어. 그동안 고마웠어."', tags: ['safe'] },
-        { id: 'grind', label: '헤어지고 독하게 공부에 몰두한다', tags: ['study'] },
+      const o = choose(ctx, key, '"너 때문에 성적 떨어졌대"',
+        `${nm}의 엄마가 ${nm}에게 한 말이 돌고 돌아 내 귀에 들어왔다. "그 애 만나고 나서 성적이 떨어졌잖아. 헤어져." ${nm}${jo(nm, '은/는')} 나한테 그 얘기를 하지 않았다. 그런데 요즘 연락이 뜸하다.`, [
+        O('talk', '먼저 그 얘기를 꺼내고 같이 방법을 찾는다', '관계가 단단해질 수도 · 무거운 대화가 된다', ['romance', 'self']),
+        O('study', '"우리 같이 성적 올려서 보여 주자"', '서로 자극이 됨 · 연애가 숙제처럼 될 수도', ['study', 'romance']),
+        O('end', '내가 먼저 놓아준다', '상대 집과의 갈등 끝 · 이별의 상처', ['safe']),
       ]);
-      if (o.id === 'hold' && r.chance(0.45)) { s.romance.score = 35; inc(s, 'mental', -6); L(s, '밤새 통화했다. 일단은 다시 만나기로 했다. 불안하다.', 'warn'); return; }
+      if (o.id === 'talk') { if (r.chance(0.6)) { s.romance.score += 10; L(s, '둘이서 한참 울고 웃었다. 일주일에 한 번만 만나기로 했다.', 'good'); } else { breakUp(s, ctx.turn.id); inc(s, 'mental', -10); L(s, `"미안, 지금은 엄마랑 싸울 힘이 없어." ${nm}${jo(nm, '이/가')} 말했다.`, 'bad'); } }
+      if (o.id === 'study') { s.zN += 0.03; s.romance.score += 4; inc(s, 'stress', 5); L(s, '도서관 데이트가 늘었다.'); }
+      if (o.id === 'end') { breakUp(s, ctx.turn.id); inc(s, 'mental', -10); L(s, '"네가 힘들어지는 게 싫어." 내가 먼저 말했다.', 'bad'); }
+    } },
+  { id: 'breakup', w: s => (s.romance.status === 'dating' && s.romance.since >= 1 ? 0.8 + (100 - s.romance.score) / 50 : 0),
+    run: (ctx, key, r) => {
+      const s = ctx.s, nm = s.romance.partner;
+      const o = choose(ctx, key, '밤 12시의 긴 메시지',
+        `${nm}: "요즘 우리 만나도 둘 다 폰만 보는 것 같아. 나도 공부도 안 되고, 너한테 미안하고. 우리 잠깐 시간을 갖는 게 맞는 것 같아." 메시지 끝에 '읽음'이 뜬 지 10분째. 아직 답을 못 했다.`, [
+        O('hold', '전화를 건다. 붙잡는다', '다시 만날 수도 · 더 상처받을 수도', ['romance']),
+        O('time', '"알겠어. 시간 갖자. 기다릴게"', '여지를 남김 · 기다리는 동안 흔들린다', ['safe', 'romance']),
+        O('cool', '"그동안 고마웠어"라고 정리한다', '깔끔한 끝 · 혼자 감당해야 한다', ['safe']),
+        O('grind', '답장 대신 문제집을 편다', '아픔을 동력으로 · 감정이 늦게 터질 수 있다', ['study']),
+      ]);
+      if (o.id === 'hold' && r.chance(0.45)) { s.romance.score = 35; inc(s, 'mental', -6); L(s, '새벽 3시까지 통화했다. 일단은 다시 만나기로 했다. 불안하다.', 'warn'); return; }
+      if (o.id === 'time' && r.chance(0.35)) { s.romance.status = 'pause'; inc(s, 'mental', -6); L(s, '한 달 동안 연락하지 않기로 했다. 매일 인스타를 확인한다.', 'warn'); return; }
       breakUp(s, ctx.turn.id);
       if (o.id === 'hold') { inc(s, 'mental', -16); L(s, '붙잡았지만 소용없었다. 몇 주 동안 아무것도 손에 안 잡혔다.', 'bad'); }
+      if (o.id === 'time') { inc(s, 'mental', -12); L(s, '"잠깐"은 끝이 됐다.', 'bad'); }
       if (o.id === 'cool') { inc(s, 'mental', -9 + s.p.grit); L(s, '덤덤한 척했다. 혼자 있을 때만 울었다.', 'bad'); }
-      if (o.id === 'grind') { inc(s, 'mental', -11); if (s.p.grit >= 4) { s.zC += 0.06; s.flags.fireUp = true; L(s, '이를 악물었다. 성적으로 보여 주겠다고.', 'good'); } else { inc(s, 'lazy', 5); L(s, '공부하겠다고 앉았지만, 자꾸 옛날 사진을 봤다.', 'bad'); } }
+      if (o.id === 'grind') { inc(s, 'mental', -11); if (s.p.grit >= 4) { s.zC += 0.06; s.flags.fireUp = true; L(s, '이를 악물었다. 성적으로 보여 주겠다고.', 'good'); } else { inc(s, 'lazy', 5); L(s, '문제집을 폈지만, 자꾸 옛날 사진을 봤다.', 'bad'); } }
     } },
-  { id: 'parentTalk', w: s => (s.p.pStyle === 'strict' || s.p.pStyle === 'anxious' ? 2.4 : 1),
+  { id: 'datingRumor', w: s => (s.romance.status === 'dating' && (s.p.pStyle === 'strict' || s.p.pStyle === 'anxious') ? 1.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, nm = s.romance.partner, pw = parentWord(s);
+      const o = choose(ctx, key, '들켰다',
+        `${pw}${jo(pw, '이/가')} 내 폰 알림에 뜬 "${nm} ❤️ 오늘 보고 싶어"를 봤다. "너 연애하니? 고2가 지금 연애할 때야? 당장 정리해."`, [
+        O('lie', '"그냥 친구예요"', '오늘은 넘어감 · 몰래 하는 연애가 된다', ['safe']),
+        O('honest', '"사귀고 있어요. 성적 안 떨어뜨릴게요"', '당당함 · 성적이 떨어지면 끝이다', ['self', 'rebel']),
+        O('end', '부모님 말대로 정리한다', '집안 평화 · 상대와 나 둘 다 상처', ['obey']),
+      ]);
+      if (o.id === 'lie') { s.flags.secretLove = true; inc(s, 'stress', 6); L(s, '몰래 만나는 연애가 시작됐다. 매번 알리바이를 만든다.', 'warn'); }
+      if (o.id === 'honest') { s.flags.loveDeal = true; s.autonomy += 1; inc(s, 'parentRel', -4); s.pressure += 4; L(s, '"그 말 꼭 지켜." 조건부 허락을 받았다.'); }
+      if (o.id === 'end') { breakUp(s, ctx.turn.id); inc(s, 'parentRel', 4); inc(s, 'mental', -14); s.autonomy -= 1; L(s, `${nm}에게 이별 메시지를 보내고 엎드려 울었다.`, 'bad'); }
+    } },
+
+  // ── 부모님·가족 ────────────────────────────────────
+  { id: 'parentTalk', w: s => (s.p.pStyle === 'strict' || s.p.pStyle === 'anxious' ? 2 : 0.9),
     run: (ctx, key, r) => {
       const s = ctx.s, p = s.p, pw = parentWord(s);
-      const line = { strict: '"이 성적으로 대학 가겠니? 핸드폰 내놔."', anxious: '"엄마가 다 알아봤는데, 이렇게 하면 망한대. 학원 하나 더 다니자."', warm: '"요즘 힘들지? 엄마는 네가 행복했으면 좋겠어."', lax: '"알아서 해. 네 인생이니까."', absent: '"바빠서 미안. 성적은 어때? 잘하고 있지?"' }[p.pStyle];
-      const o = choose(ctx, key, '성적표가 나온 날', `${pw}${jo(pw, '이/가')} 말했다. ${line}`, [
-        { id: 'promise', label: '"다음엔 꼭 올릴게요."', tags: ['obey'] },
-        { id: 'rebel', label: '"제 인생이에요! 그만 좀 하세요!"', tags: ['rebel'] },
-        { id: 'talk', label: '하고 싶은 진로 이야기를 차분히 꺼낸다', tags: ['self'] },
+      const line = {
+        strict: `"이 성적으로 어디 가겠다는 거야? 다음 달부터 핸드폰은 저녁 9시에 반납해. 그리고 주말 학원 하나 더 알아봤다."`,
+        anxious: `"엄마가 입시 카페에서 봤는데, 이맘때 이 성적이면 인서울 힘들대. 컨설팅 한번 받아 보자. 엄마가 다 알아볼게."`,
+        warm: `"요즘 많이 힘들지? 엄마는 성적보다 네 얼굴이 더 걱정돼. 혹시 하고 싶은 거 생겼어?"`,
+        lax: `"성적표 나왔다며? 알아서 해. 네 인생이니까. 대학 안 가도 엄마는 상관없어."`,
+        absent: `(카톡) "아빠 이번 주도 늦어. 성적표 사진 찍어서 보내 줘. 잘하고 있지? 👍"`,
+      }[p.pStyle];
+      const o = choose(ctx, key, '성적표가 나온 날', `${pw}: ${line}`, [
+        O('promise', '"다음엔 꼭 올릴게요."', '갈등을 피함 · 지키지 못할 약속이 쌓인다', ['obey']),
+        O('plan', '내가 짠 공부 계획을 보여 주며 이대로 해 보겠다고 한다', '믿음을 얻을 수도 · 계획대로 해야 한다', ['self', 'study']),
+        O('rebel', '"제발 그만 좀 하세요!"', '속은 시원함 · 관계에 금이 간다', ['rebel']),
+        O('dream', '사실 하고 싶은 진로가 따로 있다고 꺼낸다', '진짜 대화의 시작 · 무시당할 수도 있다', ['self', 'risk']),
       ]);
-      if (o.id === 'promise') { s.pressure += 4; inc(s, 'parentRel', 4); if (p.diligence >= 3) inc(s, 'lazy', -3); L(s, '약속은 했다. 지킬 수 있을지는 모르겠다.'); }
+      if (o.id === 'promise') { s.pressure += 4; inc(s, 'parentRel', 3); if (p.diligence >= 3) inc(s, 'lazy', -3); L(s, '약속은 했다. 지킬 수 있을지는 모르겠다.'); }
+      if (o.id === 'plan') { if (p.diligence >= 3 || r.chance(0.4)) { inc(s, 'parentRel', 6); s.pressure -= 4; s.autonomy += 1; inc(s, 'lazy', -4); L(s, '"한번 해 봐. 대신 엄마한테 매주 보여 줘."', 'good'); } else { inc(s, 'parentRel', -3); L(s, '"계획은 맨날 세우잖아." 말문이 막혔다.', 'warn'); } }
       if (o.id === 'rebel') { inc(s, 'parentRel', -15); inc(s, 'mental', -4); s.autonomy += 1; s.flags.rebel = (s.flags.rebel || 0) + 1; L(s, '문을 쾅 닫고 들어왔다. 며칠 동안 밥을 따로 먹었다.', 'bad'); }
-      if (o.id === 'talk') {
+      if (o.id === 'dream') {
         const ok = p.pStyle === 'warm' || p.pStyle === 'lax' || r.chance(0.25 + p.confidence * 0.05);
         if (ok) { inc(s, 'parentRel', 8); s.pressure -= 5; s.autonomy += 1; s.flags.parentHeard = true; L(s, `처음으로 ${pw}${jo(pw, '이/가')} 끝까지 들어 줬다.`, 'good'); }
         else { inc(s, 'parentRel', -6); L(s, '"그런 건 대학 가서 생각해." 대화는 3분 만에 끝났다.', 'warn'); }
@@ -752,327 +981,446 @@ const HS_EVENTS = [
     } },
   { id: 'tutor', w: s => (s.p.wealth !== 'low' && ['med', 'prestige', 'law'].indexOf(s.p.pDesire) >= 0 ? 2 : s.p.wealth === 'high' ? 0.8 : 0), once: true,
     run: (ctx, key, r) => {
-      const s = ctx.s, p = s.p;
-      const o = choose(ctx, key, '1타 과외', `${parentWord(s)}${jo(parentWord(s), '이/가')} 말했다. "대치동 유명 선생님 과외 자리가 났어. 한 달에 200이야. 해 볼래?"`, [
-        { id: 'yes', label: '한다', tags: ['obey', 'study'] },
-        { id: 'self', label: '"혼자 해 볼게요."', tags: ['self', 'rebel'] },
-        { id: 'online', label: '"인강으로 할게요. 돈 아까워요."', tags: ['safe', 'self'] },
+      const s = ctx.s, p = s.p, pw = parentWord(s);
+      const o = choose(ctx, key, '한 달 200만 원',
+        `${pw}${jo(pw, '이/가')} 상담 실장과 통화를 끝내고 들어온다. "대치동 ○○ 선생님 그룹 과외에 자리가 하나 났대. 한 달 200. 대기만 1년이래. 엄마 적금 깨면 돼." 아빠는 거실에서 아무 말도 하지 않는다.`, [
+        O('yes', '한다', '실력이 확실히 오를 수 있음 · 집안 형편과 숙제 부담', ['obey', 'study']),
+        O('online', '"인강 패스로 할게요. 그 돈은 아껴 주세요"', '돈을 아낌 · 스스로 끝까지 들어야 한다', ['self', 'safe']),
+        O('self', '"혼자 해 볼게요. 대신 성적으로 증명할게요"', '자율성 · 증명 못 하면 더 큰 압박', ['self', 'rebel']),
       ]);
-      if (o.id === 'yes') { s.money -= 16; s.zC += 0.1 * p.comprehension / 3; s.zN += 0.05; inc(s, 'stress', 7); inc(s, 'parentRel', 5); s.autonomy -= 1; L(s, '선생님은 확실히 달랐다. 대신 숙제가 하루 4시간 분량이다.'); }
-      if (o.id === 'self') { inc(s, 'parentRel', -5); s.autonomy += 1; if (p.diligence >= 4) { s.zC += 0.05; L(s, '혼자 해 보겠다고 한 말을 지키려고 더 독하게 했다.', 'good'); } else L(s, '혼자 하겠다고 했지만, 혼자는 생각보다 어려웠다.', 'warn'); }
+      if (o.id === 'yes') { s.money -= 16; s.zC += 0.1 * p.comprehension / 3; s.zN += 0.05; inc(s, 'stress', 7); inc(s, 'parentRel', 5); s.autonomy -= 1; L(s, '선생님은 확실히 달랐다. 대신 숙제가 하루 4시간 분량이다. 엄마가 적금을 깼다는 게 계속 마음에 걸렸다.'); }
+      if (o.id === 'self') { inc(s, 'parentRel', -5); s.autonomy += 1; s.pressure += 6; if (p.diligence >= 4) { s.zC += 0.05; L(s, '혼자 해 보겠다고 한 말을 지키려고 더 독하게 했다.', 'good'); } else L(s, '혼자 하겠다고 했지만, 혼자는 생각보다 어려웠다.', 'warn'); }
       if (o.id === 'online') { s.money -= 2; s.zC += 0.035 * p.diligence / 3; L(s, '인강 패스를 끊었다. 완강률이 관건이다.'); }
+    } },
+  { id: 'consult', w: s => (s.p.wealth !== 'low' && s.p.pStyle === 'anxious' && s.turnIdx >= 4 ? 2 : s.p.wealth === 'high' && s.turnIdx >= 4 ? 0.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '입시 컨설팅',
+        `엄마 손에 이끌려 간 입시 컨설팅 사무실. 컨설턴트가 내 생기부를 넘기며 말한다. "솔직히 말씀드리면 지금 생기부는 방향이 없어요. 남은 기간 동안 '스토리'를 만들어야 합니다. 저희 패키지가 300입니다." 엄마가 내 얼굴을 본다.`, [
+        O('buy', '하겠다고 한다', '생기부 방향이 잡힘 · 비싸고, 내 이야기가 아닐 수 있다', ['obey', 'record']),
+        O('own', '"제가 진짜 관심 있는 걸로 직접 만들어 볼게요"', '내 진짜 이야기 · 혼자 방향을 잡아야 한다', ['self', 'record']),
+        O('no', '"수시 말고 정시로 갈래요"', '돈을 아낌 · 수시 카드를 스스로 버린다', ['rebel', 'study']),
+      ]);
+      if (o.id === 'buy') { s.money -= 18; s.record += 9; s.autonomy -= 1; s.recFit[topInterest(s)] += 8; L(s, '컨설턴트가 정해 준 탐구 주제 3개를 받았다. 솔직히 하나도 궁금하지 않다.'); }
+      if (o.id === 'own') { s.record += 3 + s.p.curiosity * 1.5; s.recFit[topInterest(s)] += 10; s.autonomy += 1; L(s, '내가 정말 궁금했던 질문으로 탐구 계획을 짰다.', s.p.curiosity >= 4 ? 'good' : 'info'); }
+      if (o.id === 'no') { s.flags.leanJungsi = true; inc(s, 'parentRel', -4); s.zC += 0.02; L(s, '엄마는 한숨을 쉬었다. 나는 수능 기출을 펼쳤다.'); }
     } },
   { id: 'compare', w: s => (s.p.sibling === 'better' ? 2 : s.p.pDesire === 'prestige' ? 1.2 : 0.3), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const who = s.p.sibling === 'better' ? '형(언니)' : '사촌';
-      const o = choose(ctx, key, '명절의 비교', `명절. 친척들 앞에서 ${who} 얘기가 나왔다. "${who === '사촌' ? '○○이는 이번에 의대 붙었다며?' : '너희 형(언니)은 전교 1등이었잖아.'}" 모두의 시선이 나에게 왔다.`, [
-        { id: 'fuel', label: '두고 보라지. 오기가 생긴다', tags: ['study', 'rebel'] },
-        { id: 'shrug', label: '웃어넘긴다', tags: ['safe'] },
-        { id: 'tell', label: '집에 와서 부모님께 서운했다고 말한다', tags: ['self'] },
+      const sib = s.p.sibling === 'better';
+      const o = choose(ctx, key, '명절의 거실',
+        `추석. 큰아버지가 TV를 보다가 묻는다. "${sib ? '형(언니)은 이번에 장학금 받았다며? 너는 몇 등이냐?' : '○○이는 이번에 의대 붙었다더라. 너는 어디 생각하니?'}" 거실이 조용해진다. 엄마가 대신 웃으며 말한다. "얘도 요즘 열심히 해요." 엄마 웃음이 어색하다.`, [
+        O('answer', '내 목표를 또박또박 말한다', '당당함 · 말한 만큼 부담이 생긴다', ['self', 'risk']),
+        O('fuel', '대답 대신 속으로 이를 간다', '오기가 생긴다 · 마음은 계속 쓰리다', ['study', 'rebel']),
+        O('shrug', '"그냥 열심히 하고 있어요" 하고 웃는다', '무난함 · 밤에 잠이 안 온다', ['safe']),
+        O('tell', '집에 와서 엄마에게 서운했다고 말한다', '관계 회복의 기회 · 엄마도 상처받을 수 있다', ['self', 'kind']),
       ]);
+      if (o.id === 'answer') { s.flags.saidGoal = true; inc(s, 'stress', 6); s.zN += 0.02; L(s, '"오, 큰소리 쳤다?" 다들 웃었다. 그 말이 머릿속에 오래 남았다.'); }
       if (o.id === 'fuel') { s.zN += 0.03; s.zC += 0.03; inc(s, 'stress', 10); L(s, '그날부터 독서실 마감까지 있었다. 마음 한구석은 계속 쓰렸다.'); }
       if (o.id === 'shrug') { inc(s, 'mental', -4); L(s, '웃었지만 밤에 잠이 잘 안 왔다.'); }
-      if (o.id === 'tell') { const ok = s.p.pStyle !== 'strict' || r.chance(0.3); if (ok) { inc(s, 'parentRel', 7); s.pressure -= 4; L(s, '"미안해. 엄마 아빠가 생각이 짧았어."', 'good'); } else { inc(s, 'parentRel', -5); L(s, '"그게 다 너 잘되라고 하는 말이야."', 'warn'); } }
+      if (o.id === 'tell') { const ok = s.p.pStyle !== 'strict' || r.chance(0.3); if (ok) { inc(s, 'parentRel', 8); s.pressure -= 4; L(s, '"미안해. 엄마가 너를 지켜 줬어야 했는데."', 'good'); } else { inc(s, 'parentRel', -5); L(s, '"그게 다 너 잘되라고 하는 말이야."', 'warn'); } }
     } },
   { id: 'push', w: s => { const d = PARENT_DESIRES[s.p.pDesire]; return d && d.field && topInterest(s) !== d.field ? 2.2 : 0; }, once: true,
     run: (ctx, key, r) => {
-      const s = ctx.s, p = s.p, d = PARENT_DESIRES[p.pDesire], my = topInterest(s);
-      const o = choose(ctx, key, '부모님이 정한 진로', `"너는 ${FIELDS[d.field].name} 쪽으로 가야 해. 그게 다 너 잘되라고 하는 거야." 나는 ${FIELDS[my].name} 쪽에 더 끌린다.`, [
-        { id: 'obey', label: '부모님 뜻을 따른다', tags: ['obey', 'safe'] },
-        { id: 'persuade', label: '내 계획을 정리해서 설득한다', tags: ['self', 'risk'] },
-        { id: 'secret', label: '말은 안 하고 몰래 내 길을 준비한다', tags: ['rebel', 'self'] },
+      const s = ctx.s, p = s.p, d = PARENT_DESIRES[p.pDesire], my = topInterest(s), pw = parentWord(s);
+      const o = choose(ctx, key, '부모님이 정한 진로',
+        `${pw}${jo(pw, '이/가')} 생기부 진로 희망란을 보고 말한다. "${FIELDS[my].name}? 그거 해서 뭐 먹고살 건데. ${FIELDS[d.field].name} 쪽으로 써. 엄마 아빠 친구 자식들 봐. 그쪽이 결국 안정적이야. 네가 몰라서 그래." 진로 희망란은 다음 주까지 담임 선생님께 내야 한다.`, [
+        O('obey', `진로 희망란에 ${FIELDS[d.field].name}${jo(FIELDS[d.field].name, '이라고/라고')} 쓴다`, '집안 평화와 지원 · 내가 원하는 길과 멀어진다', ['obey', 'safe']),
+        O('both', `${FIELDS[d.field].name}${jo(FIELDS[d.field].name, '이라고/라고')} 쓰되, 활동은 두 분야에 걸쳐 한다`, '선택을 미룸 · 생기부 방향이 흐려질 수 있다', ['safe']),
+        O('persuade', `${FIELDS[my].name} 직업의 현실(연봉·전망)을 조사해서 설득한다`, '설득되면 든든한 지원 · 실패하면 갈등이 커진다', ['self', 'risk']),
+        O('secret', `말없이 ${FIELDS[my].name}${jo(FIELDS[my].name, '이라고/라고')} 써서 낸다`, '내 길 · 들키면 큰 싸움', ['rebel', 'self']),
       ]);
-      if (o.id === 'obey') { s.flags.obeyParent = true; s.interest[d.field] += 14; s.autonomy -= 2; inc(s, 'parentRel', 8); if (fitOf(s, d.field) < 0.7) inc(s, 'mental', -5); L(s, `"알겠어요." ${FIELDS[d.field].name} 쪽으로 생기부 방향을 틀었다.`); }
+      if (o.id === 'obey') { s.flags.obeyParent = true; s.interest[d.field] += 14; s.recFit[d.field] += 6; s.autonomy -= 2; inc(s, 'parentRel', 8); if (fitOf(s, d.field) < 0.7) inc(s, 'mental', -5); L(s, `"알겠어요." ${FIELDS[d.field].name} 쪽으로 생기부 방향을 틀었다.`); }
+      if (o.id === 'both') { s.recFit[d.field] += 4; s.recFit[my] += 4; s.flags.splitPath = true; L(s, '두 분야 활동을 반씩 했다. 담임 선생님이 "그래서 넌 뭘 하고 싶니?"라고 물었다.', 'warn'); }
       if (o.id === 'persuade') {
         const ok = r.chance((p.pStyle === 'warm' ? 0.7 : p.pStyle === 'lax' ? 0.65 : 0.22) + p.confidence * 0.04 + (s.recFit[my] > 15 ? 0.15 : 0));
-        if (ok) { s.flags.parentAccept = true; s.pressure -= 10; s.autonomy += 2; inc(s, 'parentRel', 5); L(s, `한참 듣던 ${parentWord(s)}${jo(parentWord(s), '이/가')} 말했다. "그래, 네가 그렇게까지 생각했으면."`, 'good'); }
-        else { inc(s, 'parentRel', -9); inc(s, 'stress', 6); L(s, '"현실을 몰라서 그래." 설득은 실패했다.', 'bad'); }
+        if (ok) { s.flags.parentAccept = true; s.pressure -= 10; s.autonomy += 2; inc(s, 'parentRel', 5); L(s, `PPT까지 만들어 보여 줬다. 한참 듣던 ${pw}${jo(pw, '이/가')} 말했다. "그래, 네가 그렇게까지 생각했으면."`, 'good'); }
+        else { inc(s, 'parentRel', -9); inc(s, 'stress', 6); L(s, '"인터넷에 나온 거 다 믿니?" 설득은 실패했다.', 'bad'); }
       }
-      if (o.id === 'secret') { s.flags.secretPath = true; s.autonomy += 1; s.recFit[my] += 6; inc(s, 'stress', 6); inc(s, 'parentRel', -2); L(s, '부모님 몰래 원하는 분야 탐구 보고서를 쓰기 시작했다.'); }
+      if (o.id === 'secret') { s.flags.secretPath = true; s.autonomy += 1; s.recFit[my] += 6; inc(s, 'stress', 6); L(s, '진로 희망란에 내 꿈을 썼다. 부모님은 아직 모른다.'); }
     } },
-  { id: 'crisis', w: s => (s.p.wealth === 'high' ? 0.1 : s.p.wealth === 'low' ? 0.8 : 0.4), once: true,
+  { id: 'secretFound', w: s => (s.flags.secretPath && s.turnIdx >= 4 ? 3.5 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, my = topInterest(s), pw = parentWord(s);
+      const o = choose(ctx, key, '학부모 상담 주간',
+        `학부모 상담에 다녀온 ${pw}${jo(pw, '이/가')} 현관에서 신발도 안 벗고 서 있다. "담임 선생님이 그러시더라. 네 진로 희망이 ${FIELDS[my].name}${jo(FIELDS[my].name, '이라고/라고')}. 엄마만 몰랐네?"`, [
+        O('sorry', '"죄송해요. 말하면 반대할 것 같았어요"', '솔직한 사과 · 진로를 지킬 수 있을지는 모른다', ['kind', 'self']),
+        O('stand', '"네, 저 이거 할 거예요"', '내 길을 선언 · 정면충돌', ['rebel', 'self']),
+        O('give', '"알겠어요. 다시 바꿀게요"', '갈등 종료 · 꿈을 내려놓는다', ['obey']),
+      ]);
+      if (o.id === 'sorry') { if (s.p.pStyle === 'warm' || r.chance(0.4)) { s.flags.parentAccept = true; inc(s, 'parentRel', 4); L(s, '"…얼마나 하고 싶었으면." 그날 밤 처음으로 진로 얘기를 오래 했다.', 'good'); } else { inc(s, 'parentRel', -8); L(s, '"일단은 엄마 말 들어." 아무것도 정해지지 않았다.', 'warn'); } }
+      if (o.id === 'stand') { inc(s, 'parentRel', -16); s.autonomy += 2; s.flags.rebel = (s.flags.rebel || 0) + 1; s.flags.parentWar = true; L(s, '그날 이후 집에서 진로 얘기는 금기어가 됐다.', 'bad'); }
+      if (o.id === 'give') { s.autonomy -= 2; delete s.flags.secretPath; s.flags.obeyParent = true; const d = PARENT_DESIRES[s.p.pDesire].field; if (d) s.interest[d] += 10; inc(s, 'mental', -8); L(s, '진로 희망란을 다시 고쳐 냈다. 손이 떨렸다.', 'bad'); }
+    } },
+  { id: 'parentFight', w: s => (s.p.pBond === 'fight' ? 2.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '새벽 1시, 거실',
+        `방문 너머로 부모님 목소리가 커진다. "애 앞에서 그만해!" "애가 뭘 알아!" 유리컵 깨지는 소리. 그리고 엄마가 말한다. "이혼해. 애 수능 끝나면 진짜 이혼해." 내일은 중간고사 첫날이다.`, [
+        O('out', '방에서 나가 둘 사이에 선다', '싸움이 멈출 수도 · 내가 짊어지게 된다', ['kind', 'risk']),
+        O('earphone', '이어폰을 끼고 문제집을 본다', '시험은 지킴 · 마음은 전혀 괜찮지 않다', ['study']),
+        O('friend', `${s.bestFriend ? s.bestName : '친구'}에게 "자니?" 하고 연락한다`, '털어놓을 곳 · 잠은 더 못 잔다', ['social']),
+        O('counsel', '다음 날 상담 선생님을 찾아간다', '어른의 도움 · 집안일을 꺼내는 게 두렵다', ['self', 'rest']),
+      ]);
+      if (o.id === 'out') { inc(s, 'parentRel', 6); inc(s, 'mental', -8); s.flags.mature = true; s.zN -= 0.03; L(s, '"그만 좀 해요!" 둘 다 멈췄다. 엄마가 나를 안고 울었다.'); }
+      if (o.id === 'earphone') { inc(s, 'mental', -10); s.zN -= 0.01; L(s, '음악 볼륨을 끝까지 올렸다. 그날 시험은 기억이 안 난다.', 'bad'); }
+      if (o.id === 'friend') { inc(s, 'mental', -3); inc(s, 'health', -4); if (s.bestFriend) s.flags.friendForever = true; L(s, `새벽 3시까지 ${s.bestFriend ? s.bestName : '친구'}${jo(s.bestFriend ? s.bestName : '친구', '이/가')} 들어 줬다.`); }
+      if (o.id === 'counsel') { inc(s, 'mental', 6); inc(s, 'stress', -8); L(s, '"네 잘못이 아니야." 그 말을 처음 들었다.', 'good'); }
+    } },
+  { id: 'crisis', w: s => (s.p.wealth === 'high' ? 0.1 : s.p.wealth === 'low' ? 0.8 : 0.4) + (s.p.pJob === 'self' ? 0.6 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
       s.money = Math.max(0, s.money - 25); s.flags.crisis = true;
-      const o = choose(ctx, key, '집안 사정', '아빠 회사가 어려워졌다. 밤마다 부모님 목소리가 높아진다. 학원을 끊어야 할 수도 있다.', [
-        { id: 'work', label: '주말 알바를 시작한다', tags: ['work', 'kind'] },
-        { id: 'focus', label: '공부로 보답하겠다고 더 독하게 한다', tags: ['study'] },
-        { id: 'ignore', label: '모른 척한다. 내가 할 수 있는 게 없다', tags: ['safe'] },
+      const job = s.p.pJob === 'self' ? '가게 매출이 반토막 났다. 대출 이자가 밀렸다고 한다' : '아빠 회사가 구조조정에 들어갔다. 아빠 이름이 명단에 있다고 한다';
+      const o = choose(ctx, key, '식탁 위의 고지서',
+        `${job}. 식탁 위에 고지서가 쌓여 있다. 엄마가 조심스럽게 말한다. "다음 달부터 학원 하나만 다니면 안 될까? 미안해." 동생 학원은 그대로다.`, [
+        O('work', '"주말에 알바할게요. 학원비 보탤게요"', '집에 보탬 · 공부 시간이 줄어든다', ['work', 'kind']),
+        O('cut', '"학원 다 끊고 인강으로 할게요"', '돈 걱정을 덜어 줌 · 혼자 해내야 한다', ['self', 'kind']),
+        O('keep', '"이 학원은 꼭 다녀야 해요"', '공부 환경 유지 · 집에 부담이 된다', ['study']),
+        O('ignore', '아무 말도 하지 않는다', '부딪히지 않음 · 서로 서운함이 쌓인다', ['safe']),
       ]);
       if (o.id === 'work') { s.money += 8; s.flags.work = true; s.zN -= 0.04; inc(s, 'parentRel', 8); s.flags.mature = true; L(s, '주말마다 식당에서 일했다. 엄마가 몰래 울었다는 걸 나중에 알았다.'); }
-      if (o.id === 'focus') { inc(s, 'stress', 12); if (s.p.grit >= 3) { s.zN += 0.04; L(s, '독서실에서 버텼다. 그게 내가 할 수 있는 전부였다.', 'good'); } else { inc(s, 'mental', -9); L(s, '집중이 안 됐다. 집에 들어가기 싫었다.', 'bad'); } }
+      if (o.id === 'cut') { s.money += 6; inc(s, 'parentRel', 6); s.flags.selfStudy = true; if (s.p.diligence >= 3) { s.zC += 0.02; L(s, '인강 진도표를 벽에 붙였다.', 'good'); } else { inc(s, 'lazy', 6); L(s, '인강은 1.5배속으로 틀어 놓고 잠들기 일쑤였다.', 'warn'); } }
+      if (o.id === 'keep') { s.money -= 6; inc(s, 'parentRel', -4); s.flags.moneyTight = true; L(s, '엄마는 알겠다고 했다. 그 달부터 엄마가 저녁에 부업을 시작했다.'); }
       if (o.id === 'ignore') { inc(s, 'parentRel', -4); inc(s, 'mental', -4); L(s, '이어폰 볼륨을 키웠다.'); }
-    } },
-  { id: 'phone', w: s => (s.lazy >= 38 ? s.lazy / 22 : 0),
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '스크린타임 7시간', '새벽 3시. 숏폼을 "딱 하나만" 보다가 4시간이 지났다. 이번 주 하루 평균 스크린타임 7시간 12분.', [
-        { id: 'lock', label: '앱 잠금을 걸고 공부 타이머를 켠다', tags: ['study', 'self'] },
-        { id: 'ignore', label: '다들 이 정도는 하잖아', tags: ['fun'] },
-        { id: 'parent', label: '부모님께 폰을 맡긴다', tags: ['obey', 'study'] },
-      ]);
-      if (o.id === 'lock') { const d = s.p.diligence >= 3 ? 14 : 6; inc(s, 'lazy', -d); inc(s, 'mental', -2); L(s, d > 10 ? '사흘은 금단 증상이 있었다. 일주일 뒤엔 시간이 생겼다.' : '앱 잠금은 3일 만에 풀었다.', d > 10 ? 'good' : 'warn'); }
-      if (o.id === 'ignore') { inc(s, 'lazy', 8); inc(s, 'health', -5); L(s, '다음 날도, 그다음 날도 똑같았다.', 'bad'); }
-      if (o.id === 'parent') { inc(s, 'lazy', -12); inc(s, 'parentRel', 3); inc(s, 'social', -3); L(s, '단톡방 소식을 몰라 조금 소외됐지만 공부 시간은 늘었다.', 'good'); }
-    } },
-  { id: 'rank', w: s => (hasHobby(s, 'game') ? 2 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '랭크 상위 1%', '랭크게임 상위 1% 달성. 친구들이 "너 프로 해 봐"라고 한다.', [
-        { id: 'pro', label: '진지하게 프로를 꿈꿔 본다', tags: ['risk', 'fun'] },
-        { id: 'quit', label: '고등학생이니까. 게임을 지운다', tags: ['study'] },
-        { id: 'mod', label: '적당히 즐긴다', tags: ['safe'] },
-      ]);
-      if (o.id === 'pro') { s.flags.proDream = true; s.talent.game = clamp(s.talent.game + 20, 0, 100); inc(s, 'lazy', 8); s.zC -= 0.05; inc(s, 'parentRel', -8); L(s, '하루 8시간씩 랭크를 돌렸다. 부모님과 매일 싸웠다.', 'warn'); }
-      if (o.id === 'quit') { inc(s, 'lazy', -12); inc(s, 'mental', -6); inc(s, 'social', -3); L(s, '계정을 지웠다. 한동안 허전했다.'); }
-      if (o.id === 'mod') { inc(s, 'mental', 4); inc(s, 'lazy', 2); L(s, '주말에만 하기로 했다. 대체로는 지켰다.'); }
-    } },
-  { id: 'esports', w: s => (s.flags.proDream && s.talent.game >= 60 ? 2.5 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '프로팀 아카데미 제안', 'e스포츠 프로팀 아카데미에서 DM이 왔다. "테스트 한번 받아 볼래요? 합격하면 숙소 생활이에요."', [
-        { id: 'go', label: '간다. 이건 기회다', tags: ['risk'] },
-        { id: 'no', label: '거절한다. 대학은 가야지', tags: ['safe', 'obey'] },
-      ]);
-      if (o.id === 'go') { s.flags.esports = true; inc(s, 'parentRel', -15); s.zN -= 0.25; s.zC -= 0.2; L(s, '테스트에 붙었다. 학교는 출석만 했다. 부모님은 반대했다.', 'warn'); }
-      else L(s, '정중히 거절했다. 가끔 그 DM을 다시 열어 본다.');
-    } },
-  { id: 'casting', w: s => ((hasHobby(s, 'music') || hasHobby(s, 'idol')) && s.p.social >= 3 && s.turnIdx <= 6 ? 0.8 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '길거리 캐스팅', '홍대 앞에서 기획사 명함을 받았다. "오디션 한번 볼래요?"', [
-        { id: 'aud', label: '오디션을 본다', tags: ['risk', 'fun'] },
-        { id: 'no', label: '수상하다. 무시한다', tags: ['safe'] },
-      ]);
-      if (o.id === 'aud') {
-        if (r.chance(s.talent.perf / 130)) { s.flags.trainee = true; inc(s, 'parentRel', -6); s.zN -= 0.1; L(s, '연습생 계약 제안을 받았다. 심장이 터질 것 같다.', 'good'); }
-        else { inc(s, 'mental', -6); L(s, '"아직은 부족하네요." 노래 연습을 더 하고 싶어졌다.'); s.talent.perf += 6; }
-      } else L(s, '명함은 서랍 속에 들어갔다.');
-    } },
-  { id: 'contest', w: s => (s.turnIdx <= 8 ? 1.4 : 0),
-    run: (ctx, key, r) => {
-      const s = ctx.s, ti = topInterest(s);
-      const o = choose(ctx, key, '교내 탐구대회', `교내 탐구보고서 대회 공고가 붙었다. 주제는 자유. ${FIELDS[ti].name} 쪽으로 써 볼 수 있다.`, [
-        { id: 'join', label: '참가한다 (시험 기간과 겹친다)', tags: ['record'] },
-        { id: 'skip', label: '패스. 내신이 먼저다', tags: ['study', 'safe'] },
-      ]);
-      if (o.id === 'join') {
-        s.record += 7; s.recFit[ti] += 9; inc(s, 'stress', 4); s.zN -= 0.02;
-        if (r.chance(0.18 + s.p.curiosity * 0.07)) { s.record += 6; s.flags.award = (s.flags.award || 0) + 1; L(s, '금상을 받았다! 세특에 들어갈 문장이 생겼다.', 'good'); }
-        else L(s, '입상은 못 했지만 보고서는 생기부에 남았다.');
-      } else L(s, '대회는 건너뛰었다.');
-    } },
-  { id: 'council', w: s => (s.p.social >= 3 && s.turnIdx <= 6 ? 1 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '학생회 선거', '학생회 부회장 후보 추천이 들어왔다.', [
-        { id: 'run', label: '출마한다', tags: ['risk', 'social', 'record'] },
-        { id: 'no', label: '시간 아깝다. 안 나간다', tags: ['study'] },
-      ]);
-      if (o.id === 'run') {
-        if (r.chance(0.3 + s.p.social * 0.09)) { s.record += 10; s.talent.people += 10; inc(s, 'stress', 6); s.flags.council = true; L(s, '당선됐다. 리더십 항목에 쓸 게 생겼다. 대신 바빠졌다.', 'good'); }
-        else { inc(s, 'mental', -5); L(s, '아깝게 떨어졌다.'); }
-      }
-    } },
-  { id: 'burnout', w: s => (s.stress >= 62 || s.mental <= 32 ? 3.5 : 0),
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '번아웃', '아무것도 하기 싫다. 책을 펴도 글자가 안 들어온다. 이유 없이 눈물이 난다.', [
-        { id: 'counsel', label: 'Wee클래스 상담실 문을 두드린다', tags: ['self', 'rest'] },
-        { id: 'rest', label: '일주일 동안 공부를 내려놓고 쉰다', tags: ['rest'] },
-        { id: 'push', label: '버틴다. 남들도 다 힘들다', tags: ['study'] },
-      ]);
-      if (o.id === 'counsel') { inc(s, 'mental', 16); inc(s, 'stress', -16); L(s, '상담 선생님 앞에서 처음으로 힘들다고 말했다. 조금 가벼워졌다.', 'good'); }
-      if (o.id === 'rest') { inc(s, 'stress', -22); inc(s, 'mental', 10); s.zN -= 0.03; L(s, '죄책감이 들었지만, 다시 책을 펼 수 있게 됐다.'); }
-      if (o.id === 'push') { inc(s, 'stress', 10); inc(s, 'mental', -10); s.flags.burnout = (s.flags.burnout || 0) + 1; if (s.p.grit >= 4) { s.zN += 0.03; L(s, '버텼다. 대신 웃는 일이 줄었다.'); } else { inc(s, 'health', -10); L(s, '버티다 결국 몸살이 났다.', 'bad'); } }
-    } },
-  { id: 'cheat', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 1.2 : 0.5), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '수행평가 베끼기', `${s.bestName}${jo(s.bestName, '이/가')} 말했다. "네 보고서 좀 보여 줘. 살짝 바꿔서 낼게."`, [
-        { id: 'give', label: '보여 준다', tags: ['social', 'fun'] },
-        { id: 'no', label: '거절한다', tags: ['safe'] },
-        { id: 'teach', label: '같이 쓰는 법을 알려준다', tags: ['kind'] },
-      ]);
-      if (o.id === 'give') { if (r.chance(0.3)) { s.record -= 12; inc(s, 'parentRel', -8); inc(s, 'mental', -8); s.flags.caught = true; L(s, '선생님에게 걸렸다. 둘 다 0점. 행동특성란이 걱정된다.', 'bad'); } else { inc(s, 'social', 4); L(s, '무사히 넘어갔다. 찜찜했다.'); } }
-      if (o.id === 'no') { inc(s, 'social', -5); L(s, '"치사하네." 며칠 동안 서먹했다.'); }
-      if (o.id === 'teach') { inc(s, 'social', 4); s.record += 2; s.talent.people += 4; L(s, '둘이 같이 밤새 썼다. 우정이 조금 깊어졌다.', 'good'); }
-    } },
-  { id: 'fight', w: s => (s.bestFriend ? 1 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s, b = s.bestName;
-      const o = choose(ctx, key, '절친과의 싸움', `${b}${jo(b, '와/과')} 크게 싸웠다. 사소한 오해였는데 말이 심해졌다.`, [
-        { id: 'sorry', label: '먼저 사과한다', tags: ['kind', 'social'] },
-        { id: 'wait', label: '상대가 먼저 오길 기다린다', tags: ['safe'] },
-        { id: 'cut', label: '이참에 손절한다', tags: ['rebel'] },
-      ]);
-      if (o.id === 'sorry') { inc(s, 'social', 5); inc(s, 'mental', 3); s.flags.friendForever = true; L(s, `"나도 미안해." ${b}${jo(b, '와/과')} 편의점 앞에서 라면을 먹었다.`, 'good'); }
-      if (o.id === 'wait') { if (r.chance(0.5)) { L(s, `${b}${jo(b, '이/가')} 먼저 연락했다. 다행이다.`); } else { s.bestFriend = false; s.flags.lostBest = true; inc(s, 'social', -10); inc(s, 'mental', -8); L(s, '아무도 먼저 연락하지 않았다. 그렇게 멀어졌다.', 'bad'); } }
-      if (o.id === 'cut') { s.bestFriend = false; s.flags.lostBest = true; inc(s, 'mental', -6); inc(s, 'social', -6); L(s, '차단 버튼을 눌렀다.', 'bad'); }
-    } },
-  { id: 'studyGroup', w: s => (s.friendGroup === 'rival' ? 2 : s.p.social >= 3 ? 0.8 : 0.3), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s, nm = r.pick(FRIEND_NAMES.filter(n => n !== s.bestName));
-      const o = choose(ctx, key, '전교 1등의 스터디 제안', `전교 1등 ${nm}${jo(nm, '이/가')} "같이 수학 스터디 할래?"라고 물었다.`, [
-        { id: 'join', label: '한다', tags: ['study', 'social'] },
-        { id: 'no', label: '혼자가 편하다', tags: ['self'] },
-      ]);
-      if (o.id === 'join') { s.zC += 0.05; s.zN += 0.035; inc(s, 'stress', 5); inc(s, 'social', 3); s.flags.studyGroup = true; L(s, '푸는 방식이 완전히 달랐다. 자극을 많이 받았다.', 'good'); }
-      else L(s, '혼자 하는 게 맞다고 생각했다.');
-    } },
-  { id: 'bully', w: () => 0.6, once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '따돌림을 봤다', '반에서 한 친구가 은근히 따돌림당하고 있다. 다들 모른 척한다.', [
-        { id: 'help', label: '먼저 말을 걸고 같이 다닌다', tags: ['kind', 'risk'] },
-        { id: 'report', label: '담임 선생님께 조용히 알린다', tags: ['kind', 'safe'] },
-        { id: 'ignore', label: '괜히 끼어들었다 나까지 당할라', tags: ['safe'] },
-      ]);
-      if (o.id === 'help') { inc(s, 'social', -3); inc(s, 'mental', 4); s.talent.people += 6; s.record += 3; s.interest.soc += 6; s.flags.kind = true; L(s, '그 친구가 나중에 말했다. "그때 너 아니었으면 자퇴했을 거야."', 'good'); }
-      if (o.id === 'report') { s.flags.kind = true; inc(s, 'mental', 2); L(s, '선생님이 조용히 해결해 주셨다.'); }
-      if (o.id === 'ignore') { inc(s, 'mental', -3); s.flags.ignoredBully = true; L(s, '그 친구는 다음 학기에 전학을 갔다. 가끔 생각난다.', 'warn'); }
-    } },
-  { id: 'youtube', w: s => (hasHobby(s, 'video') ? 2 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '알고리즘의 선택', '취미로 올린 영상이 알고리즘을 탔다. 조회수 34만, 구독자 1.2만.', [
-        { id: 'grow', label: '채널을 본격적으로 키운다', tags: ['risk', 'fun'] },
-        { id: 'bal', label: '주 1회만 올린다', tags: ['safe'] },
-        { id: 'stop', label: '고등학생이니까 접는다', tags: ['study'] },
-      ]);
-      if (o.id === 'grow') { s.flags.creator = (s.flags.creator || 0) + 2; s.talent.media += 15; inc(s, 'lazy', 4); s.zN -= 0.06; L(s, '편집하느라 새벽 3시에 잔다. 댓글 보는 게 제일 재밌다.'); }
-      if (o.id === 'bal') { s.flags.creator = (s.flags.creator || 0) + 1; s.talent.media += 7; L(s, '공부와 채널 사이에서 줄타기 중이다.'); }
-      if (o.id === 'stop') { inc(s, 'mental', -3); L(s, '채널을 비공개로 돌렸다.'); }
-    } },
-  { id: 'coding', w: s => (hasHobby(s, 'code') ? 2 : s.interest.cs > 30 ? 0.6 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '청소년 해커톤', '청소년 해커톤 공고가 떴다. 2박 3일, 기말 1주 전.', [
-        { id: 'join', label: '나간다', tags: ['record', 'risk'] },
-        { id: 'skip', label: '시험이 먼저다', tags: ['study'] },
-      ]);
-      if (o.id === 'join') { s.talent.code += 12; s.recFit.cs += 12; s.record += 5; s.zN -= 0.03; if (r.chance(0.2 + s.talent.code / 250)) { s.flags.award = (s.flags.award || 0) + 1; s.record += 6; L(s, '우수상! 개발자가 되고 싶다는 마음이 확실해졌다.', 'good'); } else L(s, '상은 못 탔지만 처음으로 서비스 하나를 끝까지 만들었다.'); s.interest.cs += 8; }
-    } },
-  { id: 'artAcademy', w: s => (hasHobby(s, 'draw') || hasHobby(s, 'webtoon') ? 2 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '미대 입시', '미술 선생님이 말씀하셨다. "너 그림 감각 있어. 입시미술 해 볼 생각 없니?" 입시미술 학원은 한 달에 80만 원.', [
-        { id: 'yes', label: '미대 입시를 준비한다', tags: ['risk', 'self'] },
-        { id: 'hobby', label: '그림은 취미로 남긴다', tags: ['safe'] },
-      ]);
-      if (o.id === 'yes') { s.flags.artPath = true; s.money -= 10; s.talent.art += 15; s.interest.art += 15; s.zN -= 0.04; if (s.p.pDesire !== 'free') inc(s, 'parentRel', -6); L(s, '주 4일 입시미술 학원에 다닌다. 손에 늘 물감이 묻어 있다.'); }
-      else L(s, '스케치북은 책상 서랍 깊숙이 들어갔다.');
-    } },
-  { id: 'sportsTeam', w: s => (hasHobby(s, 'sport') ? 2 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '체대 입시', '체육 선생님이 "체대 입시 생각 있니? 실기 학원 다니면 승산 있어"라고 하셨다.', [
-        { id: 'yes', label: '체대 입시를 준비한다', tags: ['risk', 'self'] },
-        { id: 'no', label: '운동은 취미로', tags: ['safe'] },
-      ]);
-      if (o.id === 'yes') { s.flags.sportPath = true; s.money -= 6; s.talent.sport += 15; s.interest.sport += 15; L(s, '방과 후엔 실기 학원. 몸은 힘든데 마음은 편하다.'); }
-    } },
-  { id: 'transfer', w: s => (s.p.school !== 'general' && s.naesinRec.length && s.naesinRec[s.naesinRec.length - 1] > 45 && s.turnIdx <= 4 ? 2.5 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '일반고 전학', '내신이 바닥이다. "일반고로 전학 가면 내신 2등급은 오른다"는 얘기를 들었다.', [
-        { id: 'go', label: '일반고로 전학한다', tags: ['risk'] },
-        { id: 'stay', label: '남는다. 학종에선 여기가 유리하다', tags: ['safe'] },
-      ]);
-      if (o.id === 'go') { s.p = Object.assign({}, s.p, { school: 'general' }); s.zN += 0.55; inc(s, 'social', -12); inc(s, 'mental', -4); s.flags.transferred = true; L(s, '새 학교에서는 반 3등이었다. 대신 친구가 하나도 없다.'); }
-      else L(s, '버티기로 했다.');
-    } },
-  { id: 'mockShock', w: s => (s.turnIdx >= 4 ? 1.2 : 0), once: true,
-    run: (ctx, key, r) => {
-      const s = ctx.s;
-      const o = choose(ctx, key, '모의고사 수학 4등급', '모의고사 수학이 4등급이 나왔다. 성적표를 보고 한참 멍했다.', [
-        { id: 'review', label: '오답노트를 처음부터 다시 만든다', tags: ['study'] },
-        { id: 'academy', label: '학원을 바꾼다', tags: ['obey'] },
-        { id: 'giveup', label: '수학은 버리고 다른 과목에 올인', tags: ['fun', 'risk'] },
-      ]);
-      if (o.id === 'review') { s.zC += 0.045 * s.p.diligence / 3; L(s, '틀린 문제를 다시 풀다 보니 어디서 막히는지 보이기 시작했다.', 'good'); }
-      if (o.id === 'academy') { s.money -= 5; s.zC += 0.025; L(s, '새 학원 레벨테스트에서 중간반에 배정됐다.'); }
-      if (o.id === 'giveup') { s.flags.mathGiveUp = true; s.zC -= 0.08; inc(s, 'lazy', 4); inc(s, 'stress', -6); s.interest.hum += 4; L(s, '수포자 선언. 마음은 편해졌는데, 원서 쓸 때 후회할지도 모른다.', 'warn'); }
     } },
   { id: 'sick', w: () => 0.25, once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '엄마의 입원', '엄마가 갑자기 쓰러져 입원하셨다. 수술은 잘 됐지만 한 달은 병원에 계셔야 한다.', [
-        { id: 'care', label: '학원을 빼고 병원과 집안일을 챙긴다', tags: ['kind'] },
-        { id: 'focus', label: '걱정 끼치지 않게 공부에 집중한다', tags: ['study'] },
+      const o = choose(ctx, key, '응급실',
+        `수업 중에 담임 선생님이 나를 부른다. "어머니가 쓰러지셔서 병원에 계신대." 수술은 잘 됐지만 한 달은 입원해야 한다. 아빠는 지방 출장 중이고, 집에는 초등학생 동생이 있다. 다음 주가 기말고사다.`, [
+        O('care', '학원을 쉬고 병원과 동생을 챙긴다', '가족 곁을 지킴 · 시험 준비가 무너진다', ['kind']),
+        O('split', '학교 끝나고 병원에 들렀다가 밤에 공부한다', '둘 다 해 보려 함 · 몸이 버틸지 모른다', ['safe', 'kind']),
+        O('focus', '"엄마 걱정 말고 공부해" 말대로 공부에 집중한다', '시험은 지킴 · 마음의 짐이 남는다', ['study']),
       ]);
-      if (o.id === 'care') { inc(s, 'parentRel', 14); s.zN -= 0.05; s.flags.mature = true; L(s, '병원 침대 옆에서 문제집을 풀었다. 엄마 손이 생각보다 작았다.'); }
-      else { inc(s, 'stress', 8); inc(s, 'parentRel', -2); L(s, '"엄마 괜찮아. 공부해." 그 말이 더 마음에 걸렸다.'); }
+      if (o.id === 'care') { inc(s, 'parentRel', 14); s.zN -= 0.06; s.flags.mature = true; L(s, '병원 침대 옆에서 문제집을 풀었다. 엄마 손이 생각보다 작았다.'); }
+      if (o.id === 'split') { inc(s, 'parentRel', 8); inc(s, 'health', -12); s.zN -= 0.02; L(s, '한 달 동안 하루 4시간씩 잤다.'); }
+      if (o.id === 'focus') { inc(s, 'stress', 8); inc(s, 'parentRel', -2); L(s, '"엄마 괜찮아. 공부해." 그 말이 더 마음에 걸렸다.'); }
     } },
-  { id: 'partTime', w: s => (s.money < 35 && s.turnIdx <= 8 ? 1.5 : 0), once: true,
+
+  // ── 공부·습관 ───────────────────────────────────────
+  { id: 'phone', w: s => (s.lazy >= 38 ? s.lazy / 24 : 0),
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '알바 제안', '친구가 일하는 카페에서 주말 알바를 구한다. 시급 1만 원대.', [
-        { id: 'take', label: '한다. 용돈이 필요하다', tags: ['work'] },
-        { id: 'no', label: '공부할 시간이 줄어든다. 안 한다', tags: ['study'] },
+      const o = choose(ctx, key, '스크린타임 주간 리포트',
+        `일요일 밤, 휴대폰이 알려 준다. "이번 주 하루 평균 사용 시간 7시간 12분, 지난주보다 18% 증가." 가장 많이 쓴 앱은 숏폼. 새벽 2시에 '딱 하나만' 보다가 4시가 된 날이 사흘이다. 그런데 친구들 다 이 정도는 한다.`, [
+        O('lock', '공부 시간엔 앱 잠금을 걸고 타이머 앱을 켠다', '시간이 생긴다 · 의지가 약하면 3일 만에 푼다', ['study', 'self']),
+        O('give', '부모님께 폰을 맡긴다', '확실함 · 단톡방 소식에서 소외된다', ['obey', 'study']),
+        O('swap', '2G폰(공기계)으로 바꾼다', '가장 확실함 · 친구들과의 연결이 거의 끊긴다', ['study', 'risk']),
+        O('ignore', '다들 이 정도는 한다', '스트레스 없음 · 계속 같은 주가 반복된다', ['fun']),
       ]);
-      if (o.id === 'take') { s.money += 10; s.flags.work = true; s.zN -= 0.03; L(s, '주말이 사라졌다. 통장에 돈이 쌓이는 건 좋다.'); }
+      if (o.id === 'lock') { const d = s.p.diligence >= 3 ? 14 : 6; inc(s, 'lazy', -d); inc(s, 'mental', -2); L(s, d > 10 ? '사흘은 금단 증상이 있었다. 일주일 뒤엔 시간이 생겼다.' : '앱 잠금은 3일 만에 풀었다.', d > 10 ? 'good' : 'warn'); }
+      if (o.id === 'give') { inc(s, 'lazy', -12); inc(s, 'parentRel', 3); inc(s, 'social', -3); L(s, '단톡방 소식을 몰라 조금 소외됐지만 공부 시간은 늘었다.', 'good'); }
+      if (o.id === 'swap') { inc(s, 'lazy', -20); inc(s, 'social', -8); inc(s, 'mental', -3); L(s, '폴더폰을 열면 문자 3통이 와 있다. 하루가 길어졌다.', 'good'); }
+      if (o.id === 'ignore') { inc(s, 'lazy', 8); inc(s, 'health', -5); L(s, '다음 주 리포트는 7시간 40분이었다.', 'bad'); }
+    } },
+  { id: 'mockShock', w: s => (s.turnIdx >= 4 ? 1.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '수학 4등급',
+        `모의고사 수학이 4등급이 나왔다. 21번, 29번, 30번은 손도 못 댔고, 쉬운 14번을 계산 실수로 틀렸다. 학원 선생님은 "개념은 되는데 시간이 부족해서 그래"라고 하고, 담임 선생님은 "개념부터 다시 해"라고 한다. 둘 다 맞는 말 같다.`, [
+        O('basic', '개념서를 처음부터 다시 본다', '기초가 단단해짐 · 진도가 몇 달 늦어진다', ['study', 'safe']),
+        O('drill', '실전 모의고사를 매일 1회씩 시간 재고 푼다', '시간 감각이 생김 · 구멍 난 개념은 그대로', ['study', 'risk']),
+        O('academy', '수학 학원을 옮긴다', '새로운 방식 · 적응에 시간이 들고 돈이 든다', ['obey']),
+        O('giveup', '수학은 3등급 유지만 하고 다른 과목에 올인', '다른 과목이 오름 · 원서 쓸 때 선택지가 줄어든다', ['fun', 'risk']),
+      ]);
+      if (o.id === 'basic') { s.zC += (s.p.comprehension >= 3 ? 0.05 : 0.03) * s.p.diligence / 3; s.zN -= 0.01; L(s, '중학교 개념에서 막혀 있던 걸 발견했다. 뭔가 풀리기 시작했다.', 'good'); }
+      if (o.id === 'drill') { s.zC += s.p.comprehension >= 4 ? 0.06 : 0.02; inc(s, 'stress', 5); L(s, s.p.comprehension >= 4 ? '시간이 남기 시작했다.' : '매일 같은 유형에서 틀렸다.', s.p.comprehension >= 4 ? 'good' : 'warn'); }
+      if (o.id === 'academy') { s.money -= 5; s.zC += 0.025; L(s, '새 학원 레벨테스트에서 중간반에 배정됐다.'); }
+      if (o.id === 'giveup') { s.flags.mathGiveUp = true; s.zC -= 0.06; s.zN += 0.02; inc(s, 'stress', -6); s.interest.hum += 4; L(s, '수학 시간을 국어·영어로 돌렸다. 공대·경영 쪽 원서는 쓰기 어려워졌다.', 'warn'); }
+    } },
+  { id: 'burnout', w: s => (s.stress >= 62 || s.mental <= 32 ? 3.5 : 0),
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '아무것도 하기 싫다',
+        `책을 펴도 글자가 안 들어온다. 아침에 눈을 뜨면 "오늘도 똑같겠지"라는 생각부터 든다. 밥맛이 없고, 이유 없이 눈물이 난다. 그런데 다음 달이 모의고사다. 쉬면 뒤처질 것 같고, 계속하면 무너질 것 같다.`, [
+        O('counsel', 'Wee클래스 상담실 문을 두드린다', '마음이 회복됨 · 처음 말을 꺼내기가 어렵다', ['self', 'rest']),
+        O('rest', '일주일 동안 책을 덮고 쉰다', '다시 일어설 힘 · 죄책감과 진도 공백', ['rest']),
+        O('lower', '목표를 한 단계 낮춰 다시 계획을 짠다', '부담이 줄어듦 · 스스로 실망할 수 있다', ['safe']),
+        O('push', '버틴다. 남들도 다 힘들다', '진도는 유지 · 더 크게 무너질 수 있다', ['study']),
+      ]);
+      if (o.id === 'counsel') { inc(s, 'mental', 16); inc(s, 'stress', -16); L(s, '상담 선생님 앞에서 처음으로 힘들다고 말했다. 조금 가벼워졌다.', 'good'); }
+      if (o.id === 'rest') { inc(s, 'stress', -22); inc(s, 'mental', 10); s.zN -= 0.03; L(s, '죄책감이 들었지만, 다시 책을 펼 수 있게 됐다.'); }
+      if (o.id === 'lower') { inc(s, 'stress', -12); inc(s, 'mental', 6); s.flags.loweredGoal = true; L(s, '목표를 낮췄더니 오히려 공부가 손에 잡혔다.'); }
+      if (o.id === 'push') { inc(s, 'stress', 10); inc(s, 'mental', -10); s.flags.burnout = (s.flags.burnout || 0) + 1; if (s.p.grit >= 4) { s.zN += 0.03; L(s, '버텼다. 대신 웃는 일이 줄었다.'); } else { inc(s, 'health', -10); L(s, '버티다 결국 몸살로 사흘을 앓았다.', 'bad'); } }
     } },
   { id: 'sleep', w: s => (s.stress >= 48 || s.lazy >= 42 ? 1.2 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '새벽 2시 취침', '매일 새벽 2시에 자고 6시 반에 일어난다. 오후 수업은 기억이 없다.', [
-        { id: 'fix', label: '12시 전에 자기로 한다', tags: ['rest', 'self'] },
-        { id: 'keep', label: '잠은 대학 가서 자면 된다', tags: ['study'] },
+      const o = choose(ctx, key, '새벽 2시와 아침 6시 반 사이',
+        `매일 새벽 2시에 자고 6시 반에 일어난다. 오후 수업은 기억이 없다. 에너지 드링크를 하루 두 캔 마신다. 반 1등은 "나 12시에 자는데?"라고 한다. 거짓말 같다.`, [
+        O('fix', '12시 전에 자고, 대신 쉬는 시간을 줄인다', '수업 집중력 회복 · 밤의 자유 시간이 사라진다', ['rest', 'self']),
+        O('nap', '점심시간에 20분 낮잠을 잔다', '오후가 살아남 · 점심시간 친구들과의 시간이 준다', ['rest']),
+        O('keep', '잠은 대학 가서 자면 된다', '공부 시간 유지 · 체력이 바닥난다', ['study']),
       ]);
       if (o.id === 'fix') { inc(s, 'health', 10); inc(s, 'lazy', -3); inc(s, 'mental', 4); L(s, '수업 시간에 깨어 있게 됐다. 이게 이렇게 큰 차이일 줄이야.', 'good'); }
-      else { inc(s, 'health', -11); s.zN += 0.01; L(s, '커피와 에너지 드링크로 버틴다.', 'warn'); }
+      if (o.id === 'nap') { inc(s, 'health', 6); inc(s, 'social', -2); L(s, '오후 수업이 들리기 시작했다.'); }
+      if (o.id === 'keep') { inc(s, 'health', -11); s.zN += 0.01; L(s, '커피와 에너지 드링크로 버틴다.', 'warn'); }
     } },
-  { id: 'sns', w: s => (s.p.social >= 3 ? 0.8 : 0.3), once: true,
+  { id: 'seteuk', w: s => (s.turnIdx >= 2 && s.turnIdx <= 8 ? 1.3 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, ti = topInterest(s);
+      const o = choose(ctx, key, '세특 마감',
+        `학기 말, 과목 선생님이 말씀하신다. "세특(세부능력 및 특기사항)에 쓸 활동 보고서, 금요일까지 내. 안 내면 쓸 게 없다." 반 단톡방에는 작년 선배들의 '합격 세특 예시' 파일이 돌고 있다. 그대로 베끼면 30분이면 끝난다.`, [
+        O('deep', `${FIELDS[ti].name}${jo(FIELDS[ti].name, '와/과')} 연결해서 직접 탐구한 내용으로 쓴다`, '나만의 이야기 · 일주일 밤을 쓴다', ['record', 'self']),
+        O('copy', '선배 예시를 참고해서 비슷하게 쓴다', '시간 절약 · 비슷한 세특이 수십 개라 눈에 안 띈다', ['safe']),
+        O('min', '최소한만 써서 낸다', '시험공부 시간 확보 · 생기부 한 칸이 비어 보인다', ['study']),
+      ]);
+      if (o.id === 'deep') { s.record += 5 + s.p.curiosity * 1.5; s.recFit[ti] += 9; s.zN -= 0.02; L(s, '선생님이 보고서에 "흥미로운 질문"이라고 적어 주셨다.', 'good'); }
+      if (o.id === 'copy') { s.record += 2; L(s, '무난하게 냈다. 아마 아무도 기억 못 할 것이다.'); }
+      if (o.id === 'min') { s.record -= 1; s.zN += 0.015; L(s, '그 시간에 기출을 한 회 더 풀었다.'); }
+    } },
+  { id: 'groupWork', w: s => (s.turnIdx <= 8 ? 1 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '단톡방 뒷담화', '내 뒷담화를 한 단톡방 캡처가 돌았다. 친하다고 생각한 애도 있었다.', [
-        { id: 'confront', label: '직접 따진다', tags: ['rebel'] },
-        { id: 'ignore', label: '모른 척한다', tags: ['safe'] },
-        { id: 'adult', label: '신경 쓸 사람만 신경 쓴다. 내 사람들에게 집중한다', tags: ['self'] },
+      const o = choose(ctx, key, '무임승차',
+        `모둠 발표 수행평가. 네 명 중 두 명은 단톡방을 읽기만 한다. 마감은 사흘 뒤. 점수는 모둠 전체가 같이 받는다. 남은 한 명이 말한다. "그냥 우리 둘이 하자. 선생님한테 말하면 우리만 이상해져."`, [
+        O('do', '둘이서 다 한다', '점수는 지킴 · 억울하고 시간이 든다', ['kind', 'study']),
+        O('assign', '역할을 나눠 단톡방에 공지하고, 마감을 정한다', '리더십 · 안 하면 결국 내가 해야 한다', ['self', 'social']),
+        O('teacher', '선생님께 기여도를 따로 말씀드린다', '공정함 · 모둠 분위기가 험해진다', ['self', 'risk']),
       ]);
-      if (o.id === 'confront') { inc(s, 'social', -5); inc(s, 'mental', r.chance(0.5) ? 4 : -8); L(s, '말다툼이 커졌다. 반 분위기가 갈렸다.'); }
-      if (o.id === 'ignore') { inc(s, 'mental', -8); L(s, '아무렇지 않은 척했다. 하나도 안 괜찮았다.', 'bad'); }
-      if (o.id === 'adult') { inc(s, 'mental', s.p.grit >= 3 ? -2 : -6); inc(s, 'social', 2); L(s, '진짜 친구가 누군지 알게 됐다.'); }
+      if (o.id === 'do') { s.record += 3; inc(s, 'stress', 6); L(s, '발표는 잘 끝났다. 무임승차한 둘은 "고마워 ㅋㅋ"라고만 했다.'); }
+      if (o.id === 'assign') { if (r.chance(0.55 + s.p.social * 0.05)) { s.record += 5; s.talent.people += 6; L(s, '공지가 통했다. 다들 자기 몫을 해 왔다.', 'good'); } else { s.record += 3; inc(s, 'stress', 8); L(s, '결국 새벽에 혼자 PPT를 마저 만들었다.', 'warn'); } }
+      if (o.id === 'teacher') { s.record += 4; inc(s, 'social', -6); L(s, '선생님은 개인 점수를 따로 주셨다. 두 명은 나를 피한다.'); }
+    } },
+  { id: 'senior', w: s => (s.turnIdx >= 4 && s.turnIdx <= 8 ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '재수한 선배의 조언',
+        `동아리 선배가 재수 끝에 연세대에 붙어 학교에 강연을 왔다. 끝나고 따로 물었다. 선배가 말했다. "나는 고2 때 수시랑 정시 사이에서 갈팡질팡하다 둘 다 놓쳤어. 너는 지금 하나를 정해. 둘 다 하려면 진짜 두 배로 해야 돼."`, [
+        O('susi', '수시(내신·생기부)를 주력으로 정한다', '학교생활에 집중 · 수능 최저가 발목 잡을 수 있다', ['safe', 'record']),
+        O('jungsi', '정시(수능)를 주력으로 정한다', '한 방에 역전 가능 · 내신을 포기하면 돌아갈 길이 없다', ['risk', 'study']),
+        O('both', '그래도 둘 다 해 본다', '선택지를 유지 · 둘 다 어중간해질 수 있다', ['study']),
+      ]);
+      if (o.id === 'susi') { s.flags.leanSusi = true; s.zN += 0.03; s.record += 3; s.zC -= 0.02; L(s, '내신 시험 3주 전부터는 수능 공부를 내려놓기로 했다.'); }
+      if (o.id === 'jungsi') { s.flags.leanJungsi = true; s.zC += 0.05; s.zN -= 0.04; L(s, '수업 시간에 몰래 수능 기출을 푼다. 내신은 조금씩 내려간다.'); }
+      if (o.id === 'both') { inc(s, 'stress', 8); L(s, '하루가 모자랐다.'); }
+    } },
+
+  // ── 활동·재능 ───────────────────────────────────────
+  { id: 'contest', w: s => (s.turnIdx <= 8 ? 1.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, ti = topInterest(s);
+      const o = choose(ctx, key, '교내 탐구대회',
+        `교내 탐구보고서 대회 공고가 붙었다. 수상하면 생기부 수상 경력에 남는다. 마감은 기말고사 1주 전. ${FIELDS[ti].name} 쪽으로 평소 궁금했던 주제가 하나 있다. 친구 둘이 "같이 팀으로 나가자"고 한다.`, [
+        O('solo', '혼자 내 주제로 나간다', '전공 적합성이 뚜렷해짐 · 시험 직전 시간을 뺏긴다', ['record', 'self']),
+        O('team', '친구들과 팀으로 나간다', '부담이 나뉨 · 주제가 내 관심사와 멀어질 수 있다', ['record', 'social']),
+        O('skip', '이번엔 건너뛴다. 내신이 먼저다', '시험에 집중 · 생기부 한 줄을 놓친다', ['study', 'safe']),
+      ]);
+      if (o.id === 'solo') { s.record += 7; s.recFit[ti] += 10; inc(s, 'stress', 5); s.zN -= 0.025; if (r.chance(0.18 + s.p.curiosity * 0.07)) { s.record += 6; s.flags.award = (s.flags.award || 0) + 1; L(s, '금상을 받았다! 세특에 들어갈 문장이 생겼다.', 'good'); } else L(s, '입상은 못 했지만 보고서는 생기부에 남았다.'); }
+      if (o.id === 'team') { s.record += 5; s.recFit[ti] += 4; inc(s, 'social', 4); s.zN -= 0.01; if (r.chance(0.3)) { s.flags.award = (s.flags.award || 0) + 1; s.record += 4; L(s, '팀으로 은상을 받았다.', 'good'); } else L(s, '팀플은 즐거웠다. 결과는 아쉬웠다.'); }
+      if (o.id === 'skip') L(s, '대회는 건너뛰었다.');
+    } },
+  { id: 'council', w: s => (s.p.social >= 3 && s.turnIdx <= 6 ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '학생회 선거',
+        `담임 선생님이 학생회 부회장 후보로 나가 보라고 하신다. "리더십은 학종에서 중요하게 본다." 선거 운동은 2주, 당선되면 매주 회의와 행사 준비가 있다. 상대 후보는 인기 많은 축구부 주장이다.`, [
+        O('run', '출마한다', '리더십 경력 · 떨어지면 시간과 자존심만 잃는다', ['risk', 'social', 'record']),
+        O('help', '친구 선거 캠프를 돕는다', '부담 적은 경험 · 생기부에 남는 건 거의 없다', ['social']),
+        O('no', '시간이 아깝다', '공부 시간 유지 · 기회 하나를 넘긴다', ['study']),
+      ]);
+      if (o.id === 'run') { if (r.chance(0.3 + s.p.social * 0.09)) { s.record += 10; s.talent.people += 10; inc(s, 'stress', 6); s.flags.council = true; L(s, '당선됐다. 리더십 항목에 쓸 게 생겼다. 대신 바빠졌다.', 'good'); } else { inc(s, 'mental', -5); L(s, '아깝게 떨어졌다. 득표 차는 11표.'); } }
+      if (o.id === 'help') { inc(s, 'social', 5); L(s, '포스터를 붙이며 친구가 많이 생겼다.'); }
     } },
   { id: 'careerDay', w: s => (s.turnIdx <= 6 ? 1 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s, a = topInterest(s), d = PARENT_DESIRES[s.p.pDesire].field;
       const others = FIELD_KEYS.filter(f => f !== a && f !== d);
-      const x = r.pick(others), y = r.pick(others.filter(f => f !== x));
-      const fs = [a, d, x, y].filter((f, i, arr) => f && arr.indexOf(f) === i).slice(0, 3);
-      const o = choose(ctx, key, '진로 특강', '진로의 날. 현직자 특강 세 개 중 하나를 들어야 한다.', fs.map(f => ({ id: f, label: `${FIELDS[f].name} 현직자 특강`, tags: f === a ? ['self'] : f === d ? ['obey'] : ['risk'] })));
+      const x = r.pick(others);
+      const fs = [a, d, x].filter((f, i, arr) => f && arr.indexOf(f) === i);
+      const o = choose(ctx, key, '진로의 날',
+        `진로의 날, 현직자 특강이 세 개 열린다. 하나만 들을 수 있다. 신청서를 낼 때 옆자리 친구가 묻는다. "너 진짜 하고 싶은 거 있어? 나는 아직도 모르겠어."`,
+        fs.map(f => O(f, `${FIELDS[f].name} 현직자 특강`, f === a ? '내가 끌리는 분야를 확인' : f === d ? '부모님이 원하는 분야를 직접 보기' : '전혀 생각 안 해 본 분야', f === a ? ['self'] : f === d ? ['obey'] : ['risk'])));
       s.interest[o.id] += 12; s.flags.clarity = (s.flags.clarity || 0) + 1;
-      L(s, `${FIELDS[o.id].name} 현직자의 하루를 들었다. ${fitOf(s, o.id) > 0.8 ? '"바로 이거다" 싶었다.' : '생각보다 현실적인 이야기가 많았다.'}`);
+      L(s, `${FIELDS[o.id].name} 현직자의 하루를 들었다. ${fitOf(s, o.id) > 0.8 ? '"바로 이거다" 싶었다.' : '생각보다 현실적인 이야기가 많았다. 연봉, 야근, 경쟁률.'}`);
+    } },
+  { id: 'rank', w: s => (hasHobby(s, 'game') ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '랭크 상위 0.8%',
+        `랭크게임 상위 0.8% 달성. 같이 듀오하는 형이 말한다. "너 손이 진짜 좋아. 프로 아카데미 테스트 받아 봐. 근데 하려면 지금부터 하루 10시간은 해야 돼." 성적은 반에서 중간쯤이다.`, [
+        O('pro', '진지하게 프로를 꿈꾼다', '진짜 재능일지도 · 학업과 부모님과의 관계를 건다', ['risk', 'fun']),
+        O('weekend', '주말에만 랭크를 돌리며 실력을 유지한다', '꿈을 남겨 둠 · 둘 다 어중간해질 수 있다', ['safe', 'fun']),
+        O('quit', '계정을 지운다. 지금은 아니다', '공부에 집중 · 큰 낙이 사라진다', ['study']),
+      ]);
+      if (o.id === 'pro') { s.flags.proDream = true; s.talent.game = clamp(s.talent.game + 20, 0, 100); inc(s, 'lazy', 8); s.zC -= 0.05; inc(s, 'parentRel', -8); L(s, '하루 8시간씩 랭크를 돌렸다. 부모님과 매일 싸웠다.', 'warn'); }
+      if (o.id === 'weekend') { s.talent.game += 6; inc(s, 'mental', 4); inc(s, 'lazy', 2); L(s, '주말에만 하기로 했다. 대체로는 지켰다.'); }
+      if (o.id === 'quit') { inc(s, 'lazy', -12); inc(s, 'mental', -6); inc(s, 'social', -3); L(s, '계정을 지웠다. 한동안 허전했다.'); }
+    } },
+  { id: 'esports', w: s => (s.flags.proDream && s.talent.game >= 60 ? 2.5 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '프로팀 아카데미',
+        `e스포츠 프로팀 아카데미 테스트에 붙었다. 코치가 말한다. "숙소 생활이고, 학교는 출석만 맞추면 돼. 2년 안에 1군 못 올라가면 그때 다시 생각하자." 계약서에 부모님 서명란이 있다.`, [
+        O('go', '부모님을 설득해서 간다', '꿈에 도전 · 실패하면 2년 공백', ['risk']),
+        O('later', '"수능 끝나고 다시 연락드려도 될까요?"', '대학을 지킴 · 기회는 다시 안 올 수도', ['safe']),
+        O('no', '거절한다', '평범한 길 · 평생 궁금할 수 있다', ['safe', 'obey']),
+      ]);
+      if (o.id === 'go') { s.flags.esports = true; inc(s, 'parentRel', -15); s.zN -= 0.25; s.zC -= 0.2; L(s, '부모님은 끝까지 반대하다 서명했다. 다음 주에 숙소로 들어간다.', 'warn'); }
+      else if (o.id === 'later') { if (r.chance(0.3)) s.flags.esportsLater = true; L(s, '"그때 자리가 있으면." 코치가 웃었다.'); }
+      else L(s, '정중히 거절했다. 가끔 그 DM을 다시 열어 본다.');
+    } },
+  { id: 'casting', w: s => ((hasHobby(s, 'music') || hasHobby(s, 'idol')) && s.p.social >= 3 && s.turnIdx <= 6 ? 0.8 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '길거리 캐스팅',
+        `홍대 앞에서 누군가 명함을 내민다. 중소 기획사 캐스팅 매니저다. "노래하는 영상 봤어요. 오디션 한번 볼래요? 붙으면 연습생 계약이고, 학교는 다니면서 해도 돼요." 검색해 보니 데뷔시킨 그룹은 두 팀, 둘 다 1년 안에 해체했다.`, [
+        O('aud', '오디션을 본다', '꿈의 시작일 수도 · 공부와 시간을 건다', ['risk', 'fun']),
+        O('check', '부모님과 함께 회사를 알아본 뒤 결정한다', '안전함 · 시간이 지나면 기회가 사라질 수 있다', ['safe', 'obey']),
+        O('no', '명함을 버린다', '흔들림 없음 · 평생 궁금할 수 있다', ['safe']),
+      ]);
+      if (o.id === 'aud' || (o.id === 'check' && r.chance(0.5))) {
+        if (r.chance(s.talent.perf / 130)) { s.flags.trainee = true; inc(s, 'parentRel', o.id === 'check' ? 0 : -6); s.zN -= 0.1; L(s, '연습생 계약 제안을 받았다. 심장이 터질 것 같다.', 'good'); }
+        else { inc(s, 'mental', -6); s.talent.perf += 6; L(s, '"아직은 부족하네요." 노래 연습을 더 하고 싶어졌다.'); }
+      } else L(s, '명함은 서랍 속에 들어갔다.');
+    } },
+  { id: 'youtube', w: s => (hasHobby(s, 'video') ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '알고리즘의 선택',
+        `취미로 올린 공부 브이로그가 알고리즘을 탔다. 조회수 34만, 구독자 1.2만. 광고 제안 메일이 두 통 와 있다. 댓글: "언니(형) 다음 영상 언제 올라와요?" 편집에는 영상 하나당 6시간이 든다.`, [
+        O('grow', '주 2회 업로드로 채널을 키운다', '새 진로의 가능성 · 공부 시간이 크게 준다', ['risk', 'fun']),
+        O('bal', '주 1회, 방학엔 몰아서 올린다', '둘 다 유지 · 성장 속도는 느리다', ['safe']),
+        O('stop', '수능 끝날 때까지 채널을 쉰다', '공부 집중 · 알고리즘은 기다려 주지 않는다', ['study']),
+      ]);
+      if (o.id === 'grow') { s.flags.creator = (s.flags.creator || 0) + 2; s.talent.media += 15; inc(s, 'lazy', 4); s.zN -= 0.06; s.money += 4; L(s, '편집하느라 새벽 3시에 잔다. 첫 광고 수익 37만 원이 들어왔다.'); }
+      if (o.id === 'bal') { s.flags.creator = (s.flags.creator || 0) + 1; s.talent.media += 7; L(s, '공부와 채널 사이에서 줄타기 중이다.'); }
+      if (o.id === 'stop') { inc(s, 'mental', -3); L(s, '"수능 끝나고 돌아올게요" 공지를 올렸다.'); }
+    } },
+  { id: 'coding', w: s => (hasHobby(s, 'code') ? 2 : s.interest.cs > 30 ? 0.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '청소년 해커톤',
+        `청소년 해커톤 공고. 2박 3일, 기말 1주 전이다. 같이 나가자는 친구는 디자인을 하고, 나는 개발을 맡는다. 작년 수상팀 중 한 명은 이걸로 학종 카이스트에 붙었다는 소문이 있다.`, [
+        O('join', '나간다', '진짜 실력과 이야기가 생김 · 기말 준비가 흔들린다', ['record', 'risk']),
+        O('online', '온라인 코딩테스트 대회만 따로 나간다', '부담 적음 · 남는 이야기는 작다', ['safe', 'record']),
+        O('skip', '시험이 먼저다', '내신 지킴 · 기회를 넘긴다', ['study']),
+      ]);
+      if (o.id === 'join') { s.talent.code += 12; s.recFit.cs += 12; s.record += 5; s.zN -= 0.03; s.interest.cs += 8; if (r.chance(0.2 + s.talent.code / 250)) { s.flags.award = (s.flags.award || 0) + 1; s.record += 6; L(s, '우수상! 개발자가 되고 싶다는 마음이 확실해졌다.', 'good'); } else L(s, '상은 못 탔지만 처음으로 서비스 하나를 끝까지 만들었다.'); }
+      if (o.id === 'online') { s.talent.code += 5; s.recFit.cs += 4; L(s, '상위 15%에 들었다.'); }
+    } },
+  { id: 'artAcademy', w: s => (hasHobby(s, 'draw') || hasHobby(s, 'webtoon') ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '미대 입시',
+        `미술 선생님이 그림을 한참 보시다 말씀하신다. "너 감각 있어. 지금 시작해도 늦지 않아." 입시미술 학원은 한 달 80만 원, 주 4일. 미대는 실기 비중이 크지만 내신·수능도 본다. 부모님은 "그림으로 먹고살 수 있겠니?"라고 물을 것이다.`, [
+        O('yes', '미대 입시를 시작한다', '재능을 키울 기회 · 돈과 공부 시간, 부모님 설득', ['risk', 'self']),
+        O('design', '실기 없는 디자인 관련 학과(학종)로 방향을 잡는다', '공부와 병행 가능 · 실기 실력은 늘지 않는다', ['safe', 'record']),
+        O('hobby', '그림은 취미로 남긴다', '안정적 · 마음 한쪽이 아쉽다', ['safe']),
+      ]);
+      if (o.id === 'yes') { s.flags.artPath = true; s.money -= 10; s.talent.art += 15; s.interest.art += 15; s.zN -= 0.04; if (s.p.pDesire !== 'free') inc(s, 'parentRel', -6); L(s, '주 4일 입시미술 학원에 다닌다. 손에 늘 물감이 묻어 있다.'); }
+      if (o.id === 'design') { s.interest.art += 8; s.recFit.art += 8; s.record += 3; L(s, '디자인 관련 탐구 활동을 생기부에 쌓기 시작했다.'); }
+      if (o.id === 'hobby') L(s, '스케치북은 책상 서랍 깊숙이 들어갔다.');
+    } },
+  { id: 'sportsTeam', w: s => (hasHobby(s, 'sport') ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '체대 입시',
+        `체육 선생님이 부르신다. "너 제자리멀리뛰기 학교 기록이야. 체대 입시 생각 있니? 실기 학원 다니면 승산 있어. 대신 부상 한 번이면 끝이야." 체대 실기 학원은 한 달 50만 원.`, [
+        O('yes', '체대 입시를 준비한다', '좋아하는 걸로 대학을 · 부상 위험과 학원비', ['risk', 'self']),
+        O('police', '경찰·소방 공무원을 목표로 체력만 관리한다', '현실적인 진로 · 대학 선택지는 그대로', ['safe']),
+        O('no', '운동은 취미로', '공부 집중 · 재능을 묻어 둔다', ['safe']),
+      ]);
+      if (o.id === 'yes') { s.flags.sportPath = true; s.money -= 6; s.talent.sport += 15; s.interest.sport += 15; L(s, '방과 후엔 실기 학원. 몸은 힘든데 마음은 편하다.'); }
+      if (o.id === 'police') { s.interest.law += 8; s.talent.sport += 6; L(s, '경찰행정학과를 검색해 봤다.'); }
+    } },
+  { id: 'injury', w: s => (s.flags.sportPath || hasHobby(s, 'sport') ? 0.8 : 0.2), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '발목',
+        `체육 시간 농구를 하다 착지를 잘못했다. 정형외과 의사가 말한다. "인대가 부분 파열이에요. 6주는 깁스하고, 재활까지 3개월." 목발을 짚고 계단을 오르는 게 하루 중 가장 힘든 일이 됐다.`, [
+        O('study', '움직일 수 없는 김에 앉아서 공부만 한다', '공부량이 늘어남 · 우울해질 수 있다', ['study']),
+        O('rehab', '재활 치료를 꼬박꼬박 받는다', '몸이 제대로 회복됨 · 시간과 돈이 든다', ['rest', 'safe']),
+        O('rush', '실기 때문에 재활을 서둘러 끝낸다', '빨리 복귀 · 재발 위험', ['risk']),
+      ]);
+      if (o.id === 'study') { s.zN += 0.04; s.zC += 0.03; inc(s, 'mental', -6); s.talent.sport -= 8; L(s, '깁스한 6주 동안 문제집 세 권을 끝냈다.'); }
+      if (o.id === 'rehab') { s.money -= 4; inc(s, 'health', 4); L(s, '석 달 뒤, 다시 뛸 수 있게 됐다.', 'good'); }
+      if (o.id === 'rush') { if (r.chance(0.4)) { s.talent.sport -= 20; inc(s, 'mental', -12); s.flags.reinjury = true; L(s, '재발했다. 의사가 "이제 무리하면 안 된다"고 했다.', 'bad'); } else L(s, '다행히 버텨 줬다.'); }
     } },
   { id: 'concert', w: s => (hasHobby(s, 'idol') ? 2 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '티켓팅 성공', '최애 콘서트 티켓팅에 성공했다! 그런데 공연 날이 중간고사 전날이다.', [
-        { id: 'go', label: '간다. 이건 못 참는다', tags: ['fun'] },
-        { id: 'sell', label: '눈물을 머금고 양도한다', tags: ['study'] },
+      const o = choose(ctx, key, '티켓팅 성공',
+        `피켓팅 성공. 최애 그룹 콘서트, 그것도 앞에서 다섯 번째 줄. 그런데 공연 날이 6월 모평 전날이다. 중고 거래 앱에 올리면 프리미엄 붙여 40만 원은 받을 수 있다. 같이 가기로 한 친구는 벌써 응원봉을 샀다.`, [
+        O('go', '간다. 이건 인생에 한 번이다', '평생 기억 · 다음 날 컨디션은 엉망', ['fun']),
+        O('give', '친구에게 정가에 넘긴다', '친구는 행복 · 내 마음이 쓰리다', ['kind', 'study']),
+        O('sell', '팔고 그 돈으로 인강 패스를 산다', '실속 · 덕질 친구가 실망한다', ['study']),
       ]);
-      if (o.id === 'go') { inc(s, 'mental', 12); s.zN -= 0.04; L(s, '인생 최고의 밤이었다. 시험은... 그럭저럭.'); }
-      else { inc(s, 'mental', -6); s.zN += 0.01; L(s, '공연 날 밤, 트위터로 후기만 봤다.'); }
+      if (o.id === 'go') { inc(s, 'mental', 12); s.zC -= 0.03; L(s, '인생 최고의 밤이었다. 모평은... 그럭저럭.'); }
+      if (o.id === 'give') { inc(s, 'mental', -4); inc(s, 'social', 5); L(s, '친구가 울면서 고맙다고 했다.'); }
+      if (o.id === 'sell') { inc(s, 'mental', -7); s.money += 4; s.zC += 0.02; L(s, '공연 날 밤, 트위터로 후기만 봤다.'); }
     } },
-  { id: 'teacher', w: () => 0.4, once: true,
+  { id: 'transfer', w: s => (s.p.school !== 'general' && s.naesinRec.length && s.naesinRec[s.naesinRec.length - 1] > 45 && s.turnIdx <= 4 ? 2.5 : 0), once: true,
     run: (ctx, key, r) => {
       const s = ctx.s;
-      const o = choose(ctx, key, '담임의 탐구 주제 제안', `담임 선생님이 "${FIELDS[topInterest(s)].name} 쪽이면 이 주제로 탐구해서 세특에 넣어 보자"고 하셨다.`, [
-        { id: 'follow', label: '선생님 주제로 한다', tags: ['obey', 'record'] },
-        { id: 'own', label: '내가 궁금한 주제로 바꿔 본다', tags: ['self', 'record'] },
-        { id: 'no', label: '공부할 시간도 없다', tags: ['study'] },
+      const o = choose(ctx, key, '내신 지옥',
+        `이번 학기 내신이 반에서 끝에서 다섯 번째다. 여기서는 열심히 해도 4등급이다. 같은 반 친구 둘이 일반고로 전학 간다는 소문이 돈다. "일반고 가면 바로 1~2등급이래." 하지만 이 학교 생기부는 대학이 알아준다는 말도 있다.`, [
+        O('go', '일반고로 전학한다', '내신이 크게 오름 · 친구도 환경도 처음부터', ['risk']),
+        O('stay', '남는다. 학종에서는 여기가 유리하다', '좋은 환경과 생기부 · 내신은 계속 바닥', ['safe']),
+        O('jungsi', '남되, 정시로 방향을 튼다', '수능에 집중 · 학교 활동 의미가 줄어든다', ['study', 'risk']),
       ]);
-      const ti = topInterest(s);
+      if (o.id === 'go') { s.p = Object.assign({}, s.p, { school: 'general' }); s.zN += 0.55; inc(s, 'social', -12); inc(s, 'mental', -4); s.flags.transferred = true; L(s, '새 학교에서는 반 3등이었다. 대신 친구가 하나도 없다.'); }
+      if (o.id === 'stay') L(s, '버티기로 했다.');
+      if (o.id === 'jungsi') { s.flags.leanJungsi = true; s.zC += 0.04; L(s, '내신 시험 기간에도 수능 기출을 풀었다.'); }
+    } },
+  { id: 'partTime', w: s => (s.money < 35 && s.turnIdx <= 8 ? 1.5 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '주말 알바',
+        `친구가 일하는 카페에서 주말 알바를 구한다. 토·일 6시간씩, 한 달이면 60만 원 정도. 사고 싶은 패딩도 있고, 엄마한테 용돈 달라는 말도 이제 하기 싫다. 그런데 주말은 밀린 공부를 몰아서 하는 시간이다.`, [
+        O('take', '한다', '돈과 경험 · 주말 공부 시간이 사라진다', ['work']),
+        O('short', '토요일 하루만 한다', '적당히 · 둘 다 애매할 수 있다', ['work', 'safe']),
+        O('no', '안 한다', '공부 시간 유지 · 돈 문제는 그대로', ['study']),
+      ]);
+      if (o.id === 'take') { s.money += 10; s.flags.work = true; s.zN -= 0.03; L(s, '주말이 사라졌다. 통장에 돈이 쌓이는 건 좋다.'); }
+      if (o.id === 'short') { s.money += 5; s.flags.work = true; s.zN -= 0.012; L(s, '토요일엔 카페, 일요일엔 독서실.'); }
+    } },
+  { id: 'teacher', w: () => 0.5, once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, ti = topInterest(s);
+      const o = choose(ctx, key, '담임 선생님의 제안',
+        `담임 선생님이 부르신다. "${FIELDS[ti].name} 쪽 간다고 했지? 이 주제로 탐구해서 세특에 넣어 보자. 대신 끝까지 해야 한다." 선생님이 주신 주제는 무난하지만, 나는 사실 다른 게 더 궁금하다.`, [
+        O('follow', '선생님 주제로 한다', '안전하고 확실함 · 내 이야기는 아니다', ['obey', 'record']),
+        O('own', '"제가 궁금한 걸로 바꿔도 될까요?"', '나만의 탐구 · 어려우면 흐지부지될 수 있다', ['self', 'record']),
+        O('no', '"지금은 공부할 시간도 부족해요"', '시간 확보 · 선생님이 서운해하신다', ['study']),
+      ]);
       if (o.id === 'follow') { s.record += 6; s.recFit[ti] += 6; L(s, '무난한 보고서가 나왔다.'); }
-      if (o.id === 'own') { s.record += 3 + s.p.curiosity * 2; s.recFit[ti] += 9; s.interest[ti] += 4; L(s, s.p.curiosity >= 4 ? '선생님이 "이거 너만 쓸 수 있는 보고서다"라고 하셨다.' : '주제를 바꿨더니 생각보다 어려웠다.', s.p.curiosity >= 4 ? 'good' : 'info'); }
+      if (o.id === 'own') { s.record += 3 + s.p.curiosity * 2; s.recFit[ti] += 9; s.interest[ti] += 4; L(s, s.p.curiosity >= 4 ? '선생님이 "이건 너만 쓸 수 있는 보고서다"라고 하셨다.' : '주제를 바꿨더니 생각보다 어려웠다.', s.p.curiosity >= 4 ? 'good' : 'info'); }
+      if (o.id === 'no') { s.record -= 1; L(s, '"그래, 네 판단이니까." 선생님이 조금 서운해 보였다.'); }
+    } },
+  { id: 'interview', w: s => (examSeason(s) && s.applyType === 'jonghap' ? 6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '면접이냐 수능이냐',
+        `학종 1차 합격 발표. 면접이 수능 2주 전 토요일이다. 면접 학원은 "예상 질문 50개를 다 외워야 한다"고 하고, 학교 선생님은 "최저 못 맞추면 면접도 소용없다"고 한다. 하루가 24시간뿐이다.`, [
+        O('interview', '면접 준비에 집중한다', '면접 합격률이 오름 · 수능 최저가 위험해진다', ['record']),
+        O('csat', '면접은 생기부만 다시 읽고, 수능에 집중한다', '최저 안전 · 면접에서 말이 막힐 수 있다', ['study']),
+        O('both', '낮엔 수능, 밤엔 면접 연습', '둘 다 챙김 · 체력이 버틸지 모른다', ['study', 'risk']),
+      ]);
+      if (o.id === 'interview') { s.flags.interviewPrep = 2; s.zC -= 0.04; L(s, '거울 앞에서 같은 대답을 스무 번 했다.'); }
+      if (o.id === 'csat') { s.flags.interviewPrep = 0; s.zC += 0.02; L(s, '면접 대기실에서 생기부를 처음부터 다시 읽었다.'); }
+      if (o.id === 'both') { s.flags.interviewPrep = 1; inc(s, 'health', -12); inc(s, 'stress', 8); L(s, '하루 4시간씩 잤다.', 'warn'); }
+    } },
+  { id: 'cold', w: s => (examSeason(s) ? 0.9 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '수능 3주 전, 감기',
+        `수능 3주 전. 목이 따끔하더니 열이 38.5도까지 올랐다. 독감 검사는 음성. 의사는 "사흘은 푹 쉬세요"라고 한다. 반 친구들은 이번 주가 마지막 실전 모의고사 주간이다.`, [
+        O('rest', '사흘 동안 푹 쉰다', '빨리 회복 · 마지막 실전 연습을 놓친다', ['rest']),
+        O('push', '약 먹고 모의고사는 본다', '실전 감각 유지 · 감기가 길어질 수 있다', ['study']),
+        O('light', '쉬면서 오답노트만 가볍게 본다', '균형 · 어느 쪽도 완벽하지 않다', ['safe']),
+      ]);
+      if (o.id === 'rest') { inc(s, 'health', 10); s.zC -= 0.01; L(s, '사흘을 잤다. 몸이 가벼워졌다.', 'good'); }
+      if (o.id === 'push') { if (r.chance(0.45)) { inc(s, 'health', -18); L(s, '감기가 2주를 갔다. 수능 날까지 기침을 했다.', 'bad'); } else { s.zC += 0.02; L(s, '버텼다. 모의고사도 평소만큼 나왔다.'); } }
+      if (o.id === 'light') { inc(s, 'health', 4); L(s, '오답노트를 두 번 넘겼다.'); }
     } },
 ];
 
 function randomEvents(ctx, turn, n) {
   const s = ctx.s, r = makeRng(s.seed, turn.id + ':ev');
-  const count = n != null ? n : (r.chance(0.5) ? 2 : 1);
+  const count = n != null ? n : 2 + (r.chance(0.4) ? 1 : 0);
   for (let k = 0; k < count; k++) {
     const pool = HS_EVENTS.filter(e => !(e.once && s.seen[e.id]) && !s.seen[turn.id + e.id]);
     const ws = pool.map(e => Math.max(0, e.w(s)));
@@ -1086,13 +1434,27 @@ function randomEvents(ctx, turn, n) {
   }
 }
 
+function semesterBrief(s, turn) {
+  const last = s.naesinRec.length ? s.naesinRec[s.naesinRec.length - 1] : s.p.gpaPct;
+  const notes = [];
+  notes.push(`지난 성적은 내신 상위 ${last.toFixed(0)}%, 모의고사 ${grade9(topFromZ(s.zC))}등급.`);
+  if (s.lazy >= 45) notes.push('요즘 계획한 공부 시간이 자꾸 폰으로 새어 나간다.');
+  if (s.stress >= 60) notes.push('스트레스가 높다. 쉬지 않으면 무너질 수 있다.');
+  if (s.health <= 45) notes.push('체력이 바닥이다.');
+  if (s.money <= 15) notes.push('학원비가 집에 부담이 되고 있다.');
+  if (s.romance.status === 'dating') notes.push(`${s.romance.partner}${jo(s.romance.partner, '은/는')} 더 자주 보고 싶어 한다.`);
+  if (turn.id === 'g3s1') notes.push('고3 1학기 내신은 수시에 반영되는 마지막 성적이다.');
+  if (turn.id === 'g2s2') notes.push('고2 2학기는 학종에서 가장 꼼꼼히 보는 학기다.');
+  return '하루 중 쓸 수 있는 시간을 10칸으로 나눠 이번 학기를 계획하자. ' + notes.join(' ');
+}
+
 function semesterTurn(ctx, turn) {
   const s = ctx.s;
   fixedEvents(ctx, turn);
   const cats = allocCats(s, turn);
   const def = defaultAlloc(s, cats);
   const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: turn.label + ' 시간 쓰기',
-    text: '이번 학기, 하루를 10칸으로 나눠 어디에 쓸지 정하자. 작은 차이도 쌓이면 결과가 달라진다.', cats, def, total: 10 });
+    text: semesterBrief(s, turn), cats, def, total: 10 });
   const a = normAlloc(raw, cats);
   ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
@@ -1115,7 +1477,7 @@ function studentZ(s, type, field) {
     case 'gyogwa': return zNavg - trackPen * 0.5;
     case 'jonghap': {
       const sb = p.school === 'special' ? 0.45 : p.school === 'jasa' ? 0.25 : p.region === 'gangnam' ? 0.05 : 0;
-      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0);
+      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0);
     }
     case 'nonsul': return zcs * 0.55 + (p.comprehension - 3) * 0.32 + (s.talent.verbal - 40) / 90;
     case 'silgi': {
@@ -1123,7 +1485,7 @@ function studentZ(s, type, field) {
       const tal = (s.talent[tk] - 50) / 18 + ((field === 'art' && s.flags.artPath) || (field === 'sport' && s.flags.sportPath) ? 0.5 : 0) + (field === 'perf' && s.flags.trainee ? 0.4 : 0);
       return 0.65 * tal + 0.35 * zcs;
     }
-    case 'jungsi': return zcs;
+    case 'jungsi': return zcs + (FIELDS[field].track === '자연' ? (s.flags.mathWeak ? -0.15 : s.flags.mathStrong ? 0.08 : 0) : 0) - (s.flags.mathGiveUp && ['eng', 'cs', 'sci', 'med', 'biz'].indexOf(field) >= 0 ? 0.12 : 0);
   }
   return zcs;
 }
@@ -1176,10 +1538,10 @@ function applyTurn(ctx, turn) {
   // 여름: 연애 중이면 같은 대학 고민
   if (s.romance.status === 'dating') {
     const nm = s.romance.partner;
-    const o = choose(ctx, 'g3v1:sameUni', '같은 대학 가자', `${nm}${jo(nm, '이/가')} 말했다. "우리 같은 대학, 아니면 같은 지역으로 쓰자."`, [
-      { id: 'match', label: '좋아. 원서를 맞춘다', tags: ['romance'] },
-      { id: 'own', label: '원서는 각자 소신대로 쓰자', tags: ['self'] },
-      { id: 'end', label: '수능까지 연애를 잠시 멈추자고 한다', tags: ['study'] },
+    const o = choose(ctx, 'g3v1:sameUni', '같은 대학 가자', `원서 접수 3주 전, 독서실 앞 벤치. ${nm}${jo(nm, '이/가')} 대학 목록을 적은 메모를 내민다. "우리 같은 대학 쓰자. 안 되면 같은 지역이라도. 장거리 연애는 자신 없어." 메모 속 대학들은 내 성적보다 한두 단계 낮다.`, [
+      { id: 'match', label: '좋아. 원서를 맞춘다', hint: '함께하는 미래 · 내가 갈 수 있는 대학보다 낮춰 쓴다', tags: ['romance'] },
+      { id: 'own', label: '"원서는 각자 소신대로 쓰고, 어디든 만나러 갈게"', hint: '내 입시를 지킴 · 관계가 흔들릴 수 있다', tags: ['self'] },
+      { id: 'end', label: '수능 끝날 때까지 연애를 잠시 멈추자고 한다', hint: '수능에 집중 · "잠시"가 끝이 될 수 있다', tags: ['study'] },
     ]);
     if (o.id === 'match') { s.flags.matchUni = true; s.romance.score += 10; L(s, '둘이 같이 원서 쓸 대학 목록을 만들었다.'); }
     if (o.id === 'own') { s.romance.score -= 4; L(s, '"그래, 각자 최선을 다하자."'); }
@@ -1192,35 +1554,38 @@ function applyTurn(ctx, turn) {
   // 1) 학과
   const my = topInterest(s), d = PARENT_DESIRES[p.pDesire].field;
   const second = topInterest(s, my);
-  const fOpts = [{ id: my, label: `${FIELDS[my].name} — 내가 가장 끌리는 분야`, tags: ['self'] }];
-  if (d && d !== my) fOpts.push({ id: d, label: `${FIELDS[d].name} — 부모님이 원하는 분야`, tags: ['obey'] });
-  if (second !== d && second !== my) fOpts.push({ id: second, label: `${FIELDS[second].name} — 두 번째로 관심 있는 분야`, tags: ['safe'] });
+  const trackOk = f => FIELDS[f].track !== '자연' || s.track === '자연';
+  const fOpts = [{ id: my, label: `${FIELDS[my].name} — 내가 가장 끌리는 분야`, hint: (trackOk(my) ? '하고 싶은 공부 · ' : '선택과목이 맞지 않아 불리 · ') + '합격선은 학과마다 다르다', tags: ['self'] }];
+  if (d && d !== my) fOpts.push({ id: d, label: `${FIELDS[d].name} — 부모님이 원하는 분야`, hint: '부모님의 지지 · 대학 생활 4년을 버틸 수 있을지', tags: ['obey'] });
+  if (second !== d && second !== my) fOpts.push({ id: second, label: `${FIELDS[second].name} — 두 번째로 관심 있는 분야`, hint: '적당히 끌림 · 확신은 없다', tags: ['safe'] });
   if (p.pDesire === 'prestige' || p.pDesire === 'money' || p.goal === 'sky' || p.goal === 'ssh') {
     const easy = s.track === '자연' ? 'sci' : 'hum';
-    if (fOpts.every(o => o.id !== easy)) fOpts.push({ id: easy, label: `${FIELDS[easy].name} — 학과보다 대학 간판(합격선 낮은 과)`, tags: ['safe', 'obey'] });
+    if (fOpts.every(o => o.id !== easy)) fOpts.push({ id: easy, label: `${FIELDS[easy].name} — 학과보다 대학 간판(합격선 낮은 과)`, hint: '한 단계 높은 대학 · 전공에 흥미가 없을 수 있다', tags: ['safe', 'obey'] });
   }
   if (s.flags.artPath && fOpts.every(o => o.id !== 'art')) fOpts.push({ id: 'art', label: '디자인·미술 — 준비해 온 미대 실기', tags: ['self', 'risk'] });
   if (s.flags.sportPath && fOpts.every(o => o.id !== 'sport')) fOpts.push({ id: 'sport', label: '체육 — 준비해 온 체대 실기', tags: ['self', 'risk'] });
-  const fo = choose(ctx, 'g3v1:field', '어느 학과로 원서를 쓸까', `6월 모평 결과가 나왔다(상위 ${topFromZ(s.zC).toFixed(1)}%, ${grade9(topFromZ(s.zC))}등급). 내신 평균은 상위 ${avgNaesin(s).toFixed(1)}%. 이제 원서를 써야 한다.`, fOpts);
+  const pw = parentWord(s);
+  const fo = choose(ctx, 'g3v1:field', '원서에 쓸 학과', `6월 모평 성적표가 나왔다. 상위 ${topFromZ(s.zC).toFixed(1)}%, 평균 ${grade9(topFromZ(s.zC))}등급. 내신 평균은 상위 ${avgNaesin(s).toFixed(1)}%, 생기부 활동 점수는 ${Math.round(s.record)}점. 담임 선생님과의 원서 상담에서 선생님이 묻는다. "학과부터 정하자. 대학 이름을 볼 거니, 학과를 볼 거니?" ${d && d !== my ? `${pw}${jo(pw, '은/는')} 어젯밤에도 "${FIELDS[d].name} 아니면 안 된다"고 했다.` : ''}`, fOpts);
   s.applyField = fo.id;
   if (d && fo.id === d && d !== my) { s.autonomy -= 2; s.flags.parentField = true; inc(s, 'parentRel', 6); }
   if (d && fo.id !== d) { inc(s, 'parentRel', p.pStyle === 'strict' ? -10 : -4); s.autonomy += 1; }
   // 2) 전형
   const field = fo.id;
+  if (s.flags.ged) { s.applyField = field; s.applyType = 'none'; L(s, '검정고시 출신이라 수시는 쓰지 않고 정시에 모든 걸 건다.'); return; }
   const tOpts = [
-    { id: 'jonghap', label: `학생부종합 위주 (생기부 ${Math.round(s.record)}점)`, tags: ['record'] },
-    { id: 'gyogwa', label: `학생부교과 위주 (내신 상위 ${avgNaesin(s).toFixed(1)}%)`, tags: ['safe'] },
-    { id: 'nonsul', label: '논술 위주 (경쟁률 수십 대 일, 한 방)', tags: ['risk'] },
-    SILGI[field] ? { id: 'silgi', label: '실기 위주', tags: ['self'] } : null,
-    { id: 'none', label: '수시는 최소한만. 정시 올인', tags: ['risk', 'study'] },
+    { id: 'jonghap', label: `학생부종합 위주 (생기부 ${Math.round(s.record)}점)`, hint: '내신이 조금 낮아도 생기부로 역전 · 면접 준비와 결과 예측이 어렵다', tags: ['record'] },
+    { id: 'gyogwa', label: `학생부교과 위주 (내신 상위 ${avgNaesin(s).toFixed(1)}%)`, hint: '가장 예측 가능 · 수능 최저를 못 맞추면 끝', tags: ['safe'] },
+    { id: 'nonsul', label: '논술 위주', hint: '내신과 무관한 한 방 · 경쟁률 수십 대 일', tags: ['risk'] },
+    SILGI[field] ? { id: 'silgi', label: '실기 위주', hint: '준비한 실력으로 승부 · 실기 당일 컨디션이 전부', tags: ['self'] } : null,
+    { id: 'none', label: '수시는 최소한만. 정시 올인', hint: '수능만 잘 보면 됨 · 수능 하루에 모든 걸 건다', tags: ['risk', 'study'] },
   ];
-  const to = choose(ctx, 'g3v1:type', '어떤 전형으로', '수시 원서는 6장. 수시에 하나라도 붙으면 정시에는 지원할 수 없다.', tOpts);
+  const to = choose(ctx, 'g3v1:type', '전형 고르기', `수시 원서는 6장. 담임 선생님이 상담 기록을 넘기며 말한다. "기억해. 수시에 하나라도 붙으면 정시에는 지원할 수 없어. 수능을 잘 봐도." 지금 내신은 상위 ${avgNaesin(s).toFixed(1)}%, 모의고사는 상위 ${topFromZ(s.zC).toFixed(1)}%. ${avgNaesin(s) < topFromZ(s.zC) - 3 ? '내신이 모의고사보다 좋은 편이다.' : avgNaesin(s) > topFromZ(s.zC) + 3 ? '모의고사가 내신보다 좋은 편이다.' : '내신과 모의고사가 비슷하다.'}`, tOpts);
   s.applyType = to.id;
   if (to.id !== 'none') {
-    const so = choose(ctx, 'g3v1:strategy', '수시 6장의 배분', '상향으로 쓸까, 안정으로 쓸까?', [
-      { id: 'up', label: '상향 위주 — 떨어져도 정시가 있다', tags: ['risk'] },
-      { id: 'mid', label: '적정 위주 — 상향 2 · 적정 2 · 안정 2', tags: ['safe'] },
-      { id: 'safe', label: '안정 위주 — 재수는 절대 안 된다', tags: ['safe', 'obey'] },
+    const so = choose(ctx, 'g3v1:strategy', '6장의 배분', `입시 커뮤니티에는 "6광탈(6장 모두 탈락)" 후기와 "안정으로 썼다가 수능 대박 나서 후회" 후기가 같이 올라온다. ${s.p.wealth === 'low' ? '집에서는 재수 비용을 감당하기 어렵다.' : ''} ${s.p.confidence >= 4 ? '솔직히 수능은 잘 볼 것 같은 느낌이다.' : ''}`, [
+      { id: 'up', label: '상향 위주 — 떨어져도 정시가 있다', hint: '더 높은 대학 가능 · 모두 떨어지고 정시에 몰릴 수 있다', tags: ['risk'] },
+      { id: 'mid', label: '상향 2 · 적정 2 · 안정 2', hint: '균형 · 수능을 잘 보면 "수시 납치"가 될 수 있다', tags: ['safe'] },
+      { id: 'safe', label: '안정 위주 — 재수는 절대 안 된다', hint: '어디든 붙음 · 내 실력보다 낮은 곳에 갈 수 있다', tags: ['safe', 'obey'] },
     ]);
     s.applyStrategy = so.id;
   }
@@ -1230,11 +1595,11 @@ function finalTurn(ctx, turn) {
   const s = ctx.s, p = s.p;
   const cats = allocCats(s, turn).filter(c => c.id !== 'activity');
   const def = defaultAlloc(s, cats);
-  const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: '수능까지 남은 시간', text: '수능까지 넉 달. 마지막 시간 배분이다.', cats, def, total: 10 });
+  const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: '수능까지 남은 넉 달', text: `원서는 냈다. 이제 남은 건 9월 모평과 수능. 지금 모의고사는 ${grade9(topFromZ(s.zC))}등급. 남은 넉 달 동안 하루 10칸을 어떻게 쓸까? ${s.applyType === 'gyogwa' || s.applyType === 'nonsul' ? '수능 최저를 맞춰야 수시가 살아난다.' : s.applyType === 'none' ? '정시 올인이다. 이 넉 달이 전부다.' : ''}`, cats, def, total: 10 });
   const a = normAlloc(raw, cats);
   ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
-  randomEvents(ctx, turn, 1);
+  randomEvents(ctx, turn, 2);
   // 마지막 학기 공부 효과(수능만)
   const lossFrac = clamp((s.lazy - 22) / 115, 0, 0.5);
   const ability = (p.focus * 0.4 + p.comprehension * 0.35 + p.memory * 0.25) / 3;
@@ -1246,10 +1611,10 @@ function finalTurn(ctx, turn) {
   if (a.date) { s.romance.score += a.date * 6; inc(s, 'mental', a.date * 2); }
   L(s, `9월 모평 — 상위 ${topFromZ(s.zC).toFixed(1)}% (${grade9(topFromZ(s.zC))}등급).`);
 
-  const o = choose(ctx, 'g3s2:d100', '수능 D-100', '수능 100일 전. 교실 칠판에 D-100이 적혔다.', [
-    { id: 'allin', label: '폰을 공기계로 바꾸고 전부 끊는다', tags: ['study'] },
-    { id: 'pace', label: '지금 페이스를 유지한다', tags: ['safe'] },
-    { id: 'relax', label: '수시에 걸었다. 최저만 맞추자', tags: ['fun', 'rest'] },
+  const o = choose(ctx, 'g3s2:d100', '수능 D-100', `교실 칠판 오른쪽 구석에 "D-100"이 적혔다. 반 분위기가 확 바뀌었다. 누구는 폰을 공기계로 바꿨고, 누구는 "어차피 수시파"라며 웃는다. 9월 모평은 ${grade9(topFromZ(s.zC))}등급이었다. ${s.romance.status === 'dating' ? `${s.romance.partner}${jo(s.romance.partner, '은/는')} "100일만 덜 보자"고 했다.` : ''}`, [
+    { id: 'allin', label: '폰을 공기계로 바꾸고 단톡방도 다 나간다', hint: '하루가 길어진다 · 고립감과 스트레스', tags: ['study'] },
+    { id: 'pace', label: '지금 페이스를 그대로 유지한다', hint: '흔들림 없음 · 극적인 상승은 없다', tags: ['safe'] },
+    { id: 'relax', label: '수시에 걸었다. 최저만 맞추자', hint: '마음이 편함 · 수능을 잘 봐야 하는 상황이면 위험', tags: ['fun', 'rest'] },
   ]);
   if (o.id === 'allin') { inc(s, 'lazy', -18); inc(s, 'social', -6); s.zC += 0.06 * p.diligence / 3; inc(s, 'stress', 8); L(s, '단톡방을 다 나왔다. 하루가 길어졌다.'); }
   if (o.id === 'pace') { inc(s, 'mental', 4); s.zC += 0.015; L(s, '하던 대로 했다. 흔들리지 않는 것도 실력이다.'); }
@@ -1258,10 +1623,10 @@ function finalTurn(ctx, turn) {
   // 수능 당일
   const r = makeRng(s.seed, 'csatDay');
   const hard = r.pick(['국어', '수학', '영어']);
-  const c = choose(ctx, 'g3s2:csat', '수능 당일', `${hard} 시간. 역대급으로 어렵다. 시계를 보니 20분 남았는데 아직 문제가 한참 남았다. 손이 떨린다.`, [
-    { id: 'skip', label: '과감히 한 지문(문제)을 버리고 아는 것부터 푼다', tags: ['risk'] },
-    { id: 'hold', label: '끝까지 붙잡는다. 포기는 없다', tags: ['study'] },
-    { id: 'breath', label: '펜을 내려놓고 10초 심호흡한다', tags: ['self', 'rest'] },
+  const c = choose(ctx, 'g3s2:csat', '수능 당일, 시험장', `11월, 낯선 학교 교실. 감독관이 시간을 알린다. "종료 20분 전입니다." ${hard} 시험이 역대급으로 어렵다. ${hard === '국어' ? '독서 지문 하나를 붙잡고 12분을 썼는데 아직 문학 두 세트와 선택과목이 남았다.' : hard === '수학' ? '22번은커녕 15번부터 막혔다. 뒤에 아직 손도 안 댄 문제가 다섯 개다.' : '빈칸 추론 세 문제에서 시간이 녹았다. 듣기 끝나고 남은 시간이 거의 없다.'} 옆자리 수험생이 한숨을 쉰다. 손이 떨린다.`, [
+    { id: 'skip', label: '한 지문(문제)을 과감히 버리고 아는 것부터 푼다', hint: '남은 문제를 살림 · 버린 문제가 쉬웠다면 뼈아프다', tags: ['risk'] },
+    { id: 'hold', label: '끝까지 붙잡는다. 포기는 없다', hint: '풀어내면 대박 · 시간이 다 녹을 수 있다', tags: ['study'] },
+    { id: 'breath', label: '펜을 내려놓고 10초 심호흡한 뒤 순서대로 푼다', hint: '평정심 회복 · 10초가 아깝게 느껴진다', tags: ['self', 'rest'] },
   ]);
   let day = r.normal() * 0.2 * (1.35 - s.mental / 140);
   if (c.id === 'skip') day += p.comprehension >= 3 ? 0.06 : -0.03;
@@ -1288,7 +1653,7 @@ function admissions(ctx) {
     const r = makeRng(s.seed, 'susi');
     const strat = s.flags.matchUni ? 'safe' : s.applyStrategy || 'mid';
     susi = rollCards(s, makeCards(s, field, s.applyType, strat, 6, r), r);
-  } else if (s.applyType === 'none') {
+  } else if (s.applyType === 'none' && !s.flags.ged) {
     const r = makeRng(s.seed, 'susi');
     // 정시파도 보통 논술 몇 장은 쓴다 — 정시로 갈 곳보다 높은 대학에만
     susi = rollCards(s, makeCards(s, field, 'nonsul', 'up', 3, r, studentZ(s, 'jungsi', field) + 0.25), r);
@@ -1309,10 +1674,10 @@ function admissions(ctx) {
 }
 function jungsiRound(ctx, field, key) {
   const s = ctx.s;
-  const o = choose(ctx, key + ':strategy', '정시 원서', `수능 성적표가 나왔다. 상위 ${topFromZ(s.zCsat).toFixed(1)}%. 가·나·다군 세 장을 써야 한다.`, [
-    { id: 'up', label: '상향 — 한 장이라도 대박을 노린다', tags: ['risk'] },
-    { id: 'mid', label: '적정 — 하나는 붙는 구성', tags: ['safe'] },
-    { id: 'safe', label: '안정 — 무조건 붙는다', tags: ['safe', 'obey'] },
+  const o = choose(ctx, key + ':strategy', '정시 원서 3장', `수능 성적표가 나왔다. 상위 ${topFromZ(s.zCsat).toFixed(1)}%, 평균 ${grade9(topFromZ(s.zCsat))}등급. 가·나·다군에 한 장씩, 세 장을 쓸 수 있다. 입시 사이트의 모의지원 결과는 칸마다 "적정", "소신", "위험"이 섞여 있다. 다군은 해마다 합격선이 크게 출렁인다.`, [
+    { id: 'up', label: '상향 — 한 장이라도 대박을 노린다', hint: '더 높은 대학 가능 · 셋 다 떨어지면 재수', tags: ['risk'] },
+    { id: 'mid', label: '적정 — 상향 하나, 적정 하나, 안정 하나', hint: '하나는 붙을 가능성 · 큰 반전은 어렵다', tags: ['safe'] },
+    { id: 'safe', label: '안정 — 무조건 붙는 곳으로', hint: '확실한 합격 · 실력보다 낮은 대학', tags: ['safe', 'obey'] },
   ]);
   const r = makeRng(s.seed, key);
   const cards = rollCards(s, makeCards(s, field, 'jungsi', o.id, 3, r), r);
@@ -1355,18 +1720,18 @@ function retake(ctx) {
   const n = s.attempts;
   s.turnLabel = n === 1 ? '재수 1년' : '삼수 1년';
   s.age++;
-  const o = choose(ctx, 'retake' + n + ':how', s.turnLabel, n === 1 ? '친구들은 대학 새내기다. 나는 다시 수능을 준비한다.' : '한 번 더. 이번이 진짜 마지막이다.', [
-    p.wealth !== 'low' || s.money > 30 ? { id: 'academy', label: '재수종합학원 (월 250만 원)', tags: ['study', 'obey'] } : null,
-    { id: 'self', label: '독학재수 (관리형 독서실)', tags: ['self', 'study'] },
-    { id: 'work', label: '알바하면서 혼자 준비', tags: ['work'] },
+  const o = choose(ctx, 'retake' + n + ':how', s.turnLabel, n === 1 ? `2월. 친구들은 새내기 OT에 간다. 나는 재수 학원 상담실에 앉아 있다. 상담 실장이 말한다. "재수생 중에 성적 오르는 건 절반이 안 돼요. 관리가 전부예요." ${p.wealth === 'low' ? '엄마가 통장 잔고를 확인하는 걸 봤다.' : ''}` : '한 번 더. 동기들은 벌써 2학년이다. 이번이 진짜 마지막이다. 부모님 얼굴을 똑바로 보기가 어렵다.', [
+    p.wealth !== 'low' || s.money > 30 ? { id: 'academy', label: '재수종합학원 (월 250만 원, 아침 7시 반~밤 10시)', hint: '철저한 관리 · 큰 비용, 숨 막히는 일상', tags: ['study', 'obey'] } : null,
+    { id: 'self', label: '독학재수 (관리형 독서실 + 인강)', hint: '돈이 덜 들고 내 페이스 · 무너져도 아무도 모른다', tags: ['self', 'study'] },
+    { id: 'work', label: '오전엔 알바, 오후엔 공부', hint: '집에 부담 안 줌 · 공부 시간이 반이다', tags: ['work'] },
   ]);
   const r = makeRng(s.seed, 'retake' + n);
   // 재수 중 이벤트
   if (s.romance.status === 'dating' && r.chance(0.55)) { breakUp(s, 'retake'); inc(s, 'mental', -10); L(s, `대학생이 된 ${s.romance.partner}${jo(s.romance.partner, '와/과')}는 점점 연락이 뜸해졌고, 결국 헤어졌다.`, 'bad'); }
-  const t = choose(ctx, 'retake' + n + ':sns', '인스타 속 새내기들', '친구들 인스타에 MT, 축제, 과잠 사진이 올라온다.', [
-    { id: 'delete', label: '인스타를 지운다', tags: ['study'] },
-    { id: 'look', label: '가끔 본다. 자극이 된다', tags: ['safe'] },
-    { id: 'meet', label: '주말엔 친구들을 만난다', tags: ['social', 'fun'] },
+  const t = choose(ctx, 'retake' + n + ':sns', '5월의 인스타', `5월, 대학 축제 시즌. 친구들 인스타에 과잠, 축제 무대, MT 사진이 줄줄이 올라온다. ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '이/가')} "주말에 잠깐 나와. 밥 사 줄게"라고 한다.` : ''} 6월 모평은 3주 뒤다.`, [
+    { id: 'delete', label: '인스타를 지운다', hint: '흔들림이 줄어든다 · 세상과 단절된 느낌', tags: ['study'] },
+    { id: 'look', label: '가끔 본다. 자극이 된다', hint: '동기 부여 · 비교하다 무너질 수도', tags: ['safe'] },
+    { id: 'meet', label: '주말엔 친구들을 만난다', hint: '숨통이 트임 · 리듬이 깨진다', tags: ['social', 'fun'] },
   ]);
   let g = 0.1 + 0.07 * (p.diligence - 3) + 0.05 * (p.grit - 3) - s.lazy / 420 + r.normal() * 0.24;
   if (o.id === 'academy') { g += 0.09; s.money -= 30; }
@@ -1391,19 +1756,19 @@ function collegePhase(ctx) {
   s.phase = 'college';
   s.age = 20 + s.attempts;
   const r0 = makeRng(s.seed, 'col0');
-  s.col = { gpa: clamp(3.2 + (p.diligence - 3) * 0.14 + r0.normal() * 0.18, 2, 4.4), spec: clamp(10 + s.record / 6, 0, 100), network: s.social / 2, effort: 0 };
+  s.col = { gpa: clamp(3.2 + (p.diligence - 3) * 0.14 + r0.normal() * 0.18, 2, 4.4), spec: clamp(10 + s.record / 6, 0, 100), network: s.social / 2 + (p.pJob === 'pro' ? 10 : 0), effort: 0 };
   s.fit = fitOf(s, u.field);
   if (s.flags.parentField && s.fit < 0.7) L(s, `부모님이 원한 ${FIELDS[u.field].name}. 첫 학기부터 '내가 왜 여기 있지?'라는 생각이 들었다.`, 'warn');
 
   // 1) 1~2학년
   s.turnLabel = '대학 1~2학년';
   const goal = GOALS[p.goal] || GOALS.inseoul;
-  const o1 = choose(ctx, 'col1', '스무 살', `${u.name} ${u.major}. 드디어 대학생이다. 시간표도, 하루도 내가 정한다.`, [
-    { id: 'party', label: '고등학교 때 못 논 거 몰아서 논다', tags: ['fun', 'social'] },
-    { id: 'grind', label: '학점 관리부터. 장학금을 노린다', tags: ['study'] },
-    { id: 'club', label: '학회·동아리에서 사람을 만난다', tags: ['social', 'record'] },
-    { id: 'work', label: '알바로 생활비·등록금을 번다', tags: ['work'] },
-    (u.gi > goal.gi && u.gi >= 2 && s.attempts < 2) ? { id: 'retake', label: '반수한다. 여기서 끝낼 수 없다', tags: ['risk', 'study'] } : null,
+  const o1 = choose(ctx, 'col1', '스무 살, 첫 학기', `${u.name} ${u.major}. 3월 첫 주, 과 단톡방이 하루 300개씩 울린다. 개강총회, 동아리 홍보, 선배들의 밥약. 시간표를 내가 짜고, 출석을 부르는 사람은 없다. ${u.gi > goal.gi ? `솔직히 목표였던 ${goal.name}보다 낮은 학교라 마음 한구석이 계속 불편하다.` : ''} ${p.wealth === 'low' ? '등록금 고지서와 자취방 월세가 같은 날 나왔다.' : ''}`, [
+    { id: 'party', label: '고등학교 때 못 논 거 몰아서 논다', hint: '평생 친구와 추억 · 1학년 학점은 졸업까지 따라온다', tags: ['fun', 'social'] },
+    { id: 'grind', label: '학점 관리부터. 장학금을 노린다', hint: '높은 학점과 장학금 · 과에서 존재감이 없다', tags: ['study'] },
+    { id: 'club', label: '학회·동아리에 들어가 사람을 만난다', hint: '선배 인맥과 정보 · 학점은 적당히', tags: ['social', 'record'] },
+    { id: 'work', label: '알바로 생활비·등록금을 번다', hint: '경제적 독립 · 공부와 사람 둘 다 시간이 없다', tags: ['work'] },
+    (u.gi > goal.gi && u.gi >= 2 && s.attempts < 2) ? { id: 'retake', label: '휴학계는 안 내고 몰래 반수한다', hint: '목표 대학을 다시 노림 · 실패하면 1학년이 통째로 날아간다', tags: ['risk', 'study'] } : null,
   ]);
   const c = s.col;
   if (o1.id === 'party') { c.gpa -= 0.45; inc(s, 'social', 12); inc(s, 'mental', 8); inc(s, 'lazy', 8); s.flags.partyCollege = true; L(s, '술자리, MT, 축제. 1학년 1학기 학점은 2점대였다.'); }
@@ -1429,17 +1794,17 @@ function collegePhase(ctx) {
   s.turnLabel = '대학 2~3학년';
   const male = p.gender === 'm';
   const o2 = male
-    ? choose(ctx, 'col2', '입대 시기', '동기들이 하나둘 입대한다.', [
-      { id: 'now', label: '1학년 마치고 바로 육군 입대', tags: ['safe'] },
-      { id: 'air', label: '공군·카투사에 지원한다 (경쟁, 대신 자기계발 시간)', tags: ['risk', 'study'] },
-      { id: 'later', label: '2학년 마치고 간다', tags: ['safe'] },
-      ['eng', 'cs', 'sci'].indexOf(s.uni.field) >= 0 ? { id: 'rnd', label: '대학원 진학 후 전문연구요원을 노린다', tags: ['study', 'risk'] } : null,
+    ? choose(ctx, 'col2', '입영 통지서', `1학년 겨울. 과 동기 남자애들 단톡방이 "입대 날짜 공유방"이 됐다. 병무청 앱에는 육군 대기 인원이 표시되고, 공군은 경쟁률이 3 대 1이다. ${s.romance.status === 'dating' ? `${s.romance.partner}${jo(s.romance.partner, '은/는')} "기다릴게"라고 했지만 목소리가 떨렸다.` : ''}`, [
+      { id: 'now', label: '1학년 마치고 바로 육군 입대', hint: '빨리 끝냄 · 18개월 동안 모든 게 멈춘다', tags: ['safe'] },
+      { id: 'air', label: '공군·카투사에 지원한다', hint: '자기계발 시간이 있음 · 떨어지면 시간만 버린다', tags: ['risk', 'study'] },
+      { id: 'later', label: '2학년 마치고 간다', hint: '학교에 적응한 뒤 입대 · 복학하면 동기가 없다', tags: ['safe'] },
+      ['eng', 'cs', 'sci'].indexOf(s.uni.field) >= 0 ? { id: 'rnd', label: '대학원 진학 후 전문연구요원을 노린다', hint: '군 복무 대신 연구 · 학점과 연구실 경쟁이 치열하다', tags: ['study', 'risk'] } : null,
     ])
-    : choose(ctx, 'col2', '휴학할까', '동기들이 교환학생, 휴학, 인턴 이야기를 한다.', [
-      { id: 'exchange', label: '교환학생에 지원한다', tags: ['risk', 'self'] },
-      { id: 'intern', label: '휴학하고 인턴·대외활동', tags: ['record'] },
-      { id: 'straight', label: '쉬지 않고 바로 졸업한다', tags: ['safe', 'study'] },
-      { id: 'rest', label: '휴학하고 여행·쉬기', tags: ['rest', 'fun'] },
+    : choose(ctx, 'col2', '2학년, 쉬어 갈까', `2학년 1학기가 끝났다. 동기들 사이에서 "교환학생 붙었다", "휴학하고 인턴 한다", "그냥 빨리 졸업할래"가 오간다. 학과 사무실 게시판에는 교환학생 모집 공고가 붙어 있다. 학점 3.4 이상, 토플 점수 필요.`, [
+      { id: 'exchange', label: '교환학생에 지원한다', hint: '외국 경험과 어학 · 비용이 들고 학점 기준이 있다', tags: ['risk', 'self'] },
+      { id: 'intern', label: '휴학하고 인턴·대외활동', hint: '실무 경력 · 졸업이 1년 늦어진다', tags: ['record'] },
+      { id: 'straight', label: '쉬지 않고 바로 졸업한다', hint: '빠른 취업 시장 진입 · 쌓아 둔 경험이 적다', tags: ['safe', 'study'] },
+      { id: 'rest', label: '휴학하고 여행·쉬기', hint: '번아웃 회복 · 공백기를 설명해야 한다', tags: ['rest', 'fun'] },
     ]);
   const r2 = makeRng(s.seed, 'col2');
   if (o2.id === 'now' || o2.id === 'later') { s.age += 2; inc(s, 'lazy', -8); s.flags.army = true; c.gpa -= o2.id === 'later' ? 0 : 0.05; if (s.romance.status === 'dating' && r2.chance(0.6)) { breakUp(s, 'army'); L(s, `군대에 있는 동안 ${s.romance.partner}${jo(s.romance.partner, '와/과')} 헤어졌다. 흔한 이야기라는데 하나도 흔하지 않았다.`, 'bad'); } L(s, '18개월. 전역하던 날, 시간을 허투루 쓰지 않겠다고 다짐했다.'); }
@@ -1455,11 +1820,11 @@ function collegePhase(ctx) {
   s.fit = fitOf(s, s.uni.field);
   if (s.fit < 0.6) {
     const my = topInterest(s);
-    const o3 = choose(ctx, 'col3', '전공이 안 맞는다', `${s.uni.major} 전공 수업이 고역이다. 정말 하고 싶은 건 ${FIELDS[my].name} 쪽인 것 같다.`, [
-      { id: 'stay', label: '버틴다. 졸업장은 따야 한다', tags: ['safe', 'obey'] },
-      { id: 'double', label: `${my === 'cs' || my === 'biz' ? FIELDS[my].name : '컴퓨터·경영'} 복수전공을 한다`, tags: ['study', 'self'] },
-      { id: 'switch', label: `${FIELDS[my].name} 쪽으로 전과·편입을 시도한다`, tags: ['risk', 'self'] },
-      { id: 'drop', label: '자퇴하고 처음부터 다시 시작한다', tags: ['risk', 'rebel'] },
+    const o3 = choose(ctx, 'col3', '전공이 안 맞는다', `3학년 전공 필수 수업 시간. 교수님 말이 한 마디도 들어오지 않는다. 노트 귀퉁이에 낙서한 건 ${FIELDS[my].name} 관련된 것들뿐이다. ${s.flags.parentField ? '이 학과는 부모님이 원해서 왔다. ' : ''}이번 학기 학점은 ${s.col.gpa.toFixed(2)}. 같은 과 선배는 "다들 그래, 졸업하면 전공 상관없어"라고 하고, 다른 선배는 "아니다 싶으면 빨리 틀어"라고 한다.`, [
+      { id: 'stay', label: '버틴다. 졸업장은 따야 한다', hint: '안정적인 졸업 · 남은 2년이 고역이다', tags: ['safe', 'obey'] },
+      { id: 'double', label: `${my === 'cs' || my === 'biz' ? FIELDS[my].name : '컴퓨터·경영'} 복수전공을 한다`, hint: '취업 선택지가 넓어짐 · 졸업이 한 학기 늦어진다', tags: ['study', 'self'] },
+      { id: 'switch', label: `${FIELDS[my].name} 쪽으로 전과·편입을 시도한다`, hint: '진짜 원하는 공부 · 학점이 낮으면 떨어진다', tags: ['risk', 'self'] },
+      { id: 'drop', label: '자퇴하고 처음부터 다시 시작한다', hint: '완전한 새 출발 · 학력과 부모님의 신뢰를 잃는다', tags: ['risk', 'rebel'] },
     ]);
     const r3 = makeRng(s.seed, 'col3');
     if (o3.id === 'stay') { c.gpa -= 0.15; inc(s, 'mental', -6); s.flags.endured = true; L(s, '꾸역꾸역 학점을 채웠다.'); }
@@ -1470,11 +1835,11 @@ function collegePhase(ctx) {
     }
     if (o3.id === 'drop') { s.flags.dropout = true; s.autonomy += 2; inc(s, 'parentRel', -15); s.uni.dropped = true; L(s, '자퇴서를 냈다. 부모님과 크게 싸웠다.', 'bad'); }
   } else {
-    const o3 = choose(ctx, 'col3', '전공 심화', `${s.uni.major} 공부가 꽤 재미있다. 3학년, 무엇에 시간을 쓸까?`, [
-      { id: 'lab', label: '학부연구생으로 연구실에 들어간다', tags: ['study', 'record'] },
-      { id: 'contest', label: '공모전·대외활동', tags: ['record', 'social'] },
-      { id: 'cert', label: '토익·자격증 같은 정량 스펙', tags: ['safe', 'study'] },
-      { id: 'enjoy', label: '마지막 대학 생활을 즐긴다', tags: ['fun'] },
+    const o3 = choose(ctx, 'col3', '3학년의 시간표', `${s.uni.major} 공부가 꽤 재미있다. 학점은 ${s.col.gpa.toFixed(2)}. 취업 커뮤니티에서는 "3학년 때 뭘 했는지가 서류를 가른다"고 한다. 연구실 학부연구생 모집, 대기업 공모전, 토익 학원 광고가 같은 주에 나왔다.`, [
+      { id: 'lab', label: '학부연구생으로 연구실에 들어간다', hint: '대학원·연구직 길이 열림 · 교수님 일정에 묶인다', tags: ['study', 'record'] },
+      { id: 'contest', label: '공모전·대외활동', hint: '이야깃거리와 인맥 · 수상 못 하면 남는 게 적다', tags: ['record', 'social'] },
+      { id: 'cert', label: '토익·자격증 같은 정량 스펙', hint: '서류 통과에 확실 · 남들과 차별점은 없다', tags: ['safe', 'study'] },
+      { id: 'enjoy', label: '마지막 대학 생활을 즐긴다', hint: '후회 없는 20대 초반 · 취업 준비가 늦어진다', tags: ['fun'] },
     ]);
     if (o3.id === 'lab') { c.spec += 10; s.flags.lab = true; c.gpa += 0.1; s.interest[s.uni.field] += 6; L(s, '교수님이 대학원 이야기를 꺼내셨다.'); }
     if (o3.id === 'contest') { c.spec += 13; c.network += 6; L(s, '공모전에서 장려상을 받았다.', 'good'); }
@@ -1640,16 +2005,16 @@ function careerPhase(ctx) {
   if (desire === 'stable') text += ' 부모님은 "공무원이 최고"라고 하신다.';
   if (desire === 'money') text += ' 부모님은 "빨리 자리 잡아라"고 하신다.';
   if (desire === 'biz') text += ' 부모님은 가게(회사)를 물려받으라고 하신다.';
-  if (desire === 'biz' && !opts.find(o => o.id === 'family')) opts.push({ id: 'family', label: '부모님 사업을 물려받는다', tags: ['obey', 'safe'] });
+  if ((desire === 'biz' || s.flags.familyBiz) && !opts.find(o => o.id === 'family')) opts.push({ id: 'family', label: '부모님 사업을 물려받는다', tags: ['obey', 'safe'] });
   const o = choose(ctx, 'car1', '어떤 길로 갈까', text, opts);
   s.careerPath = o.id;
   if (['soe', 'civil', 'teacher', 'family'].indexOf(o.id) >= 0 && (desire === 'stable' || desire === 'biz' || desire === 'money')) { inc(s, 'parentRel', 8); s.autonomy -= 1; }
   if (o.id === 'startup' || o.id === 'creator') { if (p.pStyle === 'strict' || p.pStyle === 'anxious') inc(s, 'parentRel', -8); s.autonomy += 1; }
 
-  const e = choose(ctx, 'car2', '준비 방식', '얼마나 걸 것인가?', [
-    { id: 'all', label: '올인. 연애도 친구도 잠시 멈춘다', tags: ['study'] },
-    { id: 'bal', label: '병행. 내 삶도 지키면서 간다', tags: ['safe', 'social'] },
-    { id: 'easy', label: '적당히. 되면 좋고', tags: ['fun', 'rest'] },
+  const e = choose(ctx, 'car2', '얼마나 걸 것인가', `${{ job: '자소서 마감이 다섯 개 겹쳤다.', soe: 'NCS 문제집이 책상에 세 권 쌓였다.', civil: '노량진 독서실 한 달 이용권을 끊었다.', pro: '수험 기간은 보통 2~3년이라고 한다.', grad: '대학원 입학 면접이 다음 달이다.', startup: '정부 지원사업 서류 마감이 2주 남았다.', creator: '첫 영상 촬영 장비를 샀다.', abroad: '영어 면접 준비를 시작했다.', teacher: '임용고시는 1년에 한 번뿐이다.' }[o.id] || '준비가 시작됐다.'} ${s.romance.status === 'dating' ? `${s.romance.partner}${jo(s.romance.partner, '은/는')} "요즘 우리 얼굴 본 지 2주 됐어"라고 한다.` : ''} ${s.p.wealth === 'low' ? '생활비는 아직 알바로 번다.' : ''}`, [
+    { id: 'all', label: '올인. 연애도 친구도 잠시 멈춘다', hint: '합격 확률이 가장 높다 · 관계와 마음이 닳는다', tags: ['study'] },
+    { id: 'bal', label: '병행. 내 삶도 지키면서 간다', hint: '지속 가능함 · 경쟁자보다 시간이 적다', tags: ['safe', 'social'] },
+    { id: 'easy', label: '적당히. 되면 좋고', hint: '마음이 편함 · 떨어질 가능성이 크다', tags: ['fun', 'rest'] },
   ]);
   s.col.effort = { all: 1.4, bal: 0.8, easy: 0.1 }[e.id];
   if (e.id === 'all') { inc(s, 'social', -10); s.romance.score -= 15; inc(s, 'stress', 10); if (s.romance.status === 'dating' && s.romance.score < 35) { breakUp(s, 'car'); L(s, `"너한테 나는 늘 2순위야." ${s.romance.partner}${jo(s.romance.partner, '와/과')} 헤어졌다.`, 'bad'); } }
@@ -1659,10 +2024,10 @@ function careerPhase(ctx) {
   let res = resolveCareer(s, o.id, makeRng(s.seed, 'car:' + o.id + ':1'), 1);
   if (!res.ok) {
     L(s, res.failText, 'bad');
-    const o2 = choose(ctx, 'car3', '실패 뒤에', `${res.failText} 나이는 ${Math.floor(s.age + 4)}살. 어떻게 할까?`, [
-      { id: 'retry', label: '한 번만 더 도전한다', tags: ['risk', 'study'] },
-      { id: 'lower', label: '눈높이를 낮춰 지금 갈 수 있는 곳에 간다', tags: ['safe'] },
-      { id: 'pivot', label: '완전히 다른 길을 찾는다', tags: ['self', 'risk'] },
+    const o2 = choose(ctx, 'car3', '불합격 문자', `${res.failText} 나이는 ${Math.floor(s.age + 4)}살. 친구들 중 절반은 이미 회사에 다닌다. ${s.p.pStyle === 'warm' ? '엄마는 "천천히 해도 돼"라고 하신다.' : s.p.pStyle === 'strict' ? '아빠는 저녁 식탁에서 말이 없다.' : '부모님께 결과를 말하지 못했다.'} 통장 잔고는 두 달 치 생활비다.`, [
+      { id: 'retry', label: '한 번만 더 도전한다', hint: '이번엔 될 수도 · 또 떨어지면 공백이 길어진다', tags: ['risk', 'study'] },
+      { id: 'lower', label: '눈높이를 낮춰 지금 갈 수 있는 곳에 간다', hint: '바로 수입이 생김 · 처음 원하던 자리는 아니다', tags: ['safe'] },
+      { id: 'pivot', label: '완전히 다른 길을 찾는다', hint: '진짜 맞는 일을 찾을 수도 · 처음부터 다시', tags: ['self', 'risk'] },
     ]);
     s.flags.careerFail = o.id;
     if (o2.id === 'retry') { s.flags.retryCareer = true; s.age += 1.5; res = resolveCareer(s, o.id, makeRng(s.seed, 'car:' + o.id + ':2'), 2); if (!res.ok) { s.flags.longExam = true; res = fallbackJob(s, makeRng(s.seed, 'car:fb'), 1); res.career.title = res.career.title + ' (수험 생활 정리 후)'; res.career.id += '-x'; } }
@@ -1817,13 +2182,13 @@ function noCollege(ctx) {
   opts.push({ id: 'job', label: '바로 취업한다', tags: ['work', 'safe'] });
   opts.push({ id: 'civil', label: '고졸 공무원·공기업 채용을 준비한다', tags: ['safe', 'study'] });
   if (p.gender === 'm') opts.push({ id: 'nco', label: '부사관으로 입대한다', tags: ['safe'] });
-  const o = choose(ctx, 'alt1', '대학 대신', '대학에 가지 않기로 했다. 무엇을 할까?', opts);
+  const o = choose(ctx, 'alt1', '대학 대신', `대학에 가지 않기로 했다. ${p.pDesire === 'free' ? '부모님은 "네가 정했으면 응원할게"라고 하셨다.' : '부모님과는 한 달째 말을 안 한다.'} 친구들이 과잠을 입고 찍은 사진을 올릴 때, 나는 다른 출발선에 서 있다. 무엇을 할까?`, opts);
   inc(s, 'parentRel', p.pDesire === 'free' ? 0 : -10); s.autonomy += 1;
   const r = makeRng(s.seed, 'alt:' + o.id);
-  const e = choose(ctx, 'alt2', '20대의 시간', '하루를 어떻게 쓸까?', [
-    { id: 'all', label: '죽어라 한다', tags: ['study'] },
-    { id: 'bal', label: '일과 삶의 균형을 지킨다', tags: ['safe'] },
-    { id: 'easy', label: '흘러가는 대로', tags: ['fun'] },
+  const e = choose(ctx, 'alt2', '20대의 하루', '대학생 친구들보다 4년 일찍 사회에 나왔다. 일찍 시작한 만큼 앞서갈 수도, 길을 잃을 수도 있다. 하루를 어떻게 쓸까?', [
+    { id: 'all', label: '죽어라 한다', hint: '빨리 자리를 잡음 · 몸과 관계가 닳는다', tags: ['study'] },
+    { id: 'bal', label: '일과 삶의 균형을 지킨다', hint: '오래 버팀 · 성장 속도는 느리다', tags: ['safe'] },
+    { id: 'easy', label: '흘러가는 대로', hint: '여유로움 · 30대가 막막할 수 있다', tags: ['fun'] },
   ]);
   const eff = { all: 1.4, bal: 0.8, easy: 0.1 }[e.id];
   const mk = (id, title, base, field, level) => ({ id, title, base, field, level });
@@ -1945,12 +2310,13 @@ function simulate(profile, seed, resolve) {
   const s = initState(p, seed);
   const ctx = { s, resolve };
   try {
-    const start = (p.grade - 1) * 4;
+    const start = p.startTurn;
+    if (start > 0) L(s, `${HS_TURNS[start].label}에서 시작한다. 지금까지의 내신은 상위 ${p.gpaPct.toFixed(0)}% 안팎이었다.`);
     for (let i = start; i < HS_TURNS.length; i++) {
       const t = HS_TURNS[i];
       s.turnIdx = i; s.turnLabel = t.label; s.age = 17 + Math.floor(i / 4);
       if (t.type === 'sem') semesterTurn(ctx, t);
-      else if (t.type === 'vac') { vacationTurn(ctx, t); randomEvents(ctx, t, 1); }
+      else if (t.type === 'vac') { vacationTurn(ctx, t); randomEvents(ctx, t, 1 + (makeRng(s.seed, t.id + ':n').chance(0.45) ? 1 : 0)); }
       else if (t.type === 'apply') applyTurn(ctx, t);
       else if (t.type === 'final') finalTurn(ctx, t);
     }
@@ -2012,10 +2378,12 @@ function analyze(profile, seed, history, base) {
     });
   });
   const changed = out.filter(x => !x.same);
-  const regrets = changed.filter(x => x.delta > 0).sort((a, b) => b.delta - a.delta);
-  const goods = changed.filter(x => x.delta < 0).sort((a, b) => a.delta - b.delta);
+  const impact = x => Math.abs(x.delta) + Math.abs(x.dPrestige) * 0.15 + Math.abs(x.dSalary) / 800;
+  const regrets = changed.filter(x => x.delta > 0 || (x.delta === 0 && x.dSalary > 0)).sort((a, b) => impact(b) - impact(a));
+  const goods = changed.filter(x => x.delta < 0).sort((a, b) => impact(b) - impact(a));
   // 같은 결정에서 하나만
-  const uniq = arr => { const seen = {}; return arr.filter(x => (seen[x.key] ? false : (seen[x.key] = true))); };
+  // 같은 결정에서 하나만, 그리고 이미 보여 준 결말과 같은 결말은 빼서 서로 다른 갈림길을 보여 준다
+  const uniq = arr => { const seen = {}, ends = {}; return arr.filter(x => { const ek = x.ending.career + '|' + x.ending.uni; if (seen[x.key] || ends[ek]) return false; seen[x.key] = ends[ek] = true; return true; }); };
   const forks = uniq(changed.slice().sort((a, b) => Math.abs(b.delta) + Math.abs(b.dPrestige) * 0.3 - Math.abs(a.delta) - Math.abs(a.dPrestige) * 0.3));
   return {
     regrets: uniq(regrets).slice(0, 4), goods: uniq(goods).slice(0, 3), forks: forks.slice(0, 6),
