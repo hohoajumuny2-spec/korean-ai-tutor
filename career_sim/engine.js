@@ -366,13 +366,40 @@ const parentWord = s => (s.p.pStyle === 'absent' ? '오랜만에 집에 온 아�
 
 // ── 질문하기 ─────────────────────────────────────────────
 function Pending(prompt) { this.prompt = prompt; }
+// ── 선택 평가: 한 선택 뒤 다음 질문까지 무엇이 달라졌나 ──────────────────
+function snap(s) {
+  return { zN: s.zN, zC: s.zC, zCsat: s.zCsat, mental: s.mental, stress: s.stress, health: s.health, lazy: s.lazy,
+    parentRel: s.parentRel, social: s.social, record: s.record, gpa: s.col ? s.col.gpa : null, spec: s.col ? s.col.spec : null,
+    prestige: s.uni ? s.uni.prestige : null, rom: s.romance.status, log: s.log.length };
+}
+function judge(s, b, a) {
+  let d = 0;
+  d += ((a.zN - b.zN) * 0.7 + (a.zC - b.zC) * 0.9) * 40;
+  if (a.zCsat != null && b.zCsat == null) d += (a.zCsat - a.zC) * 25;   // 수능 당일
+  d += (a.mental - b.mental) * 0.12 + (a.parentRel - b.parentRel) * 0.08 + (a.social - b.social) * 0.07;
+  d += (a.record - b.record) * 0.18 - (a.lazy - b.lazy) * 0.12 + (a.health - b.health) * 0.05 - (a.stress - b.stress) * 0.05;
+  if (a.gpa != null && b.gpa != null) d += (a.gpa - b.gpa) * 12 + (a.spec - b.spec) * 0.15;
+  if (a.prestige != null && b.prestige != null) d += (a.prestige - b.prestige) * 0.25;
+  if (b.rom !== 'dating' && a.rom === 'dating') d += 2;
+  if (b.rom === 'dating' && a.rom === 'broke') d -= 2;
+  s.log.slice(b.log, a.log).forEach(l => { d += l.kind === 'good' ? 2.5 : l.kind === 'bad' ? -2.5 : l.kind === 'warn' ? -1 : 0; });
+  return { score: Math.round(d * 10) / 10, verdict: d >= 2.5 ? 'good' : d <= -2.5 ? 'bad' : 'normal' };
+}
+function settle(s) {
+  const h = s.history[s.history.length - 1];
+  if (!h || h.verdict) return;
+  const j = judge(s, h.before, snap(s));
+  h.verdict = j.verdict; h.score = j.score;
+  h.logs = [h.before.log, s.log.length];
+}
 function ask(ctx, prompt) {
   const s = ctx.s;
+  settle(s);
   prompt.turn = s.turnLabel;
   prompt.age = s.age;
   const v = ctx.resolve(prompt, s);
   if (v === undefined) throw new Pending(prompt);
-  s.history.push({ key: prompt.key, turn: s.turnLabel, title: prompt.title, prompt: stripPrompt(prompt), choice: v, idx: s.history.length });
+  s.history.push({ key: prompt.key, turn: s.turnLabel, title: prompt.title, prompt: stripPrompt(prompt), choice: v, idx: s.history.length, before: snap(s) });
   return v;
 }
 function stripPrompt(pr) {
@@ -1458,8 +1485,8 @@ function semesterTurn(ctx, turn) {
   const a = normAlloc(raw, cats);
   ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
-  randomEvents(ctx, turn);
   semesterEffects(ctx, turn, a);
+  randomEvents(ctx, turn);
 }
 
 // ── 원서 ───────────────────────────────────────────────
@@ -2324,6 +2351,7 @@ function simulate(profile, seed, resolve) {
     admissions(ctx);
     if (s.uni) collegePhase(ctx); else noCollege(ctx);
     finalize(ctx);
+    settle(s);
     return { done: true, state: s, ending: s.ending };
   } catch (e) {
     if (e instanceof Pending) return { done: false, state: s, prompt: e.prompt };

@@ -6,42 +6,43 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Nanum+Pen+Script&family=Noto+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
 <style>
-/* 레이아웃: 채점된 시험지 한 장. 내 답은 파란 볼펜, 채점은 빨간 펜, 중요한 곳엔 형광펜. 시험지 명조 제목 + 고딕 본문. */
+/* 레이아웃: 시험지 카드 구조는 그대로. 학년마다 색이 바뀌고(고1 연두 → 고2 하늘 → 고3 보라 → 입시 주황 → 대학 코랄 → 서른 금색),
+   방금 한 선택이 좋았는지·아쉬웠는지·보통이었는지에 따라 화면 분위기 색(mood)이 바뀐다. 상황마다 짧은 그림 영상이 붙는다. */
 :root {
-  --paper: #eceee8;      /* 책상 위 */
-  --sheet: #fcfcf9;      /* 시험지 */
-  --ink: #1b222c;        /* 인쇄 글씨 */
-  --muted: #646b74;
-  --rule: #dadcd4;
-  --omr: #2747a8;        /* 파란 볼펜 — 내 답, 버튼 */
-  --omr-soft: #e4e9f8;
-  --red: #cf3b33;        /* 빨간 채점 펜 */
-  --red-soft: #f8e1de;
-  --hl: #ffe37a;         /* 형광펜 */
-  --good: #23775a; --good-soft: #dcefe4;
-  --warn: #9a6512; --warn-soft: #f5ebd6;
-  --bad: #b8322a;  --bad-soft: #f6dcd8;
-  --shadow: 0 1px 0 rgba(27,34,44,.05), 0 6px 18px -10px rgba(27,34,44,.22);
+  --base: #f5f6fb; --sheet: #ffffff; --ink: #1c2130; --muted: #687085; --rule: #e2e5ee;
+  --accent: #19b37a; --accent2: #ffb020;
+  --good: #12a564; --bad: #e5483d; --normal: #7d879b;
+  --mood: var(--accent);
+  --omr: var(--accent);
+  --omr-soft: color-mix(in srgb, var(--accent) 13%, var(--sheet));
+  --paper: color-mix(in srgb, var(--accent) 8%, var(--base));
+  --hl: color-mix(in srgb, var(--accent2) 45%, transparent);
+  --red: #e5483d; --red-soft: color-mix(in srgb, #e5483d 14%, var(--sheet));
+  --good-soft: color-mix(in srgb, var(--good) 13%, var(--sheet));
+  --warn: #c27a0e; --warn-soft: color-mix(in srgb, #f5a524 16%, var(--sheet));
+  --bad-soft: color-mix(in srgb, var(--bad) 13%, var(--sheet));
+  --shadow: 0 1px 0 rgba(28,33,48,.04), 0 10px 30px -14px color-mix(in srgb, var(--accent) 45%, rgba(28,33,48,.4));
   --f-display: "Nanum Myeongjo", "AppleMyungjo", "Batang", serif;
   --f-body: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   --f-hand: "Nanum Pen Script", "Noto Sans KR", cursive;
   --f-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --r: 6px;
+  --r: 12px;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --paper: #111419; --sheet: #191d23; --ink: #e7e9ec; --muted: #9ba2ab; --rule: #2b3038;
-  --omr: #8ea6ff; --omr-soft: #1f2843; --red: #ff7a70; --red-soft: #3a1f1d; --hl: #6b5a17;
-  --good: #63c79d; --good-soft: #15302a; --warn: #e0a54d; --warn-soft: #342916;
-  --bad: #ff7a70; --bad-soft: #3a1c1a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 28px -14px rgba(0,0,0,.7); color-scheme: dark; } }
-:root[data-theme="dark"] {
-  --paper: #111419; --sheet: #191d23; --ink: #e7e9ec; --muted: #9ba2ab; --rule: #2b3038;
-  --omr: #8ea6ff; --omr-soft: #1f2843; --red: #ff7a70; --red-soft: #3a1f1d; --hl: #6b5a17;
-  --good: #63c79d; --good-soft: #15302a; --warn: #e0a54d; --warn-soft: #342916;
-  --bad: #ff7a70; --bad-soft: #3a1c1a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 28px -14px rgba(0,0,0,.7); color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; color-scheme: dark; } }
+:root[data-theme="dark"] { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; color-scheme: dark; }
+:root[data-phase="g1"]  { --accent: #19b37a; --accent2: #ffb020; }
+:root[data-phase="g2"]  { --accent: #2d7ff9; --accent2: #23c4d9; }
+:root[data-phase="g3"]  { --accent: #7b5cf5; --accent2: #ff6bb0; }
+:root[data-phase="adm"] { --accent: #f2711c; --accent2: #ffc53d; }
+:root[data-phase="col"] { --accent: #ef4b7c; --accent2: #8f6bff; }
+:root[data-phase="end"] { --accent: #d39a00; --accent2: #ef4b7c; }
+:root[data-mood="good"]   { --mood: var(--good); }
+:root[data-mood="bad"]    { --mood: var(--bad); }
+:root[data-mood="normal"] { --mood: var(--normal); }
 
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 15.5px/1.7 var(--f-body); letter-spacing: -.005em; -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: radial-gradient(1200px 520px at 50% -160px, color-mix(in srgb, var(--mood) 26%, transparent), transparent 70%), var(--paper); background-repeat: no-repeat; transition: background .6s ease; color: var(--ink); font: 15.5px/1.7 var(--f-body); letter-spacing: -.005em; -webkit-font-smoothing: antialiased; }
 .wrap { max-width: 1080px; margin: 0 auto; padding-block: 20px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 h1, h2, h3 { text-wrap: balance; margin: 0; }
 button { font: inherit; color: inherit; cursor: pointer; }
@@ -61,9 +62,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 /* 시트 */
 .sheet { background: var(--sheet); border-radius: var(--r); box-shadow: var(--shadow); position: relative; }
-.sheet.omr { border-left: 0; background-image: linear-gradient(90deg, transparent 38px, var(--red-soft) 38px, var(--red-soft) 40px, transparent 40px); }
-.sheet.omr.pad, .sheet.omr.q { padding-left: 58px; }
-@media (max-width: 560px) { .sheet.omr { background-image: none; border-top: 3px solid var(--red-soft); } .sheet.omr.pad, .sheet.omr.q { padding-left: 16px; } }
+.sheet.omr { border-left: 0; border-top: 4px solid var(--accent); }
+
 .pad { padding: 22px 22px; }
 @media (max-width: 560px) { .pad { padding: 18px 16px; } }
 
@@ -126,7 +126,7 @@ input[type=text], input[type=number], select { width: 100%; background: var(--pa
 .game { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
 @media (max-width: 860px) { .game { grid-template-columns: 1fr; } }
 .status { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
-@media (max-width: 860px) { .status { position: static; } }
+@media (max-width: 860px) { .status { position: static; order: 2; } }
 .status h3 { font: 800 22px/1.2 var(--f-display); }
 .status .who { color: var(--muted); font-size: 13px; margin: 2px 0 14px; }
 .scores { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
@@ -225,6 +225,73 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
 .computing { padding: 18px; color: var(--muted); }
 .endactions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--sheet); padding: 9px 16px; border-radius: 8px; font-size: 14px; z-index: 9; }
+/* 짧은 영상(움직이는 그림) */
+.clip { position: relative; aspect-ratio: 16 / 9; max-width: 100%; border-radius: 10px; overflow: hidden; background: #1d2550; margin: -4px 0 18px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+  --sc-sky: #8fd3ff; --sc-sunset: #ffb38a; --sc-night: #1f2757; --sc-wall: #fff2dc; --sc-wallN: #2b3058; --sc-wallWarm: #ffe6cf; --sc-wallCool: #e5efff; --sc-floor: #d8bf9c;
+  --sc-wood: #c98a55; --sc-wood2: #9c6438; --sc-frame: #c7d0e2; --sc-sheet: #ffffff; --sc-ink: #1d2230; --sc-line: #d7dce6; --sc-muted: #b8c0d4; --sc-skin: #ffd7b8; --sc-hair: #2b2230;
+  --sc-pants: #3b4a6b; --sc-accent: var(--accent); --sc-accent2: var(--accent2); --sc-glow: #bfe6ff; --sc-bed: #8fb0e8; --sc-road: #3a3f52; --sc-bldg: #c5d3ea; --sc-bldgN: #30386a;
+  --sc-door: #8a5a3a; --sc-army: #5d7a3a; --sc-labcoat: #f4f6fa; }
+.clip svg, .clip video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.clip .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 14px 12px; background: linear-gradient(transparent, rgba(10,12,24,.72)); color: #fff; font-size: 14px; line-height: 1.5; }
+.clip .cap b { display: inline-block; font-size: 11px; letter-spacing: .08em; background: var(--accent); color: #fff; border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
+.clip .bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: rgba(255,255,255,.2); }
+.clip .bar i { display: block; height: 100%; width: 100%; background: var(--accent2); transform-origin: left; animation: prog 6s linear infinite; }
+.clip .pp { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; border-radius: 50%; border: 0; background: rgba(10,12,24,.55); color: #fff; font-size: 13px; display: grid; place-items: center; }
+.clip .rec { position: absolute; top: 12px; left: 12px; font: 600 11px var(--f-num); color: #fff; background: rgba(10,12,24,.5); border-radius: 4px; padding: 2px 7px; }
+.clip .rec::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #ff4d4d; margin-right: 5px; vertical-align: 0; animation: blink 1.2s steps(2) infinite; }
+.clip.paused *, .clip.paused { animation-play-state: paused !important; }
+@keyframes prog { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.scene * { transform-box: view-box; }
+.a-breathe { animation: breathe 3s ease-in-out infinite; } @keyframes breathe { 50% { transform: translateY(-1.5px); } }
+.a-bob { animation: bob .45s ease-in-out infinite; } @keyframes bob { 50% { transform: translateY(-5px); } }
+.a-wave { animation: wave 1.4s ease-in-out infinite; } @keyframes wave { 50% { transform: rotate(-14deg); } }
+.a-glow { animation: glow 2.4s ease-in-out infinite; } @keyframes glow { 50% { opacity: .55; } }
+.a-fall { animation: fall 5s linear infinite; } @keyframes fall { from { transform: translate(0, 0) rotate(0); } to { transform: translate(-30px, 400px) rotate(300deg); } }
+.a-rain { animation: rain 1s linear infinite; } @keyframes rain { to { transform: translate(-16px, 400px); } }
+.a-pulse { animation: pulse 3s ease-in-out infinite; } @keyframes pulse { 50% { opacity: .5; } }
+.a-drift { animation: drift 9s ease-in-out infinite; } @keyframes drift { 50% { transform: translateX(40px); } }
+.a-twinkle { animation: twinkle 2.2s ease-in-out infinite; } @keyframes twinkle { 50% { opacity: .2; } }
+.a-spin { animation: spin 4s linear infinite; } .a-spin-slow { animation: spin 40s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
+.a-pop { animation: pop 6s ease infinite both; } @keyframes pop { 0% { opacity: 0; transform: scale(.6); } 6%, 88% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
+.a-rise { animation: rise 3.6s ease-in infinite; } @keyframes rise { 0% { opacity: 0; transform: translateY(20px); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-90px); } }
+.a-flicker { animation: flicker 3s steps(1) infinite; } @keyframes flicker { 0%, 47%, 53%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.a-sway { animation: sway 4s ease-in-out infinite; } @keyframes sway { 50% { transform: rotate(3deg); } }
+.a-shake { animation: shake .5s linear infinite; } .a-shake-soft { animation: shake 1.6s linear infinite; } @keyframes shake { 25% { transform: translate(1.5px, -1px); } 75% { transform: translate(-1.5px, 1px); } }
+.a-draw { stroke-dasharray: 320; animation: draw 6s ease infinite; } @keyframes draw { 0% { stroke-dashoffset: 320; } 50%, 100% { stroke-dashoffset: 0; } }
+.a-steam { animation: steam 2.4s ease-in-out infinite; } @keyframes steam { 0% { opacity: 0; transform: translateY(4px); } 50% { opacity: .9; } 100% { opacity: 0; transform: translateY(-10px); } }
+.a-blink { animation: blink 1.2s steps(2) infinite; } @keyframes blink { 50% { opacity: .2; } }
+.a-neon { animation: neon 2.2s steps(1) infinite; } @keyframes neon { 0%, 60%, 100% { opacity: 1; } 62%, 66% { opacity: .3; } 64% { opacity: 1; } }
+.a-drip { animation: drip 1.6s ease-in infinite; } @keyframes drip { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(40px); } }
+.a-sweep { animation: sweep 4s ease-in-out infinite; } @keyframes sweep { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(14deg); } }
+.a-rgb { animation: rgb 2.4s linear infinite; } @keyframes rgb { 0%, 100% { fill: #ff6b8b; } 33% { fill: #5ef0ff; } 66% { fill: #ffd34d; } }
+.a-runacross { animation: runacross 5s linear infinite; } @keyframes runacross { from { transform: translateX(-60px); } to { transform: translateX(700px); } }
+.a-drive { animation: drive 7s linear infinite; } @keyframes drive { from { transform: translateX(0); } to { transform: translateX(900px); } }
+.a-type { transform-box: fill-box !important; transform-origin: left center; animation: type 6s ease infinite both; } @keyframes type { 0% { transform: scaleX(0); } 30%, 100% { transform: scaleX(1); } }
+.a-grow { animation: grow 3s ease-in-out infinite; } @keyframes grow { 50% { transform: scaleY(1.25); } }
+.a-wavex { animation: wavex 3s linear infinite; } @keyframes wavex { to { transform: translateX(-160px); } }
+.a-flag { animation: flag 1.6s ease-in-out infinite; } @keyframes flag { 50% { transform: skewY(6deg); } }
+@media (prefers-reduced-motion: reduce) { .clip *, .clip .bar i { animation: none !important; } }
+
+/* 방금 한 선택의 평가 */
+.verdict { border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; background: color-mix(in srgb, var(--mood) 12%, var(--sheet)); border: 1.5px solid color-mix(in srgb, var(--mood) 55%, transparent); }
+.verdict .vh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.verdict .vt { font: 800 19px/1.2 var(--f-display); color: var(--mood); }
+.verdict .vc { font-size: 12.5px; color: var(--muted); }
+.verdict .vi { width: 30px; height: 30px; border-radius: 50%; background: var(--mood); color: #fff; display: grid; place-items: center; font-weight: 800; }
+.verdict .feed { margin: 0; }
+.verdict .note { background: color-mix(in srgb, var(--sheet) 70%, transparent); }
+@media (prefers-reduced-motion: no-preference) { .verdict { animation: vin .45s ease both; } @keyframes vin { from { transform: translateY(-6px) scale(.98); opacity: .2; } } }
+.dots { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 14px; }
+.dots i { width: 12px; height: 12px; border-radius: 3px; background: var(--normal); opacity: .75; }
+.dots i.good { background: var(--good); opacity: 1; } .dots i.bad { background: var(--bad); opacity: 1; }
+.dots i.last { outline: 2px solid var(--ink); outline-offset: 1px; }
+.dotlegend { font-size: 11.5px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+.dotlegend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; background: var(--c); }
+.opt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--paper)); }
+.ruler div.now { border-color: var(--accent); color: var(--accent); }
+.status { border-top: 4px solid var(--mood); transition: border-color .5s; }
+.vsum { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.vsum span { font-size: 12.5px; border-radius: 999px; padding: 3px 10px; color: #fff; background: var(--c); }
 footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width: 60em; }
 </style>
 
@@ -239,10 +306,39 @@ footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width:
 <div class="toast" id="toast" hidden></div>
 
 <script src="engine.js"></script>
+<script src="scenes.js"></script>
 <script>
 (function () {
 'use strict';
 const CS = window.CareerSim;
+const SC = window.CareerScenes;
+const PHASE_KEYS = ['g1', 'g2', 'g3', 'adm', 'col', 'end'];
+const VERDICT = {
+  good: { t: '좋은 선택', i: '▲', c: '이 선택으로 상황이 나아졌다' },
+  bad: { t: '아쉬운 선택', i: '▼', c: '이 선택이 발목을 잡았다' },
+  normal: { t: '무난한 선택', i: '●', c: '크게 달라진 건 없다' },
+};
+function setTheme(phase, mood) {
+  const r = document.documentElement;
+  if (phase) r.dataset.phase = phase; else delete r.dataset.phase;
+  if (mood) r.dataset.mood = mood; else delete r.dataset.mood;
+}
+// 짧은 영상 하나 — 같은 장면이면 다시 그리지 않아 재생이 끊기지 않는다
+const clipCache = {};
+function clipHTML(scene, caption, tag) {
+  return `<div class="clip" data-scene="${esc(scene.name)}">${SC.render(scene.name, scene)}<span class="rec">${esc(tag || 'SCENE')}</span>
+    <button type="button" class="pp" aria-label="일시정지" data-pp>❚❚</button>${caption ? `<div class="cap">${caption}</div>` : ''}<div class="bar"><i></i></div></div>`;
+}
+function mountClip(slotId, key, html) {
+  const slot = document.getElementById(slotId);
+  if (!slot) return;
+  if (clipCache[slotId] && clipCache[slotId].key === key) slot.replaceWith(clipCache[slotId].node);
+  else { slot.innerHTML = html; clipCache[slotId] = { key, node: slot }; }
+  const node = clipCache[slotId].node;
+  const pp = node.querySelector('[data-pp]');
+  if (pp) pp.onclick = () => { const c = node.querySelector('.clip'); c.classList.toggle('paused'); pp.textContent = c.classList.contains('paused') ? '▶' : '❚❚'; pp.setAttribute('aria-label', c.classList.contains('paused') ? '재생' : '일시정지'); };
+}
+function firstSentence(t) { const m = String(t || '').match(/^[^.!?…]*[.!?…]?/); return (m ? m[0] : t).slice(0, 70); }
 const $app = document.getElementById('app');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
@@ -356,6 +452,7 @@ function renderIntro() {
       </div>
     </div>
     <div class="sheet pad" style="display:grid;gap:14px;align-content:start">
+      <div id="trailer"></div>
       <div class="ticket" aria-label="수험표 예시">
         <div class="head"><span>수험표</span><span class="num">${new Date().getFullYear() + (3 - (+f.grade || 1)) + 1}학년도</span></div>
         <div class="row"><div class="k">성명</div><div class="v">${esc(f.name || '나')}${app.formIsSample ? ' <span class="muted small">(예시)</span>' : ''}</div></div>
@@ -367,6 +464,11 @@ function renderIntro() {
       <div class="small muted">지금까지 이 기기에서 발견한 결말 <b class="num" style="color:var(--ink)">${found}</b>개. 같은 나로 여러 번 살아 보면 운과 선택에 따라 다른 결말이 나옵니다.</div>
     </div>
   </section>`;
+  setTheme(null, null);
+  const TR = [['classroom', 'spring', '고1 3월, 새 교실'], ['love', 'summer', '체육대회가 끝난 저녁'], ['night_study', 'autumn', '새벽 1시 40분, 독서실'], ['exam', 'winter', '수능 당일, 종료 20분 전'], ['campus', 'spring', '스무 살의 캠퍼스'], ['office', null, '서른, 그리고 지금']];
+  let ti = 0;
+  const showTr = () => { const t = TR[ti % TR.length]; const el = document.getElementById('trailer'); if (!el) { clearInterval(app.trTimer); return; } el.innerHTML = clipHTML({ name: t[0], season: t[1] }, `<b>예고편</b>${esc(t[2])}`, 'TRAILER'); ti++; const pp = el.querySelector('[data-pp]'); if (pp) pp.onclick = () => { clearInterval(app.trTimer); el.querySelector('.clip').classList.add('paused'); pp.textContent = '▶'; }; };
+  clearInterval(app.trTimer); showTr(); app.trTimer = setInterval(showTr, 4200);
   document.getElementById('goSetup').onclick = () => { app.screen = 'setup'; app.step = 0; render(); };
   document.getElementById('goQuick').onclick = () => { app.form = fillDefaults(JSON.parse(JSON.stringify(SAMPLE))); app.formIsSample = true; startGame(); };
 }
@@ -491,7 +593,14 @@ function ruler(label) {
   const k = phaseIdx(label);
   return `<div class="ruler">${PHASES.map((p, i) => `<div class="${i < k ? 'done' : i === k ? 'now' : ''}">${p[0]}</div>`).join('')}</div>`;
 }
-function statusPanel(v) {
+function dotsHTML(hist) {
+  if (!hist.length) return '';
+  const n = { good: 0, bad: 0, normal: 0 };
+  hist.forEach(h => { n[h.verdict || 'normal']++; });
+  return `<div class="dots" aria-label="내 선택 기록">${hist.map((h, i) => `<i class="${h.verdict || ''}${i === hist.length - 1 ? ' last' : ''}" title="${esc(h.turn + ' · ' + h.title)}"></i>`).join('')}</div>
+    <div class="dotlegend"><span style="--c:var(--good)">좋은 선택 ${n.good}</span><span style="--c:var(--normal)">무난 ${n.normal}</span><span style="--c:var(--bad)">아쉬움 ${n.bad}</span></div>`;
+}
+function statusPanel(v, hist) {
   return `<aside class="sheet pad status">
     <h3>${esc(v.name)}</h3>
     <div class="who">${esc(v.turn)} · ${Math.floor(v.age)}세${v.uni ? ' · ' + esc(v.uni) : ''}</div>
@@ -505,6 +614,7 @@ function statusPanel(v) {
       <span class="chip">끌리는 분야 <b>${esc(v.interest)}</b></span>
       <span class="chip">집안 형편 <b>${esc(v.money)}</b></span>
     </div>
+    ${dotsHTML(hist || [])}
   </aside>`;
 }
 const CAT_COLOR = { study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
@@ -515,7 +625,12 @@ function renderGame() {
   const old = logs.slice(0, app.seenLog);
   const pr = res.prompt;
   const qno = s.history.length + 1;
-  let qhtml = `<div class="qno"><span class="badge">${qno}번</span><span class="when">${esc(pr.turn)} · ${Math.floor(pr.age)}세</span></div><h2>${esc(pr.title)}</h2><p class="ctx">${esc(pr.text)}</p>`;
+  const last = s.history[s.history.length - 1];
+  const mood = last && !app.rewindFrom ? last.verdict : null;
+  setTheme(PHASE_KEYS[phaseIdx(pr.turn)], mood);
+  const scene = SC.sceneFor(pr);
+  scene.mood = mood;
+  let qhtml = `<div id="clipSlot"></div><div class="qno"><span class="badge">${qno}번</span><span class="when">${esc(pr.turn)} · ${Math.floor(pr.age)}세</span></div><h2>${esc(pr.title)}</h2><p class="ctx">${esc(pr.text)}</p>`;
   if (pr.type === 'choice') {
     qhtml += `<div class="opts">${pr.options.map((o, i) => `<button type="button" class="opt" data-opt="${esc(o.id)}"><span class="bub">${i + 1}</span><span class="txt"><span>${esc(o.label)}</span>${o.hint ? `<span class="hint">${esc(o.hint)}</span>` : ''}</span></button>`).join('')}</div>`;
   } else {
@@ -532,14 +647,17 @@ function renderGame() {
   }
   $app.innerHTML = `${ruler(pr.turn)}
   <div class="game">
-    ${statusPanel(v)}
+    ${statusPanel(v, s.history)}
     <div style="min-width:0">
       ${app.rewindFrom ? `<div class="banner">「${esc(app.rewindFrom)}」 시점으로 돌아왔습니다. 운은 그대로, 선택만 다시 할 수 있습니다. 현실에는 없는 버튼입니다.</div>` : ''}
-      ${fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}
+      ${mood ? `<div class="verdict"><div class="vh"><span class="vi">${VERDICT[mood].i}</span><span class="vt">${VERDICT[mood].t}</span><span class="vc">${esc(last.title)} — ${VERDICT[mood].c}</span></div>
+        ${fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}</div>`
+        : fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}
       <section class="sheet omr q">${qhtml}</section>
       ${old.length ? `<details class="past"><summary>지난 기록 ${old.length}줄</summary><div class="feed">${old.slice().reverse().map(l => `<div class="note ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div></details>` : ''}
     </div>
   </div>`;
+  mountClip('clipSlot', pr.key, clipHTML(scene, `<b>${esc(pr.turn)}</b>${esc(firstSentence(pr.text))}`, pr.turn));
   $app.querySelectorAll('[data-opt]').forEach(b => { b.onclick = () => { app.seenLog = logs.length; answer(pr.key, b.dataset.opt); }; });
   $app.querySelectorAll('[data-inc]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.inc] = (app.allocDraft.v[b.dataset.inc] || 0) + 1; render(); }; });
   $app.querySelectorAll('[data-dec]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.dec] = Math.max(0, (app.allocDraft.v[b.dataset.dec] || 0) - 1); render(); }; });
@@ -587,11 +705,13 @@ function renderEnd() {
   $app.innerHTML = `${ruler('서른')}
   <section class="report">
     <div class="sheet omr pad">
+      <div id="endClip"></div>
       <div class="eyebrow">서른 살 · 인생 성적표${app.isNewEnding ? ' · 새로 발견한 결말' : ''}</div>
       <h1><span>${esc(e.archetype)}</span></h1>
       <div class="job">${esc(e.career)}</div>
       <div class="sub">${esc(e.uni)}${e.major ? ' ' + esc(e.major) : ''} · 연 ${money(e.salary)}</div>
       <ul class="story">${e.story.map(l => `<li>${esc(l)}</li>`).join('')}</ul>
+      ${(() => { const n = { good: 0, bad: 0, normal: 0 }; s.history.forEach(h => { n[h.verdict || 'normal']++; }); return `<div class="vsum"><span style="--c:var(--good)">좋은 선택 ${n.good}번</span><span style="--c:var(--normal)">무난한 선택 ${n.normal}번</span><span style="--c:var(--bad)">아쉬운 선택 ${n.bad}번</span></div>${dotsHTML(s.history)}`; })()}
       <div class="meta"><span>결말 코드 <span class="num">${esc(e.code)}</span></span><span>이 기기에서 발견한 결말 <b class="num">${found}</b>개 · 시뮬레이션으로 확인한 결말 3,000가지 이상</span>${app.rewinds ? `<span>되돌리기 ${app.rewinds}번 사용</span>` : ''}</div>
       <div class="endactions">
         <button class="cta" type="button" id="againSame">같은 나, 다른 운으로 다시</button>
@@ -614,6 +734,9 @@ function renderEnd() {
   <div class="sectionhead"><h2>지나온 시간</h2><p>${s.log.length}줄의 기록</p></div>
   <details class="sheet pad"><summary class="small" style="cursor:pointer">고1부터 서른까지 전체 기록 펼치기</summary><div class="timeline" style="margin-top:12px">${s.log.map(l => `<div class="note ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div></details>`;
 
+  setTheme('end', e.satTag === 'happy' ? 'good' : e.satTag === 'regret' ? 'bad' : 'normal');
+  const es = SC.sceneForCareer(e, (s.career && s.career.field) || 'none');
+  mountClip('endClip', 'end:' + e.code, clipHTML(es, `<b>서른 살</b>${esc(e.career)}`, 'AGE 30'));
   document.getElementById('againSame').onclick = () => { startGame(); window.scrollTo(0, 0); };
   document.getElementById('editMe').onclick = () => { app.screen = 'setup'; app.step = 0; render(); };
   document.getElementById('copyRes').onclick = () => {
@@ -647,6 +770,8 @@ function rewind(idx) {
 
 function render() {
   document.getElementById('homeBtn').hidden = app.screen === 'intro';
+  if (app.screen !== 'intro') clearInterval(app.trTimer);
+  if (app.screen === 'setup') setTheme(PHASE_KEYS[Math.min(2, Math.floor((+app.form.startTurn || 0) / 4))], null);
   if (app.screen === 'intro') renderIntro();
   else if (app.screen === 'setup') renderSetup();
   else if (app.screen === 'game') renderGame();
