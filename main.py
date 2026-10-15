@@ -930,6 +930,31 @@ def health_check():
     return {"status": "ok", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
+# ── 진로 시뮬레이션 "그때 그 선택" ─────────────────────────
+#   career_sim/ 폴더의 화면(index.html)과 계산 엔진(engine.js)을 그대로 내준다.
+#   index.html은 문서 머리말 없이 쓰여 있어(아티팩트용) 여기서 붙여 보낸다.
+CAREER_SIM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "career_sim")
+
+
+@app.get("/career-sim")
+def career_sim_redirect():
+    # 끝에 / 가 있어야 화면이 engine.js를 같은 폴더에서 찾는다
+    return RedirectResponse(url="/career-sim/")
+
+
+@app.get("/career-sim/")
+def career_sim_page():
+    with open(os.path.join(CAREER_SIM_DIR, "index.html"), encoding="utf-8") as f:
+        body = f.read()
+    html = '<!doctype html>\n<html lang="ko">\n' + body + "\n</html>"
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
+@app.get("/career-sim/engine.js")
+def career_sim_engine():
+    return FileResponse(os.path.join(CAREER_SIM_DIR, "engine.js"), media_type="application/javascript")
+
+
 @app.post("/api/auth")
 async def authenticate(req: AuthRequest):
     if req.admin_password:

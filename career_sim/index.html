@@ -1,0 +1,615 @@
+<title>그때 그 선택</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* 레이아웃: 수험표·성적표 종이 한 장 위에서 진행되는 게임. 위에는 고1→서른 시간 눈금, 결과는 '인생 성적표'와 '인생 오답노트'. */
+:root {
+  --paper: #eef1f5;      /* 시험지 받침 */
+  --sheet: #ffffff;      /* 답안지 */
+  --ink: #1a2332;        /* 컴퓨터용 사인펜 */
+  --muted: #5b6676;
+  --rule: #d9dee6;
+  --omr: #cf3a5c;        /* OMR 카드의 붉은 선 */
+  --omr-soft: #f7dfe5;
+  --good: #23775a; --good-soft: #dcefe7;
+  --warn: #a86a12; --warn-soft: #f6ead6;
+  --bad: #b8322a;  --bad-soft: #f6dcda;
+  --shadow: 0 1px 0 rgba(26,35,50,.06), 0 8px 24px -12px rgba(26,35,50,.18);
+  --f-display: "Do Hyeon", "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --f-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  --f-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #0f131a; --sheet: #171d27; --ink: #e5e9f0; --muted: #9aa5b5; --rule: #2a3240;
+  --omr: #ff6f8c; --omr-soft: #3a1d26; --good: #5cc79c; --good-soft: #15322a; --warn: #e2a64a; --warn-soft: #362a15;
+  --bad: #ff7a70; --bad-soft: #3a1c1a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 28px -14px rgba(0,0,0,.7); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --paper: #0f131a; --sheet: #171d27; --ink: #e5e9f0; --muted: #9aa5b5; --rule: #2a3240;
+  --omr: #ff6f8c; --omr-soft: #3a1d26; --good: #5cc79c; --good-soft: #15322a; --warn: #e2a64a; --warn-soft: #362a15;
+  --bad: #ff7a70; --bad-soft: #3a1c1a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 28px -14px rgba(0,0,0,.7); color-scheme: dark; }
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.65 var(--f-body); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-block: 20px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--omr); outline-offset: 2px; }
+.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+
+/* 상단 */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand b { font: 26px/1 var(--f-display); color: var(--omr); letter-spacing: .02em; }
+.brand b { white-space: nowrap; }
+.brand span { font-size: 12px; color: var(--muted); }
+@media (max-width: 480px) { .brand span { display: none; } }
+.ghost { background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+.ghost:hover { color: var(--ink); border-color: var(--muted); }
+
+/* 시트 */
+.sheet { background: var(--sheet); border-radius: var(--r); box-shadow: var(--shadow); position: relative; }
+.sheet.omr { border-left: 6px solid var(--omr); }
+.pad { padding: 22px 22px; }
+@media (max-width: 560px) { .pad { padding: 18px 16px; } }
+
+/* 시작 화면 */
+.hero { display: grid; grid-template-columns: 1.15fr .85fr; gap: 28px; align-items: stretch; }
+@media (max-width: 820px) { .hero { grid-template-columns: 1fr; } }
+.hero h1 { font: 52px/1.05 var(--f-display); letter-spacing: -.01em; }
+.hero h1 em { font-style: normal; color: var(--omr); }
+.hero p.lead { font-size: 17px; color: var(--muted); max-width: 34em; margin: 14px 0 22px; }
+.ticket { display: grid; gap: 0; border: 1.5px solid var(--ink); border-radius: 6px; overflow: hidden; font-size: 13px; }
+.ticket .row { display: grid; grid-template-columns: 92px 1fr; border-top: 1px solid var(--rule); }
+.ticket .row:first-child { border-top: 0; }
+.ticket .k { background: var(--omr-soft); color: var(--omr); font-weight: 700; padding: 9px 10px; border-right: 1px solid var(--rule); }
+.ticket .v { padding: 9px 12px; min-width: 0; }
+.ticket .head { background: var(--ink); color: var(--sheet); padding: 10px 12px; font: 18px/1.2 var(--f-display); letter-spacing: .04em; display: flex; justify-content: space-between; }
+.cta { display: inline-flex; align-items: center; gap: 8px; background: var(--omr); color: #fff; border: 0; border-radius: 8px; padding: 13px 22px; font-weight: 700; font-size: 16px; }
+.cta:hover { filter: brightness(1.06); }
+.cta.secondary { background: var(--ink); color: var(--sheet); }
+.cta:disabled { opacity: .45; cursor: not-allowed; }
+.feat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
+@media (max-width: 680px) { .feat { grid-template-columns: 1fr; } }
+.feat div { border-top: 2px solid var(--ink); padding-top: 10px; font-size: 14px; color: var(--muted); }
+.feat b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+
+/* 설정 화면 */
+.steps { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.steps button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+.steps button.on { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+.form { display: grid; gap: 20px; }
+.field { display: grid; gap: 8px; }
+.field > label, .field > .lab { font-weight: 600; font-size: 14px; }
+.field .hint { font-size: 12.5px; color: var(--muted); margin-top: -4px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
+@media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+input[type=text], input[type=number], select { width: 100%; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font: inherit; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+.seg button.on { border-color: var(--omr); background: var(--omr-soft); color: var(--omr); font-weight: 700; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.cards button { text-align: left; border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
+.cards button b { display: block; color: var(--ink); font-size: 14px; }
+.cards button.on { border-color: var(--omr); background: var(--omr-soft); }
+.cards button.on b { color: var(--omr); }
+.slider { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: center; }
+.bubbles { display: flex; gap: 6px; flex-wrap: wrap; }
+.bubbles button { width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--omr); background: transparent; color: var(--omr); font: 600 13px var(--f-num); }
+.bubbles button.on { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+.bubbles .ends { font-size: 12px; color: var(--muted); align-self: center; }
+.formnav { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+
+/* 게임 화면 */
+.ruler { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 16px; }
+.ruler div { font-size: 12px; color: var(--muted); padding-top: 6px; border-top: 4px solid var(--rule); text-align: center; }
+.ruler div.done { border-color: var(--ink); color: var(--ink); }
+.ruler div.now { border-color: var(--omr); color: var(--omr); font-weight: 700; }
+.game { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 860px) { .game { grid-template-columns: 1fr; } }
+.status { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+@media (max-width: 860px) { .status { position: static; } }
+.status h3 { font: 22px/1.2 var(--f-display); }
+.status .who { color: var(--muted); font-size: 13px; margin: 2px 0 14px; }
+.scores { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.score { border: 1.5px solid var(--ink); border-radius: 6px; padding: 8px 10px; }
+.score .k { font-size: 11.5px; color: var(--muted); }
+.score .g { font: 600 22px/1.1 var(--f-num); }
+.score .g small { font: 500 11px var(--f-body); color: var(--muted); margin-left: 3px; }
+.bars { display: grid; gap: 7px; }
+.bar { display: grid; grid-template-columns: 86px 1fr 28px; gap: 8px; align-items: center; font-size: 12.5px; }
+.bar .track { height: 7px; background: var(--paper); border-radius: 4px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--ink); border-radius: 4px; transition: width .4s ease; }
+.bar.badv .fill { background: var(--omr); }
+.bar .v { font: 500 12px var(--f-num); text-align: right; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.chip { font-size: 12px; border: 1px solid var(--rule); border-radius: 999px; padding: 3px 9px; color: var(--muted); }
+.chip b { color: var(--ink); font-weight: 600; }
+
+.feed { display: grid; gap: 8px; margin-bottom: 14px; }
+.note { padding: 10px 14px; border-radius: 8px; background: var(--paper); font-size: 14px; border-left: 3px solid var(--rule); }
+.note.good { background: var(--good-soft); border-color: var(--good); }
+.note.warn { background: var(--warn-soft); border-color: var(--warn); }
+.note.bad { background: var(--bad-soft); border-color: var(--bad); }
+.note .t { font-size: 11.5px; color: var(--muted); display: block; }
+@media (prefers-reduced-motion: no-preference) { .note.fresh { animation: rise .35s ease both; } @keyframes rise { from { transform: translateY(6px); opacity: .4; } } }
+
+.q { padding: 22px; }
+.q .qno { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.q .qno span.badge { font: 600 12px var(--f-num); background: var(--ink); color: var(--sheet); border-radius: 4px; padding: 2px 7px; }
+.q .qno span.when { font-size: 13px; color: var(--muted); }
+.q h2 { font: 28px/1.2 var(--f-display); margin-bottom: 8px; }
+.q p.ctx { margin: 0 0 16px; max-width: 46em; }
+.opts { display: grid; gap: 8px; }
+.opt { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: center; text-align: left; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 11px 14px; font-size: 15px; }
+.opt:hover { border-color: var(--omr); }
+.opt .bub { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--omr); display: grid; place-items: center; color: var(--omr); font: 600 12px var(--f-num); }
+.opt:hover .bub { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+.alloc { display: grid; gap: 8px; }
+.arow { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; border-bottom: 1px dashed var(--rule); padding-bottom: 8px; }
+.arow .nm b { display: block; font-size: 15px; }
+.arow .nm span { font-size: 12.5px; color: var(--muted); }
+.step { display: flex; align-items: center; gap: 6px; }
+.step button { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--rule); background: var(--paper); font-size: 18px; line-height: 1; }
+.step button:disabled { opacity: .35; cursor: default; }
+.step .val { width: 26px; text-align: center; font: 600 17px var(--f-num); }
+.cells { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin: 14px 0 6px; }
+.cells i { height: 26px; border-radius: 4px; border: 1.5px solid var(--omr); display: grid; place-items: center; font: 600 10.5px var(--f-body); font-style: normal; color: var(--sheet); overflow: hidden; white-space: nowrap; }
+.cells i.empty { background: transparent; }
+.left { font-size: 13px; color: var(--muted); }
+.qactions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+.banner { background: var(--warn-soft); border: 1px solid var(--warn); color: var(--ink); border-radius: 8px; padding: 9px 12px; font-size: 13.5px; margin-bottom: 12px; }
+details.past { margin-top: 14px; }
+details.past summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
+
+/* 결과 화면 */
+.report { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
+@media (max-width: 860px) { .report { grid-template-columns: 1fr; } }
+.report h1 { font: 38px/1.1 var(--f-display); color: var(--omr); margin: 6px 0 4px; }
+.report .job { font-size: 18px; font-weight: 600; }
+.report .sub { color: var(--muted); }
+.story { margin: 16px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.story li { padding-left: 14px; position: relative; }
+.story li::before { content: ""; position: absolute; left: 0; top: .72em; width: 6px; height: 6px; border-radius: 50%; background: var(--omr); }
+.gradebook { width: 100%; border-collapse: collapse; font-size: 14px; }
+.gradebook th, .gradebook td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; }
+.gradebook th { background: var(--omr-soft); color: var(--omr); font-weight: 700; width: 34%; }
+.gradebook td.g { font: 600 18px var(--f-num); width: 70px; text-align: center; }
+.meta { display: flex; gap: 8px 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+.sectionhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 30px 0 12px; flex-wrap: wrap; }
+.sectionhead h2 { font: 30px/1.1 var(--f-display); }
+.sectionhead p { margin: 0; color: var(--muted); font-size: 14px; }
+.wrong { display: grid; gap: 12px; }
+.wcard { display: grid; grid-template-columns: 54px 1fr; gap: 0; overflow: hidden; }
+.wcard .mark { background: var(--omr); color: #fff; display: grid; place-items: center; font: 30px/1 var(--f-display); }
+.wcard.goodc .mark { background: var(--good); }
+.wcard .body { padding: 16px 18px; min-width: 0; }
+.wcard .when { font-size: 12.5px; color: var(--muted); }
+.wcard h3 { font-size: 17px; margin: 2px 0 10px; }
+.ans { display: grid; grid-template-columns: 76px 1fr; gap: 4px 10px; font-size: 14px; }
+.ans .k { color: var(--muted); font-size: 12.5px; padding-top: 2px; }
+.ans .mine { text-decoration: line-through; text-decoration-color: var(--omr); text-decoration-thickness: 2px; }
+.goodc .ans .mine { text-decoration: none; }
+.result { margin-top: 10px; background: var(--paper); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+.delta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.delta span { font: 600 12px var(--f-num); border-radius: 4px; padding: 2px 7px; }
+.delta .up { background: var(--good-soft); color: var(--good); }
+.delta .down { background: var(--bad-soft); color: var(--bad); }
+.wcard .redo { margin-top: 10px; }
+.small { font-size: 13px; }
+.muted { color: var(--muted); }
+.timeline { display: grid; gap: 6px; }
+.computing { padding: 18px; color: var(--muted); }
+.endactions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--sheet); padding: 9px 16px; border-radius: 8px; font-size: 14px; z-index: 9; }
+footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width: 60em; }
+</style>
+
+<div class="wrap">
+  <div class="top">
+    <div class="brand"><b>그때 그 선택</b><span>입시·진로 인생 시뮬레이션</span></div>
+    <button class="ghost" id="homeBtn" type="button" hidden>처음 화면</button>
+  </div>
+  <main id="app"></main>
+  <footer class="fine">이 시뮬레이션은 실제 입시 구조(내신 등급, 수능 최저, 수시 6장·정시 3장, 수시 합격 시 정시 불가, 재수, 군 복무, 취업 경로)를 단순화한 모델입니다. 대학·직업 이름과 연봉은 이해를 돕기 위한 대략적인 값이며, 실제 미래를 예측하지 않습니다. 결과보다 "어떤 선택이 무엇을 바꾸는지"를 보는 데 써 주세요.</footer>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="engine.js"></script>
+<script>
+(function () {
+'use strict';
+const CS = window.CareerSim;
+const $app = document.getElementById('app');
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('ccs:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('ccs:' + k, JSON.stringify(v)); } catch (e) {} },
+};
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => { t.hidden = true; }, 2200); }
+function newSeed() { return Math.random().toString(36).slice(2, 10); }
+
+// 등급 ↔ 상위 %
+const G9 = [2, 7.5, 17, 31.5, 50, 68.5, 83, 92.5, 98];
+const G5 = [5, 22, 50, 78, 95];
+function gradeToPct(g, five) { const t = five ? G5 : G9; g = Math.max(1, Math.min(t.length, +g || 1)); const i = Math.floor(g) - 1; if (i >= t.length - 1) return t[t.length - 1]; return t[i] + (t[i + 1] - t[i]) * (g - Math.floor(g)); }
+
+// ── 학생 정보 입력 항목 ──
+const OPT = {
+  gender: [['m', '남'], ['f', '여'], ['x', '밝히지 않음']],
+  grade: [[1, '고1'], [2, '고2'], [3, '고3']],
+  track: [['자연', '자연(이과) 쪽'], ['인문', '인문(문과) 쪽']],
+  school: [['general', '일반고'], ['jasa', '자사고'], ['special', '특목고(과고·외고 등)']],
+  region: [['gangnam', '서울 강남권'], ['metro', '서울·수도권'], ['city', '지방 대도시'], ['rural', '지방 중소도시·농어촌']],
+  wealth: [['high', '여유 있다'], ['mid', '보통'], ['low', '빠듯하다']],
+  sibling: [['none', '외동·평범'], ['better', '공부 잘하는 형제와 비교당함'], ['younger', '돌봐야 할 동생이 있음']],
+};
+const STYLE_D = { steady: '매일 조금씩, 꾸준히', cram: '시험 직전에 몰아서', immerse: '좋아하는 과목만 깊게', perfect: '하나라도 틀리면 불안', hack: '요령과 효율 중시' };
+const PSTYLE_D = { strict: '성적과 생활을 강하게 관리', warm: '대화가 많고 믿어 줌', lax: '"알아서 해"', anxious: '걱정이 많고 다 챙기려 함', absent: '일이 바빠 얼굴 보기 힘듦' };
+const FG_D = { rival: '서로 성적을 의식하는 사이', party: 'PC방·노래방·편의점 단골', gamers: '단톡방은 게임 얘기뿐', club: '동아리·예체능으로 모인 친구', alone: '혼자 다니는 게 편함' };
+const TRAITS = [
+  ['diligence', '성실함', '자주 미룬다', '계획은 지킨다'],
+  ['grit', '멘탈 회복력', '쉽게 무너진다', '금방 털고 일어난다'],
+  ['social', '사교성', '혼자가 편하다', '어디서든 친구를 만든다'],
+  ['curiosity', '호기심', '시키는 것만', '궁금하면 파고든다'],
+  ['confidence', '자신감', '늘 불안하다', '나는 될 거라 믿는다'],
+  ['impulse', '유혹에 약함', '참을성이 강하다', '폰·게임을 못 끊는다'],
+];
+const ABIL = [
+  ['focus', '집중력', '10분도 힘들다', '몇 시간도 거뜬'],
+  ['comprehension', '이해력', '설명을 여러 번 들어야', '한 번에 원리를 잡는다'],
+  ['memory', '암기력', '외워도 금방 잊는다', '한 번 보면 기억한다'],
+];
+const SAMPLE = {
+  name: '하은', gender: 'f', grade: 1, track: '인문', school: 'general', region: 'metro',
+  gpaG: 2.3, mockG: 3, recordLv: 3, style: 'cram',
+  diligence: 3, grit: 2, social: 4, curiosity: 4, confidence: 3, impulse: 4, focus: 3, comprehension: 4, memory: 3,
+  hobbies: ['video', 'idol', 'read'], interest: 'media', goal: 'jkos',
+  pStyle: 'anxious', pDesire: 'stable', wealth: 'mid', sibling: 'better', friendGroup: 'party', bestFriend: true,
+};
+
+const app = {
+  screen: 'intro', step: 0,
+  form: Object.assign({}, store.get('form', SAMPLE)),
+  formIsSample: !store.get('form', null),
+  seed: null, decisions: {}, order: [], seenLog: 0, rewinds: 0, rewindFrom: null,
+  res: null, analysis: null, endingSaved: false,
+};
+
+function profileOf(f) {
+  const five = +f.grade < 3;
+  return Object.assign({}, f, { gpaPct: gradeToPct(f.gpaG, five), mockPct: gradeToPct(f.mockG, false) });
+}
+
+// ── 공통 조각 ──
+function seg(name, opts, val) {
+  return `<div class="seg" role="group">` + opts.map(([v, l]) => `<button type="button" data-set="${name}" data-v="${esc(v)}" class="${String(val) === String(v) ? 'on' : ''}">${esc(l)}</button>`).join('') + `</div>`;
+}
+function bubbles(name, val, lo, hi) {
+  let h = `<div class="bubbles" role="group"><span class="ends">${esc(lo)}</span>`;
+  for (let i = 1; i <= 5; i++) h += `<button type="button" data-set="${name}" data-v="${i}" data-num="1" class="${+val === i ? 'on' : ''}" aria-label="${esc(name)} ${i}">${i}</button>`;
+  return h + `<span class="ends">${esc(hi)}</span></div>`;
+}
+
+// ── 화면: 시작 ──
+function renderIntro() {
+  const found = store.get('endings', []).length;
+  const f = app.form;
+  $app.innerHTML = `
+  <section class="hero">
+    <div class="sheet omr pad">
+      <div class="eyebrow">고1 3월부터 서른 살까지</div>
+      <h1>오늘의 작은 선택이<br><em>어느 대학, 어떤 서른</em>이 될까</h1>
+      <p class="lead">내 성적, 성향, 취미, 부모님과 친구까지 넣고 고등학교 3년을 직접 살아 봅니다. 학원 한 칸, 고백 하나, 원서 한 장이 결과를 바꿉니다. 끝나면 같은 운으로 다른 답을 골랐을 때의 인생을 보여 줍니다.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="cta" type="button" id="goSetup">내 정보 넣고 시작</button>
+        <button class="cta secondary" type="button" id="goQuick">예시 학생으로 바로 해 보기</button>
+      </div>
+      <div class="feat">
+        <div><b>현실적인 입시</b>내신 등급, 수능 최저, 수시 6장·정시 3장, 수시 납치, 재수·반수까지</div>
+        <div><b>수천 가지 결말</b>대학 × 학과 × 직업 × 연애 × 관계로 갈라지는 서른 살</div>
+        <div><b>인생 오답노트</b>"그때 다른 걸 골랐다면?"을 실제로 다시 돌려 본 결과</div>
+      </div>
+    </div>
+    <div class="sheet pad" style="display:grid;gap:14px;align-content:start">
+      <div class="ticket" aria-label="수험표 예시">
+        <div class="head"><span>수험표</span><span class="num">${new Date().getFullYear() + (3 - (+f.grade || 1)) + 1}학년도</span></div>
+        <div class="row"><div class="k">성명</div><div class="v">${esc(f.name || '나')}${app.formIsSample ? ' <span class="muted small">(예시)</span>' : ''}</div></div>
+        <div class="row"><div class="k">학년</div><div class="v">고${esc(f.grade)} · ${esc(f.track)} 쪽 · ${esc((OPT.school.find(x => x[0] === f.school) || [])[1] || '')}</div></div>
+        <div class="row"><div class="k">현재 성적</div><div class="v">내신 <span class="num">${esc(f.gpaG)}</span>등급 · 모의 <span class="num">${esc(f.mockG)}</span>등급</div></div>
+        <div class="row"><div class="k">목표</div><div class="v">${esc(CS.GOALS[f.goal] ? CS.GOALS[f.goal].name : '')}</div></div>
+        <div class="row"><div class="k">부모님</div><div class="v">${esc(CS.PARENT_STYLES[f.pStyle].name)} · "${esc(CS.PARENT_DESIRES[f.pDesire].name)}"</div></div>
+      </div>
+      <div class="small muted">지금까지 이 기기에서 발견한 결말 <b class="num" style="color:var(--ink)">${found}</b>개. 같은 나로 여러 번 살아 보면 운과 선택에 따라 다른 결말이 나옵니다.</div>
+    </div>
+  </section>`;
+  document.getElementById('goSetup').onclick = () => { app.screen = 'setup'; app.step = 0; render(); };
+  document.getElementById('goQuick').onclick = () => { app.form = Object.assign({}, SAMPLE); app.formIsSample = true; startGame(); };
+}
+
+// ── 화면: 설정 ──
+const STEP_NAMES = ['나에 대해', '공부하는 나', '좋아하는 것·목표', '우리 집·친구'];
+function renderSetup() {
+  const f = app.form, st = app.step;
+  const five = +f.grade < 3;
+  let body = '';
+  if (st === 0) body = `
+    <div class="grid2">
+      <div class="field"><label for="f-name">이름(별명)</label><input id="f-name" type="text" maxlength="10" value="${esc(f.name)}" data-text="name"></div>
+      <div class="field"><span class="lab">성별</span>${seg('gender', OPT.gender, f.gender)}<div class="hint">남학생은 군 복무 시기가 진로에 반영됩니다.</div></div>
+      <div class="field"><span class="lab">지금 학년</span>${seg('grade', OPT.grade, f.grade)}</div>
+      <div class="field"><span class="lab">생각하는 계열</span>${seg('track', OPT.track, f.track)}</div>
+      <div class="field"><span class="lab">학교</span>${seg('school', OPT.school, f.school)}</div>
+      <div class="field"><label for="f-region">사는 곳</label><select id="f-region" data-select="region">${OPT.region.map(([v, l]) => `<option value="${v}" ${f.region === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label for="f-gpa">내신 평균 등급 (${five ? '5등급제' : '9등급제'})</label><input id="f-gpa" type="number" step="0.1" min="1" max="${five ? 5 : 9}" value="${esc(f.gpaG)}" data-num-input="gpaG"><div class="hint">상위 약 <span class="num">${gradeToPct(f.gpaG, five).toFixed(1)}</span>%로 계산합니다.</div></div>
+      <div class="field"><label for="f-mock">최근 모의고사 평균 등급</label><input id="f-mock" type="number" step="0.1" min="1" max="9" value="${esc(f.mockG)}" data-num-input="mockG"><div class="hint">상위 약 <span class="num">${gradeToPct(f.mockG, false).toFixed(1)}</span>%</div></div>
+    </div>
+    <div class="field"><span class="lab">지금까지 동아리·탐구 활동(생기부)</span>${bubbles('recordLv', f.recordLv, '거의 없음', '꽤 많음')}</div>`;
+  if (st === 1) body = `
+    <div class="field"><span class="lab">공부 스타일</span><div class="cards">${Object.keys(CS.STYLES).map(k => `<button type="button" data-set="style" data-v="${k}" class="${f.style === k ? 'on' : ''}"><b>${CS.STYLES[k].name}</b>${STYLE_D[k]}</button>`).join('')}</div></div>
+    <div class="grid2">${TRAITS.map(([k, n, lo, hi]) => `<div class="field"><span class="lab">${n}</span>${bubbles(k, f[k], lo, hi)}</div>`).join('')}</div>
+    <div class="eyebrow" style="margin-top:4px">학습 능력</div>
+    <div class="grid2">${ABIL.map(([k, n, lo, hi]) => `<div class="field"><span class="lab">${n}</span>${bubbles(k, f[k], lo, hi)}</div>`).join('')}</div>`;
+  if (st === 2) body = `
+    <div class="field"><span class="lab">취미 (최대 3개)</span><div class="seg">${Object.keys(CS.HOBBIES).map(k => `<button type="button" data-hobby="${k}" class="${f.hobbies.indexOf(k) >= 0 ? 'on' : ''}">${CS.HOBBIES[k].name}</button>`).join('')}</div><div class="hint">취미는 재능과 관심 분야를 키우지만, 게임·영상·덕질은 나태함도 키웁니다.</div></div>
+    <div class="field"><span class="lab">끌리는 진로 분야</span><div class="seg">${Object.keys(CS.FIELDS).map(k => `<button type="button" data-set="interest" data-v="${k}" class="${f.interest === k ? 'on' : ''}">${CS.FIELDS[k].name}</button>`).join('')}<button type="button" data-set="interest" data-v="unknown" class="${f.interest === 'unknown' ? 'on' : ''}">아직 모르겠다</button></div></div>
+    <div class="field"><span class="lab">목표 대학 수준</span>${seg('goal', Object.keys(CS.GOALS).map(k => [k, CS.GOALS[k].name]), f.goal)}</div>`;
+  if (st === 3) body = `
+    <div class="field"><span class="lab">부모님은 어떤 분인가요</span><div class="cards">${Object.keys(CS.PARENT_STYLES).map(k => `<button type="button" data-set="pStyle" data-v="${k}" class="${f.pStyle === k ? 'on' : ''}"><b>${CS.PARENT_STYLES[k].name}</b>${PSTYLE_D[k]}</button>`).join('')}</div></div>
+    <div class="field"><span class="lab">부모님이 바라는 것</span>${seg('pDesire', Object.keys(CS.PARENT_DESIRES).map(k => [k, CS.PARENT_DESIRES[k].name]), f.pDesire)}</div>
+    <div class="grid2">
+      <div class="field"><span class="lab">집안 형편</span>${seg('wealth', OPT.wealth, f.wealth)}<div class="hint">학원·과외, 재수, 유학이 가능한지에 영향을 줍니다.</div></div>
+      <div class="field"><span class="lab">형제</span>${seg('sibling', OPT.sibling, f.sibling)}</div>
+    </div>
+    <div class="field"><span class="lab">주로 어울리는 친구들</span><div class="cards">${Object.keys(CS.FRIEND_GROUPS).map(k => `<button type="button" data-set="friendGroup" data-v="${k}" class="${f.friendGroup === k ? 'on' : ''}"><b>${CS.FRIEND_GROUPS[k].name}</b>${FG_D[k]}</button>`).join('')}</div></div>
+    <div class="field"><span class="lab">속마음까지 말하는 절친이 있나요</span>${seg('bestFriend', [[true, '있다'], [false, '없다']], f.bestFriend)}</div>`;
+  $app.innerHTML = `
+  <div class="steps">${STEP_NAMES.map((n, i) => `<button type="button" data-step="${i}" class="${i === st ? 'on' : ''}">${i + 1}. ${n}</button>`).join('')}</div>
+  <section class="sheet omr pad">
+    <h2 style="font:28px/1.2 var(--f-display);margin-bottom:16px">${STEP_NAMES[st]}</h2>
+    <form class="form" id="setupForm" onsubmit="return false">${body}</form>
+    <div class="formnav">
+      <button class="ghost" type="button" id="prevStep">${st === 0 ? '처음 화면' : '이전'}</button>
+      <button class="cta" type="button" id="nextStep">${st === 3 ? '고1 3월로 출발' : '다음'}</button>
+    </div>
+  </section>`;
+  if (+f.grade > 1 && st === 3) document.getElementById('nextStep').textContent = `고${f.grade} 3월로 출발`;
+  bindSetup();
+}
+function bindSetup() {
+  const f = app.form;
+  $app.querySelectorAll('[data-step]').forEach(b => { b.onclick = () => { app.step = +b.dataset.step; render(); }; });
+  $app.querySelectorAll('[data-set]').forEach(b => {
+    b.onclick = () => {
+      let v = b.dataset.v;
+      if (b.dataset.num || b.dataset.set === 'grade') v = +v;
+      if (b.dataset.set === 'bestFriend') v = v === 'true';
+      f[b.dataset.set] = v; app.formIsSample = false;
+      if (b.dataset.set === 'grade') { const max = v < 3 ? 5 : 9; if (+f.gpaG > max) f.gpaG = max; }
+      store.set('form', f); render();
+    };
+  });
+  $app.querySelectorAll('[data-hobby]').forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.hobby, i = f.hobbies.indexOf(k);
+      if (i >= 0) f.hobbies.splice(i, 1); else if (f.hobbies.length < 3) f.hobbies.push(k); else { toast('취미는 3개까지 고를 수 있어요'); return; }
+      app.formIsSample = false; store.set('form', f); render();
+    };
+  });
+  $app.querySelectorAll('[data-text]').forEach(i => { i.oninput = () => { f[i.dataset.text] = i.value; app.formIsSample = false; store.set('form', f); }; });
+  $app.querySelectorAll('[data-select]').forEach(i => { i.onchange = () => { f[i.dataset.select] = i.value; store.set('form', f); }; });
+  $app.querySelectorAll('[data-num-input]').forEach(i => {
+    i.onchange = () => { const max = +i.max, v = Math.max(1, Math.min(max, parseFloat(i.value) || 1)); f[i.dataset.numInput] = Math.round(v * 10) / 10; app.formIsSample = false; store.set('form', f); render(); };
+  });
+  document.getElementById('prevStep').onclick = () => { if (app.step === 0) app.screen = 'intro'; else app.step--; render(); };
+  document.getElementById('nextStep').onclick = () => { if (app.step < 3) { app.step++; render(); window.scrollTo(0, 0); } else startGame(); };
+}
+
+// ── 게임 진행 ──
+function startGame(seed) {
+  app.seed = seed || newSeed();
+  app.decisions = {}; app.order = []; app.seenLog = 0; app.rewinds = 0; app.rewindFrom = null;
+  app.analysis = null; app.endingSaved = false;
+  app.screen = 'game';
+  step();
+}
+function step() {
+  app.res = CS.play(profileOf(app.form), app.seed, app.decisions);
+  if (app.res.done) { app.screen = 'end'; app.analysis = null; }
+  render();
+}
+function answer(key, val) {
+  app.decisions[key] = val; app.order.push(key);
+  app.rewindFrom = null;
+  step();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+const PHASES = [['고1', s => /^고1/.test(s)], ['고2', s => /^고2/.test(s)], ['고3', s => /^고3/.test(s)], ['입시', s => /입시|재수|삼수/.test(s)], ['대학', s => /대학|졸업|20대/.test(s)], ['서른', s => /서른|스무 살/.test(s)]];
+function phaseIdx(label) { for (let i = 0; i < PHASES.length; i++) if (PHASES[i][1](label || '')) return i; return 0; }
+function ruler(label) {
+  const k = phaseIdx(label);
+  return `<div class="ruler">${PHASES.map((p, i) => `<div class="${i < k ? 'done' : i === k ? 'now' : ''}">${p[0]}</div>`).join('')}</div>`;
+}
+function statusPanel(v) {
+  return `<aside class="sheet pad status">
+    <h3>${esc(v.name)}</h3>
+    <div class="who">${esc(v.turn)} · ${Math.floor(v.age)}세${v.uni ? ' · ' + esc(v.uni) : ''}</div>
+    <div class="scores">
+      <div class="score"><div class="k">${v.gpa ? '대학 학점' : '최근 내신'}</div><div class="g">${v.gpa ? esc(v.gpa) : esc(v.naesin.g.replace('(5등급제)', ''))}<small>${v.gpa ? '/ 4.5' : '상위 ' + v.naesin.pct.toFixed(0) + '%'}</small></div></div>
+      <div class="score"><div class="k">수능형 실력</div><div class="g">${v.mock.g}등급<small>상위 ${v.mock.pct.toFixed(0)}%</small></div></div>
+    </div>
+    <div class="bars">${v.bars.map(b => `<div class="bar ${b.bad ? 'badv' : ''}"><span>${esc(b.label)}</span><div class="track"><div class="fill" style="width:${b.v}%"></div></div><span class="v">${b.v}</span></div>`).join('')}</div>
+    <div class="chips">
+      <span class="chip">연애 <b>${esc(v.romance)}</b></span>
+      <span class="chip">끌리는 분야 <b>${esc(v.interest)}</b></span>
+      <span class="chip">집안 형편 <b>${esc(v.money)}</b></span>
+    </div>
+  </aside>`;
+}
+const CAT_COLOR = { study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
+function renderGame() {
+  const res = app.res, s = res.state, v = CS.view(s);
+  const logs = s.log;
+  const fresh = logs.slice(app.seenLog);
+  const old = logs.slice(0, app.seenLog);
+  const pr = res.prompt;
+  const qno = s.history.length + 1;
+  let qhtml = `<div class="qno"><span class="badge">${qno}번</span><span class="when">${esc(pr.turn)} · ${Math.floor(pr.age)}세</span></div><h2>${esc(pr.title)}</h2><p class="ctx">${esc(pr.text)}</p>`;
+  if (pr.type === 'choice') {
+    qhtml += `<div class="opts">${pr.options.map((o, i) => `<button type="button" class="opt" data-opt="${esc(o.id)}"><span class="bub">${i + 1}</span><span>${esc(o.label)}</span></button>`).join('')}</div>`;
+  } else {
+    const cur = app.allocDraft && app.allocDraft.key === pr.key ? app.allocDraft.v : Object.assign({}, pr.def);
+    app.allocDraft = { key: pr.key, v: cur };
+    const used = pr.cats.reduce((a, c) => a + (cur[c.id] || 0), 0);
+    let cells = '';
+    pr.cats.forEach(c => { for (let i = 0; i < (cur[c.id] || 0); i++) cells += `<i style="background:${CAT_COLOR[c.id]};border-color:${CAT_COLOR[c.id]}">${i === 0 ? esc(c.label) : ''}</i>`; });
+    for (let i = used; i < 10; i++) cells += `<i class="empty"></i>`;
+    qhtml += `<div class="cells" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${10 - used}</b> / 10</div>
+      <div class="alloc" style="margin-top:12px">${pr.cats.map(c => `<div class="arow"><div class="nm"><b>${esc(c.label)}</b><span>${esc(c.desc)}</span></div>
+        <div class="step"><button type="button" data-dec="${c.id}" ${!(cur[c.id] > 0) ? 'disabled' : ''} aria-label="${esc(c.label)} 줄이기">−</button><span class="val">${cur[c.id] || 0}</span><button type="button" data-inc="${c.id}" ${used >= 10 ? 'disabled' : ''} aria-label="${esc(c.label)} 늘리기">+</button></div></div>`).join('')}</div>
+      <div class="qactions"><button class="cta" type="button" id="allocGo" ${used !== 10 ? 'disabled' : ''}>이렇게 보낸다</button><button class="ghost" type="button" id="allocReset">평소의 나대로</button>${used !== 10 ? '<span class="left">10칸을 모두 채워야 합니다</span>' : ''}</div>`;
+  }
+  $app.innerHTML = `${ruler(pr.turn)}
+  <div class="game">
+    ${statusPanel(v)}
+    <div style="min-width:0">
+      ${app.rewindFrom ? `<div class="banner">「${esc(app.rewindFrom)}」 시점으로 돌아왔습니다. 운은 그대로, 선택만 다시 할 수 있습니다. 현실에는 없는 버튼입니다.</div>` : ''}
+      ${fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}
+      <section class="sheet omr q">${qhtml}</section>
+      ${old.length ? `<details class="past"><summary>지난 기록 ${old.length}줄</summary><div class="feed">${old.slice().reverse().map(l => `<div class="note ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div></details>` : ''}
+    </div>
+  </div>`;
+  $app.querySelectorAll('[data-opt]').forEach(b => { b.onclick = () => { app.seenLog = logs.length; answer(pr.key, b.dataset.opt); }; });
+  $app.querySelectorAll('[data-inc]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.inc] = (app.allocDraft.v[b.dataset.inc] || 0) + 1; render(); }; });
+  $app.querySelectorAll('[data-dec]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.dec] = Math.max(0, (app.allocDraft.v[b.dataset.dec] || 0) - 1); render(); }; });
+  const go = document.getElementById('allocGo');
+  if (go) go.onclick = () => { const v2 = Object.assign({}, app.allocDraft.v); app.allocDraft = null; app.seenLog = logs.length; answer(pr.key, v2); };
+  const rs = document.getElementById('allocReset');
+  if (rs) rs.onclick = () => { app.allocDraft = { key: pr.key, v: Object.assign({}, pr.def) }; render(); };
+}
+
+// ── 결과 ──
+function lifeGrades(e) {
+  const g = p => CS._internal.grade9(Math.max(0.5, Math.min(99, p)));
+  return [
+    ['진학', g(100 - e.prestige * 0.97), e.uni + (e.major ? ' ' + e.major : '')],
+    ['직업', g([4, 15, 40, 72][e.level] || 60), e.career],
+    ['수입', g(100 - Math.min(99, e.salary / 120)), '연 ' + money(e.salary)],
+    ['만족도', g(100 - e.sat), e.sat + '점'],
+    ['관계', g(100 - ((e.marital === 'single' || e.marital === 'never' ? 35 : 70) * 0.4 + (e.parentTag === '화목' ? 85 : e.parentTag === '데면데면' ? 50 : 15) * 0.3 + (e.friendTag.indexOf('평생') === 0 ? 85 : e.friendTag.indexOf('가끔') === 0 ? 55 : 20) * 0.3)), e.maritalText + ' · 부모님과 ' + e.parentTag],
+    ['마음 건강', g(100 - e.mental), '멘탈 ' + e.mental],
+  ];
+}
+function money(n) { return n >= 10000 ? (Math.floor(n / 10000) + '억' + (n % 10000 ? ' ' + (n % 10000).toLocaleString() + '만' : '')) + ' 원' : n.toLocaleString() + '만 원'; }
+function renderEnd() {
+  const res = app.res, s = res.state, e = res.ending;
+  if (!app.endingSaved) {
+    const list = store.get('endings', []);
+    app.isNewEnding = list.indexOf(e.code) < 0;
+    if (app.isNewEnding) { list.push(e.code); store.set('endings', list); }
+    app.endingSaved = true;
+  }
+  const found = store.get('endings', []).length;
+  const grades = lifeGrades(e);
+  const an = app.analysis;
+  const dTag = (n, unit, inv) => { if (!n) return ''; const up = inv ? n < 0 : n > 0; return `<span class="${up ? 'up' : 'down'}">${unit} ${n > 0 ? '+' : ''}${n.toLocaleString()}</span>`; };
+  const card = (x, good) => `<article class="sheet wcard ${good ? 'goodc' : ''}">
+      <div class="mark" aria-hidden="true">${good ? '○' : '✕'}</div>
+      <div class="body">
+        <div class="when">${esc(x.turn)} · ${x.idx + 1}번 문항</div>
+        <h3>${esc(x.title)}</h3>
+        <div class="ans"><span class="k">내 답</span><span class="mine">${esc(x.chosen)}</span><span class="k">다른 답</span><span>${esc(x.alt)}</span></div>
+        <div class="result">${good ? '그 답을 골랐다면 오히려' : '그 답을 골랐다면'} → <b>${esc(x.ending.uni)}${x.ending.major ? ' ' + esc(x.ending.major) : ''}</b>, 서른 살엔 <b>${esc(x.ending.career)}</b> (연 ${money(x.ending.salary)}). ${esc(x.ending.archetype)}.
+          <div class="delta">${dTag(x.dSalary, '연봉(만)')}${dTag(x.dSat, '만족도')}${dTag(x.dPrestige, '대학 수준')}</div></div>
+        ${good ? '' : `<button class="ghost redo" type="button" data-rewind="${x.idx}">이 문제 다시 풀기</button>`}
+      </div></article>`;
+  $app.innerHTML = `${ruler('서른')}
+  <section class="report">
+    <div class="sheet omr pad">
+      <div class="eyebrow">서른 살 · 인생 성적표${app.isNewEnding ? ' · 새로 발견한 결말' : ''}</div>
+      <h1>${esc(e.archetype)}</h1>
+      <div class="job">${esc(e.career)}</div>
+      <div class="sub">${esc(e.uni)}${e.major ? ' ' + esc(e.major) : ''} · 연 ${money(e.salary)}</div>
+      <ul class="story">${e.story.map(l => `<li>${esc(l)}</li>`).join('')}</ul>
+      <div class="meta"><span>결말 코드 <span class="num">${esc(e.code)}</span></span><span>이 기기에서 발견한 결말 <b class="num">${found}</b>개 · 시뮬레이션으로 확인한 결말 3,000가지 이상</span>${app.rewinds ? `<span>되돌리기 ${app.rewinds}번 사용</span>` : ''}</div>
+      <div class="endactions">
+        <button class="cta" type="button" id="againSame">같은 나, 다른 운으로 다시</button>
+        <button class="cta secondary" type="button" id="editMe">내 정보 바꾸기</button>
+        <button class="ghost" type="button" id="copyRes">결과 복사</button>
+      </div>
+    </div>
+    <div class="sheet pad">
+      <table class="gradebook"><caption class="eyebrow" style="text-align:left;caption-side:top;padding-bottom:8px">영역별 등급 (1등급이 가장 높음)</caption>
+        <tbody>${grades.map(([k, g, d]) => `<tr><th scope="row">${k}</th><td class="g">${g}</td><td>${esc(d)}</td></tr>`).join('')}</tbody></table>
+      <div class="meta"><span>수능 상위 <span class="num">${e.csatPct ? e.csatPct.toFixed(1) : '-'}</span>%</span>${e.naesinAvg ? `<span>내신 평균 상위 <span class="num">${e.naesinAvg.toFixed(1)}</span>%</span>` : ''}${e.attempts ? `<span>${e.attempts === 1 ? '재수' : '삼수'}</span>` : ''}</div>
+    </div>
+  </section>
+
+  <div class="sectionhead"><h2>인생 오답노트</h2><p>${an ? `내가 고른 ${s.history.length}개 답 중 다른 답 ${an.tried}개를 같은 운으로 다시 살아 봤습니다. 그중 ${an.changed}개가 서른 살을 바꿨습니다.` : '같은 운으로 다른 답을 하나씩 다시 살아 보는 중…'}</p></div>
+  <div class="wrong" id="wrong">${an ? (an.regrets.length ? an.regrets.map(x => card(x, false)).join('') : '<div class="sheet pad muted">바꿨을 때 더 나아지는 답을 찾지 못했습니다. 이번 인생은 거의 최선의 답을 골랐습니다.</div>') : '<div class="sheet computing">계산 중…</div>'}</div>
+
+  ${an && an.goods.length ? `<div class="sectionhead"><h2>잘 고른 답</h2><p>다른 답을 골랐다면 더 나빠졌을 순간들</p></div><div class="wrong">${an.goods.map(x => card(x, true)).join('')}</div>` : ''}
+
+  <div class="sectionhead"><h2>지나온 시간</h2><p>${s.log.length}줄의 기록</p></div>
+  <details class="sheet pad"><summary class="small" style="cursor:pointer">고1부터 서른까지 전체 기록 펼치기</summary><div class="timeline" style="margin-top:12px">${s.log.map(l => `<div class="note ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div></details>`;
+
+  document.getElementById('againSame').onclick = () => { startGame(); window.scrollTo(0, 0); };
+  document.getElementById('editMe').onclick = () => { app.screen = 'setup'; app.step = 0; render(); };
+  document.getElementById('copyRes').onclick = () => {
+    const txt = `[그때 그 선택] ${e.archetype}\n${e.uni} ${e.major}\n서른 살: ${e.career} (연 ${money(e.salary)})\n` + e.story.join('\n') +
+      (an && an.regrets[0] ? `\n가장 아쉬운 선택: ${an.regrets[0].turn} "${an.regrets[0].title}" — ${an.regrets[0].alt} → ${an.regrets[0].ending.career}` : '');
+    const done = () => toast('결과를 복사했어요');
+    try { navigator.clipboard.writeText(txt).then(done, () => fallbackCopy(txt)); } catch (err) { fallbackCopy(txt); }
+  };
+  $app.querySelectorAll('[data-rewind]').forEach(b => { b.onclick = () => rewind(+b.dataset.rewind); });
+  if (!an) setTimeout(() => {
+    try { app.analysis = CS.analyze(profileOf(app.form), app.seed, s.history, e); } catch (err) { console.error(err); app.analysis = { regrets: [], goods: [], tried: 0, changed: 0 }; }
+    if (app.screen === 'end') render();
+  }, 30);
+}
+function fallbackCopy(txt) {
+  const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('결과를 복사했어요'); } catch (e) { toast('복사가 막혀 있어요. 직접 선택해 복사해 주세요'); }
+  ta.remove();
+}
+function rewind(idx) {
+  const h = app.res.state.history;
+  const d = {};
+  h.slice(0, idx).forEach(x => { d[x.key] = x.choice; });
+  app.decisions = d; app.rewinds++; app.rewindFrom = h[idx].turn + ' · ' + h[idx].title;
+  app.analysis = null; app.endingSaved = false; app.seenLog = 0;
+  app.screen = 'game';
+  app.res = CS.play(profileOf(app.form), app.seed, app.decisions);
+  app.seenLog = Math.max(0, app.res.state.log.length - 3);
+  render(); window.scrollTo(0, 0);
+}
+
+function render() {
+  document.getElementById('homeBtn').hidden = app.screen === 'intro';
+  if (app.screen === 'intro') renderIntro();
+  else if (app.screen === 'setup') renderSetup();
+  else if (app.screen === 'game') renderGame();
+  else renderEnd();
+}
+document.getElementById('homeBtn').onclick = () => { app.screen = 'intro'; render(); window.scrollTo(0, 0); };
+
+// 화면이 새로 배포돼도 진행 중인 게임은 이어서
+const hot = window.claude && window.claude.hot;
+if (hot && hot.snapshot) hot.snapshot(() => ({ screen: app.screen, step: app.step, form: app.form, seed: app.seed, decisions: app.decisions, seenLog: app.seenLog, rewinds: app.rewinds }));
+function boot(data) {
+  if (data && data.form) {
+    Object.assign(app, { screen: data.screen, step: data.step || 0, form: data.form, seed: data.seed, decisions: data.decisions || {}, seenLog: data.seenLog || 0, rewinds: data.rewinds || 0 });
+    if ((app.screen === 'game' || app.screen === 'end') && app.seed) { app.res = CS.play(profileOf(app.form), app.seed, app.decisions); app.screen = app.res.done ? 'end' : 'game'; }
+  }
+  render();
+}
+if (hot && hot.ready) hot.ready(boot); else boot(hot && hot.data);
+})();
+</script>
