@@ -183,11 +183,11 @@ const PARENT_DESIRES = {
   free:     { name: '네가 원하는 걸 하렴',     field: null },
 };
 const STYLES = {
-  steady:  { name: '꾸준형',     naesin: 1.0,  csat: 1.0,  var: 0.16, stress: 0 },
-  cram:    { name: '벼락치기형',  naesin: 1.05, csat: 0.82, var: 0.42, stress: 3 },
-  immerse: { name: '몰입형',     naesin: 0.9,  csat: 1.08, var: 0.32, stress: 0 },
-  perfect: { name: '완벽주의형',  naesin: 1.08, csat: 0.98, var: 0.12, stress: 6 },
-  hack:    { name: '요령형',     naesin: 1.0,  csat: 0.92, var: 0.24, stress: -2 },
+  steady:  { name: '꾸준형',     naesin: 1.0,  csat: 1.0,  var: 0.1, stress: 0 },
+  cram:    { name: '벼락치기형',  naesin: 1.05, csat: 0.82, var: 0.25, stress: 3 },
+  immerse: { name: '몰입형',     naesin: 0.9,  csat: 1.08, var: 0.19, stress: 0 },
+  perfect: { name: '완벽주의형',  naesin: 1.08, csat: 0.98, var: 0.08, stress: 6 },
+  hack:    { name: '요령형',     naesin: 1.0,  csat: 0.92, var: 0.15, stress: -2 },
 };
 const HOBBIES = {
   game:   { name: '게임',        lazy: 2.2, talent: { code: 6, game: 22 },  interest: { cs: 8 } },
@@ -446,11 +446,41 @@ function judge(s, b, a) {
   s.log.slice(b.log, a.log).forEach(l => { d += l.kind === 'good' ? 2.5 : l.kind === 'bad' ? -2.5 : l.kind === 'warn' ? -1 : 0; });
   return { score: Math.round(d * 10) / 10, verdict: d >= 2.5 ? 'good' : d <= -2.5 ? 'bad' : 'normal' };
 }
+// 선택 자체의 성격: 공부·생기부를 챙긴 선택은 대체로 좋고, 놀거나 미룬 선택은 대체로 나쁘다
+const TAG_PRIOR = { study: 1.6, record: 1.0, self: 0.4, kind: 0.5, safe: 0.2, obey: 0, social: -0.2, work: 0, risk: -0.2, rest: 0, romance: -0.6, rebel: -0.9, fun: -2.2 };
+function choicePrior(h, b) {
+  const pr = h.prompt;
+  if (pr.type === 'alloc') {
+    const a = h.choice || {};
+    const study = SUB_KEYS.reduce((t, k) => t + (a[k] || 0), 0);
+    let v = (study - 6) * 0.8;
+    SUB_KEYS.forEach(k => { if (pr.cats.some(c => c.id === k) && !(a[k] > 0)) v -= k === 'kor' || k === 'math' ? 2.5 : 1.5; });
+    if (!(a.rest > 0)) v -= 1.5; if ((a.rest || 0) >= 5) v -= 1;
+    if ((a.hobby || 0) + (a.friends || 0) + (a.date || 0) >= 7) v -= 1.5;
+    return v;
+  }
+  const tv = o => { const t = o.tags && o.tags.length ? o.tags : ['safe']; return t.reduce((x, k) => x + (k === 'rest' && b.stress >= 60 ? 1 : (TAG_PRIOR[k] || 0)), 0) / t.length; };
+  const chosen = pr.options.find(o => o.id === h.choice);
+  if (!chosen) return 0;
+  const avg = pr.options.reduce((x, o) => x + tv(o), 0) / pr.options.length;
+  return (tv(chosen) - avg) * 1.6;
+}
 function settle(s) {
   const h = s.history[s.history.length - 1];
   if (!h || h.verdict) return;
   const j = judge(s, h.before, snap(s));
-  h.verdict = j.verdict; h.score = j.score;
+  const prior = choicePrior(h, h.before);
+  let score = j.score * 0.55 + prior * 1.2;
+  // 핵심 과목을 통째로 비우거나, 놀기를 고른 선택은 결과가 잠깐 좋아 보여도 '좋은 선택'이 될 수 없다
+  if (h.prompt.type === 'alloc') {
+    const a = h.choice || {}, miss = SUB_KEYS.filter(k => h.prompt.cats.some(c => c.id === k) && !(a[k] > 0));
+    if (miss.length) { score = Math.min(score, miss.some(k => k === 'kor' || k === 'math') ? -2 : 1.5); h.note = `${miss.map(k => SUBJ_NAME[k]).join('·')}에 한 칸도 쓰지 않았다. 지금은 티가 안 나도 그 과목은 계속 떨어진다.`; }
+  } else {
+    const ch = h.prompt.options.find(o => o.id === h.choice);
+    if (ch && (ch.tags || []).indexOf('fun') >= 0 && score > 1.5) { score = 1.5; }
+  }
+  h.verdict = score >= 2 ? 'good' : score <= -2 ? 'bad' : 'normal';
+  h.score = Math.round(score * 10) / 10;
   h.logs = [h.before.log, s.log.length];
 }
 function ask(ctx, prompt) {
@@ -574,6 +604,31 @@ function allocCats(s, turn) {
   return cats;
 }
 
+// 고교를 마쳤을 때의 과목 등급(수능, 없으면 지금 모의고사)
+function endG(s) { return s.csatG || mockGrades(s.sub); }
+const STEM = ['eng', 'cs', 'sci', 'med', 'nurse'];
+// 진로 결과에 들어가는 과목 실력: 이공계는 수학, 상경은 수학·영어, 인문·법·미디어는 국어·영어
+function subjCareerBonus(s, field) {
+  const G = endG(s);
+  if (STEM.indexOf(field) >= 0) return Math.max(-3, (4 - G.math) * 1) + (4 - G.eng) * 0.5;
+  if (field === 'biz') return (4 - G.math) * 1 + (4 - G.eng) * 1;
+  if (['hum', 'law', 'media', 'soc', 'edu'].indexOf(field) >= 0) return (4 - G.kor) * 1.2 + (4 - G.eng) * 0.8;
+  return (4 - G.kor) * 0.5 + (4 - G.eng) * 0.5;
+}
+// 한 과목을 놓았을 때 / 붙잡았을 때 생기는 일
+const SUBJ_DOWN = {
+  kor: (g0, g1, s) => `국어 ${g0}→${g1}등급. 국어를 거의 안 봤더니 비문학 지문 읽는 속도부터 느려졌다. 영어 장문, 탐구 자료 해석에서도 시간이 모자라기 시작했다.${s.applyField && ['hum', 'law', 'media', 'edu', 'biz', 'soc'].indexOf(s.applyField) >= 0 ? ' 문과 정시는 국어 반영 비율이 가장 높다.' : ''}`,
+  math: (g0, g1, s) => `수학 ${g0}→${g1}등급. 한 학기 손을 놓았더니 다음 단원 개념이 이해가 안 된다. 수학은 앞 단원에 구멍이 나면 뒤가 줄줄이 무너진다.${s.track === '자연' ? ' 이대로면 공대·자연대 지원 자체가 어려워진다.' : ' 상경 계열 지원과 정시 등급 합에 바로 타격이 온다.'}`,
+  eng: (g0, g1) => `영어 ${g0}→${g1}등급. 단어를 안 외웠더니 빈칸·순서 문제에서 감이 사라졌다. 영어는 거의 모든 대학의 수능 최저에 들어간다.`,
+  inq: (g0, g1, s) => `탐구 ${g0}→${g1}등급. "탐구는 막판에 외우면 된다"며 미뤘는데 외울 양만 쌓였다.${s.track === '자연' ? ' 이과 정시는 탐구 반영 비율이 30%다.' : ' 수능 최저에서 탐구 한 과목이 빠지면 등급 합을 맞추기 어렵다.'}`,
+};
+const SUBJ_UP = {
+  kor: (g0, g1) => `국어 ${g0}→${g1}등급. 지문 구조가 보이기 시작했다. 영어 장문과 탐구 자료도 덜 막힌다.`,
+  math: (g0, g1) => `수학 ${g0}→${g1}등급. 개념 구멍을 메우니 처음 보는 문제도 접근이 된다.`,
+  eng: (g0, g1) => `영어 ${g0}→${g1}등급. 단어가 쌓이니 지문이 한 번에 읽힌다. 수능 최저가 한결 편해졌다.`,
+  inq: (g0, g1) => `탐구 ${g0}→${g1}등급. 개념이 정리되니 자료 해석 문제도 빨라졌다.`,
+};
+
 // 과목별 공부 효과 — 국어 문해력이 영어·탐구 효율을, 이과 수학이 탐구 계산을 끌어올린다
 function studySubjects(s, a, coef, r, quiet) {
   const p = s.p, st = STYLES[p.style] || STYLES.steady, fg = FRIEND_GROUPS[s.friendGroup];
@@ -588,18 +643,33 @@ function studySubjects(s, a, coef, r, quiet) {
   const lit = clamp(s.sub.kor, -1.5, 2);
   const mathL = clamp(s.sub.math, -1.5, 2);
   const sci = s.track === '자연';
-  const mult = { kor: 1, math: 1 + 0.04 * lit, eng: 1 + 0.1 * lit, inq: 1 + 0.08 * lit + (sci ? 0.06 * mathL : 0) };
+  s.neglect = s.neglect || { kor: 0, math: 0, eng: 0, inq: 0 };
+  // 수학 구멍: 두 학기 넘게 놓으면 생기고, 3칸 이상씩 두 학기를 해야 메워진다. 구멍이 있으면 수학 공부 효율이 떨어진다
+  const hole = s.flags.mathHole ? 0.7 : 1;
+  const mult = { kor: 1, math: (1 + 0.04 * lit) * hole, eng: 1 + 0.1 * lit, inq: 1 + 0.08 * lit + (sci ? 0.06 * mathL : 0) };
   const eff = {}; let effSum = 0;
   SUB_KEYS.forEach(k => { eff[k] = (a[k] || 0) * (1 - lossFrac) * subjAbility(p, k) * cond * motive * acad; effSum += eff[k]; });
   const spill = { kor: 0, math: 0, eng: eff.kor * 0.025, inq: eff.kor * 0.025 + (sci ? eff.math * 0.025 : 0) };
   const before = mockGrades(s.sub);
   SUB_KEYS.forEach(k => {
+    const b = a[k] || 0;
+    if (b <= 1) s.neglect[k]++; else if (b >= 3) s.neglect[k] = Math.max(0, s.neglect[k] - 1);
     const base = 1.55 + Math.max(0, s.sub[k]) * 0.22 + Math.max(0, s.sub[k] - 1.5) * 0.35;   // 최상위권은 경쟁이 더 치열하다
-    const d = (eff[k] * mult[k] * st.csat - base) * coef + spill[k] + fg.study * (a.friends || 0) * 0.7;
-    s.sub[k] += d * damp(s.sub[k]);
+    // 안 하면 잊어버린다: 놓은 학기가 이어질수록 더 크게 떨어진다
+    const forget = b <= 1 ? 0.05 * s.neglect[k] : 0;
+    const d = (eff[k] * mult[k] * st.csat - base) * coef + spill[k] + fg.study * (a.friends || 0) * 0.7 - forget;
+    s.sub[k] += d > 0 ? d * damp(s.sub[k]) : d;
   });
+  if (!s.flags.mathHole && s.neglect.math >= 2) { s.flags.mathHole = true; s.mathFix = 0; if (!quiet) L(s, '수학에 구멍이 생겼다. 앞 단원을 비워 둔 채 다음 단원을 들으니 수업이 외국어처럼 들린다. 메우려면 몇 학기 동안 수학에 시간을 크게 써야 한다.', 'bad'); }
+  else if (s.flags.mathHole && (a.math || 0) >= 3) { s.mathFix = (s.mathFix || 0) + 1; if (s.mathFix >= 2) { s.flags.mathHole = false; if (!quiet) L(s, '수학 구멍을 메웠다. 앞 단원부터 다시 쌓으니 이제 수업이 들린다.', 'good'); } }
   if (!quiet) {
-    if (eff.kor >= 2.3 && lit > 0.2) L(s, '국어 독해력이 붙으면서 영어 장문과 탐구 지문도 덜 막힌다. 다른 과목 공부 효율이 같이 올랐다.', 'good');
+    const after = mockGrades(s.sub);
+    SUB_KEYS.forEach(k => {
+      if (after[k] > before[k]) L(s, SUBJ_DOWN[k](before[k], after[k], s), (a[k] || 0) <= 1 ? 'bad' : 'warn');
+      else if (after[k] < before[k] && (a[k] || 0) >= 3) L(s, SUBJ_UP[k](before[k], after[k], s), 'good');
+      else if ((a[k] || 0) === 0 && s.neglect[k] >= 2) L(s, `${SUBJ_NAME[k]}${jo(SUBJ_NAME[k], '을/를')} ${s.neglect[k]}학기째 거의 안 했다. 등급은 아직 버티지만 실력은 계속 빠지고 있다.`, 'warn');
+    });
+    if (eff.kor >= 2.3 && lit > 0.2 && !s.flags.litShown && (s.flags.litShown = true)) L(s, '국어 독해력이 붙으면서 영어 장문과 탐구 지문도 덜 막힌다. 다른 과목 공부 효율이 같이 올랐다.', 'good');
     else if (lit < -0.4 && (a.eng || 0) + (a.inq || 0) >= 4) L(s, '영어·탐구에 시간을 많이 썼는데 지문이 잘 안 읽혀 효율이 떨어졌다. 국어 문해력이 발목을 잡는다.', 'warn');
     if (sci && eff.math >= 2.6 && mathL > 0.4) L(s, '수학이 탄탄해지니 물리·화학 계산 문제도 빨라졌다.', 'good');
     if (acad > 1 && p.academies >= 2 && s.money < 15) L(s, `학원 ${p.academies}곳 학원비가 집에 부담이 되고 있다.`, 'warn');
@@ -692,7 +762,7 @@ function semesterEffects(ctx, turn, a) {
 }
 // 모의고사: 과목별 등급과 추세. 추세는 멘탈에도 영향을 준다
 function mockExam(s, r, name) {
-  const mk = {}; SUB_KEYS.forEach(k => { mk[k] = s.sub[k] + r.normal() * 0.2; });
+  const mk = {}; SUB_KEYS.forEach(k => { mk[k] = s.sub[k] + r.normal() * 0.1; });
   const g = mockGrades(mk), pct = clamp(topFromZ(meanSub(mk)), 0.1, 99);
   const prevPct = s.mocks.length ? s.mocks[s.mocks.length - 1] : null;
   s.mocks.push(pct); s.mockG.push(g);
@@ -1610,10 +1680,10 @@ function studentZ(s, type, field) {
   const cs = s.csatSub || s.sub;
   const zcs = compositeZ(cs, field);
   switch (type) {
-    case 'gyogwa': return zNavg - trackPen * 0.5;
+    case 'gyogwa': return zNavg - trackPen * 0.5 - (s.flags.applyMathWeak || 0) * 0.04;
     case 'jonghap': {
       const sb = p.school === 'special' ? 0.45 : p.school === 'jasa' ? 0.25 : p.region === 'gangnam' ? 0.05 : 0;
-      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0);
+      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0) - (s.flags.applyMathWeak || 0) * 0.08 - (s.flags.korWeakInterview ? 0.06 : 0);
     }
     case 'nonsul': return 0.45 * cs.kor + 0.25 * zcs + (p.comprehension - 3) * 0.22 + (s.talent.verbal - 40) / 110;   // 논술은 국어 독해력이 핵심
     case 'silgi': {
@@ -1628,13 +1698,13 @@ function studentZ(s, type, field) {
 }
 function cutZ(tier, field) { return zFromTop(tier.pct) + (tier.fo ? 0 : FIELD_DIFF[field] || 0) + (SILGI[field] ? -0.35 : 0); }
 function estimateIdx(s, list, z, field, r, bias) {
-  const pz = z + bias + r.normal() * 0.13;
+  const pz = z + bias + r.normal() * 0.07;
   for (let i = 0; i < list.length; i++) if (pz >= cutZ(list[i], field)) return i;
   return list.length - 1;
 }
 function cardP(s, c, field) {
   const z = studentZ(s, c.type, field);
-  const k = { gyogwa: 5, jonghap: 3.4, nonsul: 3, silgi: 3, jungsi: 7 }[c.type];
+  const k = { gyogwa: 8, jonghap: 5.5, nonsul: 3, silgi: 5, jungsi: 11 }[c.type];
   let P = sigmoid(k * (z - cutZ(c.tier, field)));
   if (c.type === 'nonsul') P = P * 0.32 + 0.02;
   if (c.type === 'jonghap') P = P * 0.92;
@@ -1715,6 +1785,11 @@ function applyTurn(ctx, turn) {
   // 2) 전형
   const field = fo.id;
   L(s, `${FIELDS[field].name} 쪽으로 정했다. ${employText(field, 62)}`, 'info');
+  const gA = mockGrades(s.sub);
+  if (STEM.indexOf(field) >= 0 && gA.math >= 4) { s.flags.applyMathWeak = 2; L(s, `수학 ${gA.math}등급으로 ${FIELDS[field].name}에 지원한다. 학종 서류에서는 '수학 역량 부족'으로 읽히고, 교과에서도 수학 등급을 따로 보는 대학이 많다.`, 'bad'); }
+  else if (field === 'biz' && gA.math >= 5) { s.flags.applyMathWeak = 1; L(s, `경영·경제인데 수학 ${gA.math}등급이다. 상경 계열은 수학 등급을 꽤 본다.`, 'warn'); }
+  if (gA.kor >= 5) { s.flags.korWeakInterview = true; L(s, `국어 ${gA.kor}등급. 학종 면접에서 질문 요지를 놓치거나 논술 답안의 논지가 흔들릴 수 있다.`, 'warn'); }
+  if (gA.eng >= 4) L(s, `영어 ${gA.eng}등급. 최저가 있는 전형은 영어 때문에 등급 합을 맞추기 어렵다.`, 'warn');
   if (s.flags.ged) { s.applyField = field; s.applyType = 'none'; s.susiCards = []; L(s, '검정고시 출신이라 수시는 쓰지 않고 정시에 모든 걸 건다.'); return; }
   const tOpts = [
     { id: 'jonghap', label: `학생부종합 위주 (생기부 ${Math.round(s.record)}점)`, hint: '내신이 조금 낮아도 생기부로 역전 · 면접 준비와 결과 예측이 어렵다', tags: ['record'] },
@@ -1801,14 +1876,14 @@ function finalTurn(ctx, turn) {
   const hardKey = { 국어: 'kor', 수학: 'math', 영어: 'eng' }[hard];
   let choiceD = 0;
   if (c.id === 'skip') choiceD = p.comprehension >= 3 ? 0.15 : -0.08;
-  if (c.id === 'hold') choiceD = r.normal() * 0.3 - 0.05;
+  if (c.id === 'hold') choiceD = r.normal() * 0.12 - 0.05;
   if (c.id === 'breath') choiceD = 0.05 + (p.grit - 3) * 0.08;
   let common = 0;
   if (s.flags.breakupG3) common -= 0.1;
   if (s.health < 30) common -= 0.08;
   if (s.stress > 80) common -= 0.06;
   if (hardKey === 'eng' || hardKey === 'kor') common += 0;
-  const day = sitExam(s, r, 0.2, common, hardKey, choiceD);
+  const day = sitExam(s, r, 0.11, common, hardKey, choiceD);
   const pct = s.csatPct;
   const diffWord = day > 0.12 ? '평소보다 훨씬 잘 봤다.' : day < -0.12 ? '평소 실력이 나오지 않았다.' : '평소 실력만큼 나왔다.';
   L(s, `수능 가채점 — ${gradesText(s.csatG)} (평균 상위 ${pct.toFixed(1)}%). ${diffWord}`, day < -0.12 ? 'bad' : day > 0.12 ? 'good' : 'info');
@@ -1850,7 +1925,7 @@ function jungsiRound(ctx, field, key) {
   const r = makeRng(s.seed, key);
   const cards = rollCards(s, makeCards(s, field, 'jungsi', o.id, 3, r), r);
   // 다군 '펑크'(합격선 붕괴)나 '폭발'은 해마다 있다
-  if (r.chance(0.12)) { cards[2].pass = true; cards[2].punk = true; }
+  if (r.chance(0.04)) { cards[2].pass = true; cards[2].punk = true; }
   s.jungsi = cards;
   L(s, '정시 결과 — ' + cards.map((c, i) => `${'가나다'[i]}군 ${c.uni} ${c.major} ${c.pass ? '합격' + (c.punk ? '(펑크 덕분!)' : '') : '불합격'}`).join(' / '), cards.some(c => c.pass) ? 'good' : 'bad');
   return pickUniversity(ctx, cards.filter(c => c.pass), key);
@@ -1901,7 +1976,7 @@ function retake(ctx) {
     { id: 'look', label: '가끔 본다. 자극이 된다', hint: '동기 부여 · 비교하다 무너질 수도', tags: ['safe'] },
     { id: 'meet', label: '주말엔 친구들을 만난다', hint: '숨통이 트임 · 리듬이 깨진다', tags: ['social', 'fun'] },
   ]);
-  let g = 0.1 + 0.07 * (p.diligence - 3) + 0.05 * (p.grit - 3) - s.lazy / 420 + r.normal() * 0.24;
+  let g = 0.1 + 0.07 * (p.diligence - 3) + 0.05 * (p.grit - 3) - s.lazy / 300 + r.normal() * 0.12;
   if (o.id === 'academy') { g += 0.09; s.money -= 30; }
   if (o.id === 'work') { g -= 0.06; s.money += 10; s.flags.mature = true; }
   if (t.id === 'delete') { g += 0.03; inc(s, 'social', -8); }
@@ -1910,7 +1985,7 @@ function retake(ctx) {
   if (s.money < 0) { s.money = 0; inc(s, 'parentRel', -6); }
   inc(s, 'mental', -6); inc(s, 'lazy', -5);
   s.zC += g * damp(s.zC);
-  const day = sitExam(s, r, 0.18, 0, null, 0);
+  const day = sitExam(s, r, 0.1, 0, null, 0);
   L(s, `${n === 1 ? '재수' : '삼수'} 수능 — ${gradesText(s.csatG)} (평균 상위 ${topFromZ(s.zCsat).toFixed(1)}%). ${g + day > 0.15 ? '확실히 올랐다.' : g + day < 0 ? '오히려 떨어졌다. 눈앞이 캄캄했다.' : '조금 올랐다.'}`, g + day > 0.15 ? 'good' : g + day < 0 ? 'bad' : 'info');
   s.flags.retakeGain = (s.flags.retakeGain || 0) + g + day;
   const field = s.applyField || topInterest(s);
@@ -1923,8 +1998,16 @@ function collegePhase(ctx) {
   s.phase = 'college';
   s.age = 20 + s.attempts;
   const r0 = makeRng(s.seed, 'col0');
-  s.col = { gpa: clamp(3.2 + (p.diligence - 3) * 0.14 + r0.normal() * 0.18, 2, 4.4), spec: clamp(10 + s.record / 6, 0, 100), network: s.social / 2 + (p.pJob === 'pro' ? 10 : 0), effort: 0 };
+  s.col = { gpa: clamp(3.2 + (p.diligence - 3) * 0.14 - Math.max(0, s.lazy - 40) / 90 + r0.normal() * 0.1, 1.8, 4.4), spec: clamp(10 + s.record / 6, 0, 100), network: s.social / 2 + (p.pJob === 'pro' ? 10 : 0), effort: 0 };
   s.fit = fitOf(s, u.field);
+  // 고교 때 놓은 과목은 대학 전공 기초에서 다시 돌아온다
+  const G = endG(s);
+  if (STEM.indexOf(u.field) >= 0 && G.math >= 4) { s.col.gpa -= 0.25; inc(s, 'mental', -6); s.flags.fMath = true; L(s, `수학 ${G.math}등급으로 들어온 ${u.major}. 1학년 미적분학·일반물리에서 F가 나왔다. 재수강해야 한다.`, 'bad'); }
+  else if (STEM.indexOf(u.field) >= 0 && G.math <= 2) { s.col.gpa += 0.1; L(s, '고등학교 때 다진 수학 덕분에 전공 기초 과목이 수월했다.', 'good'); }
+  if ((u.field === 'biz' || u.field === 'soc') && G.math >= 5) { s.col.gpa -= 0.15; L(s, `경제원론·통계학에서 수식이 나오자 손을 놓았다. C를 받았다.`, 'warn'); }
+  if (G.kor >= 4) { s.col.gpa -= 0.12; s.col.spec -= 3; L(s, `국어 ${G.kor}등급 때의 습관이 남았다. 리포트마다 "논지가 불분명하다"는 코멘트가 달린다.`, 'warn'); }
+  if (G.eng >= 4) { s.col.gpa -= 0.1; s.col.spec -= 5; L(s, `영어 ${G.eng}등급. 원서 교재와 영어 강의를 따라가기 버겁고, 토익 점수도 낮다.`, 'warn'); }
+  if (STEM.indexOf(u.field) >= 0 && G.inq >= 5) { s.col.gpa -= 0.1; L(s, '탐구 기초가 부족해 일반화학·생물학 실험 과목이 힘들다.', 'warn'); }
   if (s.flags.parentField && s.fit < 0.7) L(s, `부모님이 원한 ${FIELDS[u.field].name}. 첫 학기부터 '내가 왜 여기 있지?'라는 생각이 들었다.`, 'warn');
 
   // 1) 1~2학년
@@ -1944,8 +2027,8 @@ function collegePhase(ctx) {
   if (o1.id === 'work') { s.money += 20; c.gpa -= 0.2; inc(s, 'mental', -4); c.spec += 3; s.flags.work = true; L(s, '주 20시간 알바. 수업 끝나면 바로 가게로 간다.'); }
   if (o1.id === 'retake') {
     const r = makeRng(s.seed, 'banSu');
-    const g = 0.04 + 0.06 * (p.diligence - 3) + r.normal() * 0.25 - s.lazy / 500;
-    s.zC += g; sitExam(s, r, 0.15, 0, null, 0);
+    const g = 0.04 + 0.06 * (p.diligence - 3) + r.normal() * 0.12 - s.lazy / 350;
+    s.zC += g; sitExam(s, r, 0.09, 0, null, 0);
     const list = tierList(s.applyField || u.field, s);
     const idx = estimateIdx(s, list, compositeZ(s.csatSub, u.field), u.field, r, 0);
     const t = list[idx];
@@ -1977,7 +2060,7 @@ function collegePhase(ctx) {
   if (o2.id === 'now' || o2.id === 'later') { s.age += 2; inc(s, 'lazy', -8); s.flags.army = true; c.gpa -= o2.id === 'later' ? 0 : 0.05; if (s.romance.status === 'dating' && r2.chance(0.6)) { breakUp(s, 'army'); L(s, `군대에 있는 동안 ${s.romance.partner}${jo(s.romance.partner, '와/과')} 헤어졌다. 흔한 이야기라는데 하나도 흔하지 않았다.`, 'bad'); } L(s, '18개월. 전역하던 날, 시간을 허투루 쓰지 않겠다고 다짐했다.'); }
   if (o2.id === 'air') { if (r2.chance(0.45 + (p.diligence - 3) * 0.08)) { s.age += 2; c.spec += 12; s.flags.army = true; L(s, '합격. 군 생활 동안 토익과 자격증을 땄다.', 'good'); } else { s.age += 2; s.flags.army = true; L(s, '떨어지고 결국 육군으로 갔다.'); } }
   if (o2.id === 'rnd') { s.flags.rndPlan = true; c.gpa += 0.1; L(s, '학점과 연구실 경력을 쌓기 시작했다.'); }
-  if (o2.id === 'exchange') { if (c.gpa >= 3.4 && (s.money >= 30 || p.wealth === 'high')) { c.spec += 14; s.talent.verbal += 10; s.money -= 15; s.flags.exchange = true; s.age += 0.5; L(s, '한 학기 동안 유럽에서 지냈다. 세상이 넓다는 걸 알았다.', 'good'); } else { L(s, '학점이나 비용 문제로 선발되지 못했다.', 'warn'); } }
+  if (o2.id === 'exchange') { if (endG(s).eng >= 4) { L(s, `교환학생은 어학 성적이 필요하다. 영어 ${endG(s).eng}등급 실력으로는 토플 기준을 넘지 못했다.`, 'bad'); } else if (c.gpa >= 3.4 && (s.money >= 30 || p.wealth === 'high')) { c.spec += 14; s.talent.verbal += 10; s.money -= 15; s.flags.exchange = true; s.age += 0.5; L(s, '한 학기 동안 유럽에서 지냈다. 세상이 넓다는 걸 알았다.', 'good'); } else { L(s, '학점이나 비용 문제로 선발되지 못했다.', 'warn'); } }
   if (o2.id === 'intern') { c.spec += 12; s.age += 1; L(s, '스타트업 인턴. 일 잘한다는 소리를 처음 들었다.', 'good'); }
   if (o2.id === 'straight') { c.gpa += 0.1; s.flags.fastGrad = true; L(s, '쉬지 않고 달렸다. 동기들보다 1년 빨리 졸업 준비를 시작했다.'); }
   if (o2.id === 'rest') { s.age += 1; inc(s, 'mental', 12); inc(s, 'lazy', 5); L(s, '한 학기를 쉬었다. 마음이 좀 편해졌다.'); }
@@ -2125,7 +2208,7 @@ function careerScore(s, r) {
   const c = s.col, u = s.uni;
   const gpaS = clamp((c.gpa - 2.5) / 1.9 * 100, 0, 100);
   const emp = employOf(u.field, u.prestige, u.teacher).rate;
-  return (emp - 62) * 0.25 + u.prestige * 0.36 + gpaS * 0.14 + clamp(c.spec, 0, 100) * 0.24 + clamp(c.network, 0, 100) * 0.05 + s.mental * 0.08 + c.effort * 6 + s.fit * 9 - s.lazy * 0.06 + r.normal() * 7;
+  return (emp - 62) * 0.25 + u.prestige * 0.36 + gpaS * 0.14 + clamp(c.spec, 0, 100) * 0.24 + clamp(c.network, 0, 100) * 0.05 + s.mental * 0.08 + c.effort * 6 + s.fit * 9 - s.lazy * 0.15 + subjCareerBonus(s, u.field) + r.normal() * 3;
 }
 function jobAt(field, level, r, s) {
   const tbl = JOBS[field] || JOBS.hum;
@@ -2231,12 +2314,13 @@ function resolveCareer(s, path, r, attempt) {
       return ok ? mk('family-ok', '부모님 사업을 이어받아 키운 2세 대표', 6500, 'biz', 1) : mk('family-meh', '부모님 가게를 물려받아 버티는 중', 3800, 'biz', 2);
     }
     case 'soe': {
-      const P = sigmoid((C - 58 + p.comprehension * 2 + eff * 4) / 7);
+      const G2 = endG(s);
+      const P = sigmoid((C - 58 + p.comprehension * 2 + eff * 4 + (5 - G2.kor) * 1.5 + (5 - G2.math) * 1) / 6);   // NCS: 의사소통(국어)·수리(수학)
       if (r.next() < P) { const org = r.pick(['한국전력공사', '국민건강보험공단', '한국토지주택공사', '인천국제공항공사', '한국수자원공사']); return mk('soe-' + org, `공기업 직원 (${org})`, 5600, 'law', 1); }
       return { ok: false, failText: 'NCS 필기에서 연달아 떨어졌다.' };
     }
     case 'civil': {
-      const sc = p.diligence * 8 + p.memory * 6 + p.grit * 4 + eff * 10 - s.lazy / 4 + r.normal() * 10 + (attempt - 1) * 6;
+      const G = endG(s); const sc = p.diligence * 8 + p.memory * 6 + p.grit * 4 + eff * 10 - s.lazy / 3 + (5 - G.kor) * 2 + (5 - G.eng) * 1.5 + r.normal() * 5 + (attempt - 1) * 6;   // 공무원: 국어·영어(검정) 실력이 바탕
       if (f === 'law' && sc > 72 && u.prestige >= 80 && eff >= 1) return mk('civil-5', '5급 사무관 (행정고시 합격)', 5800, 'law', 0);
       if (sc > 60) return mk('civil-7', '7급 국가직 공무원', 4300, 'law', 1);
       if (sc > 47) return mk('civil-9', '9급 지방직 공무원', 3500, 'law', 2);
@@ -2254,7 +2338,7 @@ function resolveCareer(s, path, r, attempt) {
     }
     case 'pro': {
       if (f === 'biz') {
-        const P = sigmoid((p.comprehension * 8 + p.memory * 5 + p.diligence * 6 + eff * 12 - 72 + (attempt - 1) * 6) / 7);
+        const P = sigmoid((p.comprehension * 8 + p.memory * 5 + p.diligence * 6 + eff * 12 - 72 + (4 - endG(s).math) * 3 - s.lazy * 0.15 + (attempt - 1) * 6) / 6);   // CPA는 수학·회계 계산
         if (r.next() < P) return r.chance(0.6) ? mk('cpa-big4', '대형 회계법인 공인회계사', 7800, 'biz', 0) : mk('cpa-firm', '기업 재무팀 회계사', 7000, 'biz', 0);
         return { ok: false, failText: 'CPA 2차 시험에서 과락이 나왔다.' };
       }
@@ -2264,19 +2348,19 @@ function resolveCareer(s, path, r, attempt) {
         return { ok: false, failText: '노무사 2차 시험에서 떨어졌다.' };
       }
       if (f === 'eng' || f === 'sci' || f === 'cs') {
-        const P = sigmoid((p.comprehension * 7 + p.diligence * 7 + eff * 12 + (u.prestige - 70) * 0.4 - 70 + (attempt - 1) * 6) / 7);
+        const P = sigmoid((p.comprehension * 7 + p.diligence * 7 + eff * 12 + (u.prestige - 70) * 0.4 - 70 + (4 - endG(s).math) * 2 - s.lazy * 0.15 + (attempt - 1) * 6) / 6);
         if (r.next() < P) return mk('patent', '특허법인 변리사', 8500, f, 0);
         return { ok: false, failText: '변리사 2차 시험에서 떨어졌다.' };
       }
       // 로스쿨
-      const leet = p.comprehension * 9 + s.talent.verbal * 0.3 + u.prestige * 0.35 + (s.col.gpa - 3) * 20 + r.normal() * 8 + eff * 6;
+      const leet = p.comprehension * 9 + s.talent.verbal * 0.3 + u.prestige * 0.35 + (s.col.gpa - 3) * 20 + (5 - endG(s).kor) * 3 + r.normal() * 4 + eff * 6 - s.lazy * 0.1;   // LEET는 국어 독해력 시험에 가깝다
       if (leet < 64) return { ok: false, failText: '로스쿨 입시에서 모두 떨어졌다.' };
       if (r.chance(0.12)) return { ok: false, failText: '로스쿨은 졸업했지만 변호사시험에 떨어졌다.' };
       if (leet > 88 && u.prestige >= 86) return mk('law-big', '대형 로펌 변호사', 12000, 'law', 0);
       return r.chance(0.5) ? mk('law-in', '대기업 사내 변호사', 8000, 'law', 0) : mk('law-small', '중소 로펌 변호사', 6000, 'law', 1);
     }
     case 'grad': {
-      const sc = u.prestige * 0.4 + (s.col.gpa - 3) * 25 + p.curiosity * 4 + eff * 5 + r.normal() * 10 + (s.flags.lab ? 4 : 0);
+      const sc = u.prestige * 0.4 + (s.col.gpa - 3) * 25 + p.curiosity * 4 + eff * 5 + r.normal() * 5 + (s.flags.lab ? 4 : 0) - s.lazy * 0.1;
       s.age += 5;
       const hum = ['hum', 'soc', 'media', 'art', 'perf'].indexOf(f) >= 0 ? 8 : 0;   // 인문계 박사는 자리가 더 적다
       if (sc - hum > 92 && r.chance(0.35)) return mk('grad-prof', '대학교수 (정년트랙)', 7500, f, 0);
@@ -2286,24 +2370,26 @@ function resolveCareer(s, path, r, attempt) {
       return mk('grad-drift', '박사 수료 후 진로 고민 중', 2200, f, 3);
     }
     case 'startup': {
-      const sc = p.confidence * 6 + p.social * 4 + p.curiosity * 4 + s.col.network * 0.2 + (s.flags.startupExp ? 8 : 0) + eff * 6 + r.normal() * 18;
-      if (sc > 78) return mk('st-big', '연매출 100억 스타트업 대표', 15000, f, 0);
-      if (sc > 62) return mk('st-a', '시리즈A 투자 유치한 스타트업 공동창업자', 6000, f, 1);
-      if (sc > 50) return mk('st-small', '작은 회사를 꾸려 가는 1인 대표', 4000, f, 2);
+      // 창업: 실력(스펙·학점)·인맥·추진력이 바탕이고 운은 일부. 대부분은 3년 안에 접는다
+      const sc = clamp(s.col.spec, 0, 100) * 0.25 + clamp(s.col.network, 0, 100) * 0.2 + (s.col.gpa - 3) * 8 + p.confidence * 4 + p.curiosity * 3 + (s.flags.startupExp ? 8 : 0) + eff * 7 - s.lazy * 0.3 + r.normal() * 8;
+      if (sc > 82) return mk('st-big', '연매출 100억 스타트업 대표', 15000, f, 0);
+      if (sc > 68) return mk('st-a', '시리즈A 투자 유치한 스타트업 공동창업자', 6000, f, 1);
+      if (sc > 55) return mk('st-small', '작은 회사를 꾸려 가는 1인 대표', 3600, f, 2);
       s.flags.startupFail = true;
       if (p.wealth === 'high') return { ok: false, failText: '창업 3년 만에 회사를 접었다. 부모님 돈도 날렸다.' };
       return { ok: false, failText: '창업은 실패했다. 빚이 남았다.' };
     }
     case 'creator': {
       const tal = Math.max(s.talent.media, s.talent.art, s.talent.perf);
-      const sc = tal * 0.5 + (s.flags.creator || 0) * 8 + p.diligence * 3 + eff * 5 + r.normal() * 16;
-      if (sc > 70) return mk('cr-1m', '구독자 100만 크리에이터', 12000, 'media', 0);
-      if (sc > 55) return mk('cr-100k', '구독자 15만 크리에이터', 5000, 'media', 1);
-      if (sc > 44) return mk('cr-side', '부업 크리에이터 겸 회사원', 4200, 'media', 2);
+      // 크리에이터: 구독자 100만은 극소수. 재능·꾸준함·이미 키워 둔 채널이 있어야 한다
+      const sc = tal * 0.45 + (s.flags.creator || 0) * 7 + p.diligence * 4 + eff * 7 - s.lazy * 0.3 + r.normal() * 6;
+      if (sc > 84) return mk('cr-1m', '구독자 100만 크리에이터', 12000, 'media', 0);
+      if (sc > 68) return mk('cr-100k', '구독자 15만 크리에이터', 5000, 'media', 1);
+      if (sc > 52) return mk('cr-side', '부업 크리에이터 겸 회사원', 3800, 'media', 2);
       return { ok: false, failText: '2년 동안 영상을 올렸지만 구독자는 3천 명에서 멈췄다.' };
     }
     case 'abroad': {
-      const sc = s.talent.verbal * 0.3 + s.col.spec * 0.4 + u.prestige * 0.25 + eff * 5 + r.normal() * 10 + (s.flags.exchange ? 6 : 0);
+      const sc = s.talent.verbal * 0.3 + s.col.spec * 0.4 + u.prestige * 0.25 + eff * 5 + r.normal() * 5 + (s.flags.exchange ? 6 : 0) + (3 - endG(s).eng) * 5 - s.lazy * 0.1;   // 해외는 영어가 먼저다
       if (sc > 62) {
         if (f === 'cs' || f === 'eng') return mk('ab-sv', '미국 빅테크 엔지니어', 20000, f, 0);
         if (f === 'biz') return mk('ab-mba', '해외 MBA 후 외국계 컨설턴트', 14000, 'biz', 0);
@@ -2362,25 +2448,25 @@ function noCollege(ctx) {
   const mk = (id, title, base, field, level) => ({ id, title, base, field, level });
   let car;
   if (o.id === 'esports') {
-    const sc = s.talent.game * 0.6 + eff * 8 + p.grit * 3 + r.normal() * 15;
-    car = sc > 70 ? mk('esp-1', '1군 프로게이머 (국제대회 출전)', 30000, 'none', 0) : sc > 55 ? mk('esp-st', '은퇴한 프로게이머 출신 스트리머', 6000, 'media', 1) : mk('esp-qa', '프로 실패 후 게임회사 QA', 3200, 'cs', 2);
+    const sc = s.talent.game * 0.55 + eff * 8 + p.grit * 3 - s.lazy * 0.1 + r.normal() * 7;
+    car = sc > 78 ? mk('esp-1', '1군 프로게이머 (국제대회 출전)', 30000, 'none', 0) : sc > 62 ? mk('esp-st', '은퇴한 프로게이머 출신 스트리머', 6000, 'media', 1) : mk('esp-qa', '프로 실패 후 게임회사 QA', 3200, 'cs', 2);
   } else if (o.id === 'trainee') {
-    const sc = s.talent.perf * 0.5 + eff * 8 + p.social * 3 + r.normal() * 18;
-    car = sc > 72 ? mk('idol-hit', '음원 차트 1위 아이돌', 25000, 'perf', 0) : sc > 56 ? mk('idol-disband', '데뷔 후 해체, 보컬 트레이너', 3600, 'perf', 2) : mk('idol-fail', '연습생 6년 끝에 진로 전환', 2600, 'none', 3);
+    const sc = s.talent.perf * 0.5 + eff * 8 + p.social * 3 - s.lazy * 0.1 + r.normal() * 8;
+    car = sc > 80 ? mk('idol-hit', '음원 차트 1위 아이돌', 25000, 'perf', 0) : sc > 60 ? mk('idol-disband', '데뷔 후 해체, 보컬 트레이너', 3600, 'perf', 2) : mk('idol-fail', '연습생 6년 끝에 진로 전환', 2600, 'none', 3);
   } else if (o.id === 'creator') {
-    const sc = s.talent.media * 0.5 + (s.flags.creator || 0) * 9 + eff * 6 + r.normal() * 16;
-    car = sc > 68 ? mk('cr-1m', '구독자 100만 크리에이터', 12000, 'media', 0) : sc > 52 ? mk('cr-100k', '구독자 15만 크리에이터', 5000, 'media', 1) : mk('cr-fail', '채널을 접고 영상 편집 외주', 2800, 'media', 3);
+    const sc = s.talent.media * 0.45 + (s.flags.creator || 0) * 7 + p.diligence * 4 + eff * 7 - s.lazy * 0.3 + r.normal() * 6;
+    car = sc > 84 ? mk('cr-1m', '구독자 100만 크리에이터', 12000, 'media', 0) : sc > 66 ? mk('cr-100k', '구독자 15만 크리에이터', 5000, 'media', 1) : mk('cr-fail', '채널을 접고 영상 편집 외주', 2800, 'media', 3);
   } else if (o.id === 'skill') {
     const t = r.pick([['skill-elec', '전기기사 (대기업 협력사)', 5200], ['skill-weld', '조선소 특수용접 기술자', 6800], ['skill-bake', hasHobby(s, 'cook') ? '동네 유명 베이커리 사장' : '제과점 사장', 4600], ['skill-car', '자동차 정비소 사장', 5000]]);
-    const ok = eff > 0.5 || r.chance(0.5);
+    const ok = eff > 0.5 && s.lazy < 60;
     car = ok ? mk(t[0], t[1], t[2], 'none', 1) : mk(t[0] + '-j', t[1].replace('사장', '직원').replace('기술자', '보조'), Math.round(t[2] * 0.6), 'none', 2);
   } else if (o.id === 'civil') {
-    const sc = p.diligence * 8 + p.memory * 6 + eff * 10 - s.lazy / 4 + r.normal() * 10;
-    car = sc > 52 ? (r.chance(0.5) ? mk('hs-soe', '공기업 고졸 채용 직원', 5000, 'none', 1) : mk('hs-civil9', '9급 공무원 (고졸)', 3400, 'law', 2)) : mk('hs-civil-fail', '공시 3년 차, 편의점 알바', 1800, 'none', 3);
+    const sc = p.diligence * 8 + p.memory * 6 + eff * 10 - s.lazy / 3 + r.normal() * 5;
+    car = sc > 56 ? (r.chance(0.5) ? mk('hs-soe', '공기업 고졸 채용 직원', 5000, 'none', 1) : mk('hs-civil9', '9급 공무원 (고졸)', 3400, 'law', 2)) : mk('hs-civil-fail', '공시 3년 차, 편의점 알바', 1800, 'none', 3);
   } else if (o.id === 'nco') {
     car = mk('nco', eff > 0.5 ? '육군 상사 (장기복무)' : '육군 중사', 4800, 'none', 1);
   } else {
-    const lv = levelFrom(40 + eff * 12 + p.diligence * 4 + r.normal() * 10);
+    const lv = levelFrom(34 + eff * 10 + p.diligence * 4 - s.lazy * 0.15 + r.normal() * 4);
     car = jobAt('none', lv, r, s);
   }
   s.career = car;
@@ -2412,14 +2498,16 @@ function finalize(ctx) {
   const cf = car.field && FIELDS[car.field] ? fitOf(s, car.field) : 0.45;
   const goal = GOALS[p.goal] || GOALS.inseoul;
   const gi = s.uni ? s.uni.gi : 11;
-  const goalMet = s.uni ? (gi <= goal.gi ? 1 : gi <= goal.gi + 2 ? 0.5 : 0) : (car.level <= 1 ? 0.6 : 0.2);
+  const goalMet = s.uni ? (gi <= goal.gi ? 1 : gi <= goal.gi + 2 ? 0.4 : 0) : (car.level <= 1 ? 0.3 : 0);
   const income = clamp((salary - 2000) / 80, 0, 100);
-  let sat = cf * 34 + clamp(s.autonomy, -4, 4) * 2.5 + goalMet * 8 + income * 0.16 + (marital === 'single' || marital === 'never' ? 0 : 7) + (s.parentRel - 50) * 0.08 + (s.social - 50) * 0.06 + (s.mental - 50) * 0.18 + 26 - car.level * 4 + r.normal() * 4;
+  let sat = cf * 30 + clamp(s.autonomy, -4, 4) * 2 + goalMet * 10 + income * 0.2 + (marital === 'single' || marital === 'never' ? 0 : 6) + (s.parentRel - 50) * 0.08 + (s.social - 50) * 0.05 + (s.mental - 50) * 0.15 + 26 - car.level * 7 + r.normal() * 2;
   if (s.flags.parentField && cf < 0.6) sat -= 8;
   if (s.flags.medBurnout) sat -= 6;
   sat = clamp(Math.round(sat), 0, 100);
   const satTag = sat >= 70 ? 'happy' : sat >= 50 ? 'ok' : 'regret';
-  const life = Math.round(sat * 0.55 + income * 0.25 + (s.parentRel + s.social) / 2 * 0.1 + s.mental * 0.1);
+  // 인생 점수: 만족도만이 아니라 수입·학력·관계·마음을 함께 본다
+  const edu = s.uni ? (s.uni.dropped ? 20 : s.uni.prestige) : 15;
+  const life = Math.round(sat * 0.3 + income * 0.32 + edu * 0.16 + (s.parentRel + s.social) / 2 * 0.11 + s.mental * 0.11);
   const arche = archetype(s, car, sat, salary, marital);
   const code = [car.id, s.uni ? s.uni.tier.key : 'nc', satTag, marital].join('|');
   s.ending = {
