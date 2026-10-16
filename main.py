@@ -952,8 +952,8 @@ def career_sim_page():
 
 @app.get("/career-sim/{name}.js")
 def career_sim_script(name: str):
-    # 엔진(engine.js)과 장면 그림(scenes.js)만 내준다
-    if name not in ("engine", "scenes"):
+    # 엔진(engine.js), 장면 그림(scenes.js), 음악·효과음(audio.js)만 내준다
+    if name not in ("engine", "scenes", "audio"):
         raise HTTPException(status_code=404, detail="없는 파일입니다.")
     return FileResponse(os.path.join(CAREER_SIM_DIR, name + ".js"), media_type="application/javascript")
 

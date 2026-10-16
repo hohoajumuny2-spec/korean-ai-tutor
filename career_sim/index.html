@@ -367,13 +367,21 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
 .methbox .an { font-weight: 700; flex: none; }
 .fitline { font-size: 12px; color: var(--muted); margin: -6px 0 12px; line-height: 1.5; }
 .fitline b { color: var(--ink); }
+.topbtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.ghost.snd[aria-pressed="true"] { color: var(--accent-ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ghost.snd[aria-pressed="false"] { text-decoration: line-through; }
+@media (max-width: 480px) { .topbtns .ghost { padding: 6px 9px; font-size: 12px; } }
 footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width: 60em; }
 </style>
 
 <div class="wrap">
   <div class="top">
     <div class="brand"><b>어땠을까</b><span>그때 다른 선택을 했다면 — 입시·진로 인생 시뮬레이션</span></div>
-    <button class="ghost" id="homeBtn" type="button" hidden>처음 화면</button>
+    <div class="topbtns">
+      <button class="ghost snd" id="musicBtn" type="button" aria-pressed="true">♪ 음악</button>
+      <button class="ghost snd" id="sfxBtn" type="button" aria-pressed="true">효과음</button>
+      <button class="ghost" id="homeBtn" type="button" hidden>처음 화면</button>
+    </div>
   </div>
   <main id="app"></main>
   <footer class="fine">이 시뮬레이션은 실제 입시 구조(내신 등급, 수능 최저, 수시 6장·정시 3장, 수시 합격 시 정시 불가, 재수, 군 복무, 취업 경로)를 단순화한 모델입니다. 대학·직업 이름과 연봉은 이해를 돕기 위한 대략적인 값이며, 실제 미래를 예측하지 않습니다. 결과보다 "어떤 선택이 무엇을 바꾸는지"를 보는 데 써 주세요.</footer>
@@ -382,11 +390,13 @@ footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width:
 
 <script src="engine.js"></script>
 <script src="scenes.js"></script>
+<script src="audio.js"></script>
 <script>
 (function () {
 'use strict';
 const CS = window.CareerSim;
 const SC = window.CareerScenes;
+const AU = window.CareerAudio || { unlock() {}, setPhase() {}, sfx() {}, toggleMusic() {}, toggleSfx() {}, music: false, effects: false };
 const PHASE_KEYS = ['g1', 'g2', 'g3', 'adm', 'col', 'end'];
 const VERDICT = {
   good: { t: '좋은 선택', i: '▲', c: '이 선택으로 상황이 나아졌다' },
@@ -396,6 +406,7 @@ const VERDICT = {
 function setTheme(phase, mood) {
   const r = document.documentElement;
   if (phase) r.dataset.phase = phase; else delete r.dataset.phase;
+  AU.setPhase(phase || 'intro');
   if (mood) r.dataset.mood = mood; else delete r.dataset.mood;
 }
 // 짧은 영상 하나 — 같은 장면이면 다시 그리지 않아 재생이 끊기지 않는다
@@ -717,6 +728,19 @@ function renderGame() {
   const last = s.history[s.history.length - 1];
   const mood = last && !app.rewindFrom ? last.verdict : null;
   setTheme(PHASE_KEYS[phaseIdx(pr.turn)], mood);
+  // 소리: 방금 한 선택의 평가, 새 학기 종소리, 수능·합격 발표
+  if (app.sndKey !== pr.key) {
+    const first = app.sndKey == null;
+    app.sndKey = pr.key;
+    let d = 0;
+    if (mood && !first) { AU.sfx(mood); d = 450; }
+    const later = n => setTimeout(() => AU.sfx(n), d);
+    if (/:csat$/.test(pr.key)) later('exam');
+    else if (/:pick$/.test(pr.key)) later(pr.options.some(o => /등록/.test(o.label)) ? 'pass' : 'fail');
+    else if (app.sndTurn !== pr.turn && /^고/.test(pr.turn || '')) later('bell');
+    else if (!mood) later('page');
+    app.sndTurn = pr.turn;
+  }
   const scene = SC.sceneFor(pr);
   scene.mood = mood;
   let qhtml = `<div id="clipSlot"></div><div class="qno"><span class="badge">${qno}번</span><span class="when">${esc(pr.turn)} · ${Math.floor(pr.age)}세</span></div><h2>${esc(pr.title)}</h2><p class="ctx">${esc(pr.text)}</p>`;
@@ -787,6 +811,7 @@ function money(n) { return n >= 10000 ? (Math.floor(n / 10000) + '억' + (n % 10
 function renderEnd() {
   const res = app.res, s = res.state, e = res.ending;
   if (!app.endingSaved) {
+    AU.sfx('end');
     const list = store.get('endings', []);
     app.isNewEnding = list.indexOf(e.code) < 0;
     if (app.isNewEnding) { list.push(e.code); store.set('endings', list); }
@@ -882,6 +907,23 @@ function render() {
   else renderEnd();
 }
 document.getElementById('homeBtn').onclick = () => { app.screen = 'intro'; render(); window.scrollTo(0, 0); };
+// 소리 켜고 끄기 — 브라우저는 첫 터치 뒤에야 소리를 허락한다
+const musicBtn = document.getElementById('musicBtn'), sfxBtn = document.getElementById('sfxBtn');
+function sndLabels() { musicBtn.setAttribute('aria-pressed', AU.music ? 'true' : 'false'); sfxBtn.setAttribute('aria-pressed', AU.effects ? 'true' : 'false'); musicBtn.title = AU.music ? '음악 끄기' : '음악 켜기'; sfxBtn.title = AU.effects ? '효과음 끄기' : '효과음 켜기'; }
+sndLabels();
+musicBtn.onclick = () => { AU.toggleMusic(); sndLabels(); };
+sfxBtn.onclick = () => { AU.toggleSfx(); sndLabels(); AU.sfx('tap'); };
+document.addEventListener('pointerdown', () => AU.unlock(), { capture: true });
+document.addEventListener('keydown', () => AU.unlock(), { capture: true });
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('button');
+  if (!b || b.disabled || b.classList.contains('snd')) return;
+  if (b.dataset.opt) AU.sfx('select');
+  else if (b.dataset.inc) AU.sfx('plus');
+  else if (b.dataset.dec) AU.sfx('minus');
+  else if (b.id === 'allocGo' || b.id === 'methGo' || b.id === 'nextStep' || b.id === 'goSetup' || b.id === 'goQuick') AU.sfx('select');
+  else AU.sfx('tap');
+}, { capture: true });
 
 // 화면이 새로 배포돼도 진행 중인 게임은 이어서
 const hot = window.claude && window.claude.hot;
