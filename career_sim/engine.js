@@ -293,6 +293,51 @@ function employOf(field, prestige, teacher) {
 }
 function employText(field, prestige, teacher) { const e = employOf(field, prestige, teacher); return `취업률 약 ${e.rate}% · 취업의 질 ${e.grade} (초봉 약 ${e.pay.toLocaleString()}만) — ${e.note}`; }
 
+// ── 학원 ───────────────────────────────────────────────
+//  자기주도(독학)도 되지만, 맞는 학원은 같은 시간을 써도 더 많이 오른다. 대신 돈이 들고, 복습을 안 하면 효과가 줄어든다.
+//  mult: 그 과목 공부 효율, lazyCut: 나태로 새는 시간을 얼마나 막아 주나, naesin: 학교 내신 대비 효과, cost: 학기당 학원비
+const ACAD = {
+  none:     { name: '독학(자기주도)',         mult: 1.0,  lazyCut: 0,    naesin: 0,     cost: 0,   desc: '돈이 안 들지만 방향과 피드백을 혼자 찾아야 한다' },
+  online:   { name: '인강',                  mult: 1.05, lazyCut: 0,    naesin: 0,     cost: 0.6, desc: '싸고 강의 질은 좋지만, 성실하지 않으면 완강을 못 한다' },
+  big:      { name: '대형 학원 유명 강사 현강', mult: 1.12, lazyCut: 0.1,  naesin: 0.004,  cost: 3.2, desc: '상위권에 맞춘 진도와 자료. 기초가 약하면 따라가기 벅차다' },
+  managed:  { name: '관리형 학원',            mult: 1.1,  lazyCut: 0.45, naesin: 0.008,  cost: 3.0, desc: '출결·숙제·자습을 붙잡아 준다. 나태한 학생에게 특히 효과' },
+  director: { name: '원장 직강 소규모 학원',   mult: 1.14, lazyCut: 0.3,  naesin: 0.016,  cost: 2.8, desc: '원장이 직접 가르치고 개별 첨삭·상담을 해 준다. 학교별 내신 대비가 강하다' },
+  group:    { name: '그룹 과외',              mult: 1.12, lazyCut: 0.25, naesin: 0.01,  cost: 3.4, desc: '3~4명 소수 수업. 같이 하는 친구 수준에 따라 효과가 갈린다' },
+  tutor:    { name: '1:1 과외',               mult: 1.15, lazyCut: 0.35, naesin: 0.012,  cost: 5.0, desc: '나에게 딱 맞춘 수업. 비싸고, 선생님에 따라 편차가 크다' },
+};
+const ACAD_KEYS = Object.keys(ACAD);
+// 학생에게 맞는 정도까지 넣은 실제 효율
+function acadMult(s, k) {
+  const t = s.acad[k] || 'none', A = ACAD[t], p = s.p, z = s.sub[k];
+  if (t === 'none') return 1;
+  if (s.money < 3) return 1;                        // 학원비를 못 내 사실상 쉬는 중
+  let m = A.mult;
+  if (t === 'online') m += (p.diligence - 3) * 0.03;               // 성실해야 인강이 산다
+  if (t === 'big') m += z > 0.5 ? 0.03 : z < -0.3 ? -0.06 : 0;      // 기초가 약하면 진도를 못 따라간다
+  if (t === 'director') m += z < 0.3 ? 0.02 : 0;                   // 소규모라 하위·중위권을 끌어올리는 힘이 크다
+  if (t === 'tutor') m += (s.tutorQ && s.tutorQ[k] != null ? s.tutorQ[k] : 0);
+  if (t === 'managed') m += p.diligence <= 2 ? 0.03 : 0;
+  return m;
+}
+function acadCost(s) { const g = s.p.region === 'gangnam' ? 1.3 : 1; return SUB_KEYS.reduce((t, k) => t + ACAD[s.acad[k] || 'none'].cost, 0) * g; }
+function acadText(s) { const on = SUB_KEYS.filter(k => s.acad[k] && s.acad[k] !== 'none'); return on.length ? on.map(k => `${SUBJ_NAME[k]} ${ACAD[s.acad[k]].name}`).join(', ') : '학원 없이 독학'; }
+
+// ── 국어 세부 영역 ─────────────────────────────────────────
+//  국어 실력(sub.kor) 위에 영역별 편차(korOff)를 둔다. 독서는 문해력(영어·탐구 연계, 논술, 면접)으로,
+//  문학·화법·언어·매체는 내신 국어·서술형·수행평가로 이어진다. 국어를 어떻게 공부하느냐(korFocus)에 따라 영역이 달리 오른다.
+const KOR_PARTS = [{ k: 'read', name: '독서(비문학)' }, { k: 'lit', name: '문학' }, { k: 'lang', name: '화법·언어·매체' }];
+const KOR_FOCUS = {
+  read:   { name: '독서 지문 매일 풀기', w: { read: 1, lit: 0.2, lang: 0.1 }, eff: 1.0 },
+  lit:    { name: '문학 작품·개념어 정리', w: { read: 0.2, lit: 1, lang: 0.1 }, eff: 1.0 },
+  lang:   { name: '문법·화법 개념 정리', w: { read: 0.1, lit: 0.2, lang: 1 }, eff: 1.0 },
+  gichul: { name: '평가원 기출 분석', w: { read: 0.6, lit: 0.6, lang: 0.4 }, eff: 1.07 },
+  mock:   { name: '사설 모의고사 반복 풀이', w: { read: 0.4, lit: 0.4, lang: 0.3 }, eff: 0.93 },
+  hw:     { name: '학원 숙제만', w: { read: 0.4, lit: 0.4, lang: 0.4 }, eff: 0.97 },
+};
+const korPart = (s, k) => s.sub.kor + (s.korOff ? s.korOff[k] : 0);
+function korGrades(s, base) { const b = base != null ? base : s.sub.kor; const o = {}; KOR_PARTS.forEach(({ k }) => { o[k] = grade9(topFromZ(b + s.korOff[k])); }); return o; }
+function korText(g) { return `독서 ${g.read} · 문학 ${g.lit} · 화법·언어·매체 ${g.lang}`; }
+
 // ── 상태 만들기 ──────────────────────────────────────────
 function normalizeProfile(p) {
   const d = {
@@ -304,7 +349,7 @@ function normalizeProfile(p) {
     pStyle: 'warm', pDesire: 'free', wealth: 'mid', sibling: 'none',
     friendGroup: 'club', bestFriend: true,
     startTurn: null, subject: null, subj: null,
-    pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2,
+    pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2, acad: null, korFocus: null,
   };
   const out = Object.assign({}, d, p || {});
   out.hobbies = (out.hobbies || []).filter(h => HOBBIES[h]).slice(0, 3);
@@ -316,6 +361,12 @@ function normalizeProfile(p) {
   out.grade = st < 4 ? 1 : st < 8 ? 2 : 3;
   out.screen = clamp(parseInt(out.screen, 10) || 2, 1, 4);
   out.academies = clamp(parseInt(out.academies, 10) || 0, 0, 3);
+  // 과목별 학원: 없으면 학원 수만큼 '대형 학원'으로 채운다(예전 설정과 호환)
+  const acad = {};
+  SUB_KEYS.forEach((k, i) => { const v = out.acad && out.acad[k]; acad[k] = ACAD[v] ? v : (!out.acad && i < out.academies ? 'big' : 'none'); });
+  out.acad = acad;
+  out.academies = SUB_KEYS.filter(k => acad[k] !== 'none' && acad[k] !== 'online').length;
+  if (!KOR_FOCUS[out.korFocus]) out.korFocus = null;
   out.clarity = clamp(parseInt(out.clarity, 10) || 2, 1, 3);
   if (out.subj) ['kor', 'math', 'eng', 'inq'].forEach(k => { out.subj[k] = clamp(+out.subj[k] || 5, 1, 9); });
   ['diligence', 'grit', 'social', 'curiosity', 'confidence', 'impulse', 'focus', 'comprehension', 'memory', 'recordLv']
@@ -366,7 +417,10 @@ function initState(p, seed) {
   s.pressure = ps.pressure + (p.pDesire !== 'free' ? 14 : 0) + (p.sibling === 'better' ? 10 : 0) + (p.pJob === 'pro' ? 6 : 0);
   // 스마트폰·학원·부모님 사이·직업
   s.lazy = clamp(s.lazy + (p.screen - 2) * 7, 0, 100);
-  s.money -= p.academies * 6;
+  s.acad = Object.assign({}, p.acad);
+  s.tutorQ = {}; SUB_KEYS.forEach(k => { s.tutorQ[k] = r.normal() * 0.06; });   // 과외 선생님마다 실력 차이
+  s.korOff = { read: r.normal() * 0.12, lit: r.normal() * 0.12, lang: r.normal() * 0.12 };
+  s.korFocus = p.korFocus || (p.academies && s.acad.kor !== 'none' ? 'hw' : 'mock');
   if (p.pBond === 'fight') { s.mental -= 8; s.stress += 6; }
   if (p.pBond === 'cold') { s.parentRel -= 6; }
   if (p.pBond === 'single') { s.money -= 14; s.mental -= 3; s.parentRel += 4; s.flags.singleParent = true; }
@@ -535,7 +589,7 @@ function persona(s, prompt) {
 const ALLOC_TOTAL = 12;
 function defaultAlloc(s, cats) {
   const p = s.p, ids = cats.map(c => c.id), T = ALLOC_TOTAL;
-  const studyW = 2.6 + p.diligence * 0.95 - p.impulse * 0.25 + p.academies * 0.35 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.5 : 0);
+  const studyW = 2.6 + p.diligence * 0.95 - p.impulse * 0.25 + (s.acad ? SUB_KEYS.filter(k => s.acad[k] !== 'none').length : p.academies) * 0.35 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.5 : 0);
   const avg = meanSub(s.sub), wt = subjWeights(s.track === '자연' ? 'eng' : 'biz');
   const need = {}; let nt = 0;
   SUB_KEYS.forEach(k => { need[k] = Math.max(0.4, 1 + 0.35 * (avg - s.sub[k]) + (wt[k] - 0.25) * 2); nt += need[k]; });
@@ -555,6 +609,15 @@ function defaultAlloc(s, cats) {
   // 남는 칸은 큰 순서대로
   const order = ids.map((id, i) => [id, raw[i] / tot * T - out[id]]).sort((a, b) => b[1] - a[1]);
   for (let i = 0; used < T; i = (i + 1) % order.length) { out[order[i][0]]++; used++; }
+  // 학원 다니는 과목은 복습 시간 2칸을 먼저 챙긴다(놀거나 쉬는 칸에서 가져온다)
+  if (s.acad) SUB_KEYS.forEach(k => {
+    if (ids.indexOf(k) < 0 || s.acad[k] === 'none' || s.acad[k] === 'online') return;
+    while (out[k] < 2) {
+      const donor = ['hobby', 'friends', 'date', 'rest', 'activity'].filter(d => ids.indexOf(d) >= 0 && out[d] > (d === 'rest' ? 1 : 0)).sort((x, y) => out[y] - out[x])[0];
+      if (!donor) break;
+      out[donor]--; out[k]++;
+    }
+  });
   return out;
 }
 function normAlloc(a, cats) {
@@ -639,8 +702,8 @@ function studySubjects(s, a, coef, r, quiet) {
   const cond = 0.72 + s.mental / 380 + s.health / 420 - (s.stress > 70 ? 0.08 : 0);
   const goal = GOALS[p.goal] || GOALS.inseoul;
   const motive = 1 + (goal.gi <= 3 && p.diligence >= 3 ? 0.05 : 0) + (s.flags.fireUp ? 0.06 : 0);
-  const acad = p.academies > 0 && s.money >= 6 && !s.flags.selfStudy ? 1 + Math.min(3, p.academies) * 0.06 : 1;
-  const lit = clamp(s.sub.kor, -1.5, 2);
+  // 문해력은 국어 중에서도 독서(비문학) 실력이다
+  const lit = clamp(korPart(s, 'read'), -1.5, 2);
   const mathL = clamp(s.sub.math, -1.5, 2);
   const sci = s.track === '자연';
   s.neglect = s.neglect || { kor: 0, math: 0, eng: 0, inq: 0 };
@@ -648,18 +711,35 @@ function studySubjects(s, a, coef, r, quiet) {
   const hole = s.flags.mathHole ? 0.7 : 1;
   const mult = { kor: 1, math: (1 + 0.04 * lit) * hole, eng: 1 + 0.1 * lit, inq: 1 + 0.08 * lit + (sci ? 0.06 * mathL : 0) };
   const eff = {}; let effSum = 0;
-  SUB_KEYS.forEach(k => { eff[k] = (a[k] || 0) * (1 - lossFrac) * subjAbility(p, k) * cond * motive * acad; effSum += eff[k]; });
+  const wasted = [];
+  SUB_KEYS.forEach(k => {
+    const t = s.acad[k] || 'none', b = a[k] || 0;
+    let am = acadMult(s, k);
+    // 학원만 다니고 복습·숙제 시간이 없으면 효과가 반으로 준다
+    if (t !== 'none' && t !== 'online' && b < 2) { am = 1 + (am - 1) * 0.4; wasted.push(k); }
+    const loss = lossFrac * (1 - ACAD[t].lazyCut);
+    const kf = k === 'kor' ? (KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock).eff : 1;
+    eff[k] = b * (1 - loss) * subjAbility(p, k) * cond * motive * am * kf; effSum += eff[k];
+  });
   const spill = { kor: 0, math: 0, eng: eff.kor * 0.025, inq: eff.kor * 0.025 + (sci ? eff.math * 0.025 : 0) };
   const before = mockGrades(s.sub);
   SUB_KEYS.forEach(k => {
     const b = a[k] || 0;
     if (b <= 1) s.neglect[k]++; else if (b >= 3) s.neglect[k] = Math.max(0, s.neglect[k] - 1);
-    const base = 1.55 + Math.max(0, s.sub[k]) * 0.22 + Math.max(0, s.sub[k] - 1.5) * 0.35;   // 최상위권은 경쟁이 더 치열하다
+    const base = 1.63 + Math.max(0, s.sub[k]) * 0.22 + Math.max(0, s.sub[k] - 1.5) * 0.35;   // 최상위권은 경쟁이 더 치열하다
     // 안 하면 잊어버린다: 놓은 학기가 이어질수록 더 크게 떨어진다
-    const forget = b <= 1 ? 0.05 * s.neglect[k] : 0;
+    const forget = b <= 1 ? 0.045 * Math.min(4, s.neglect[k]) : 0;
     const d = (eff[k] * mult[k] * st.csat - base) * coef + spill[k] + fg.study * (a.friends || 0) * 0.7 - forget;
-    s.sub[k] += d > 0 ? d * damp(s.sub[k]) : d;
+    // 내려갈 때도 바닥 근처에서는 천천히 내려간다(이미 안 하는 학생이 많은 구간)
+    s.sub[k] += d > 0 ? d * damp(s.sub[k]) : d * (s.sub[k] < -0.8 ? 0.45 : 1);
   });
+  // 국어 영역: 공부법에 따라 오르는 영역이 다르고, 손을 놓은 영역은 조금씩 처진다
+  if ((a.kor || 0) >= 2) {
+    const F = KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock, sc = Math.min(1.5, (a.kor || 0) / 3);
+    const mean = (F.w.read + F.w.lit + F.w.lang) / 3;
+    KOR_PARTS.forEach(({ k }) => { s.korOff[k] = clamp(s.korOff[k] + (F.w[k] - mean) * 0.08 * sc, -0.9, 0.9); });
+    if (s.acad.kor === 'director') { const wk = KOR_PARTS.reduce((w, x) => (s.korOff[x.k] < s.korOff[w] ? x.k : w), 'read'); s.korOff[wk] += 0.04; }   // 원장 직강: 약한 영역을 골라 메워 준다
+  }
   if (!s.flags.mathHole && s.neglect.math >= 2) { s.flags.mathHole = true; s.mathFix = 0; if (!quiet) L(s, '수학에 구멍이 생겼다. 앞 단원을 비워 둔 채 다음 단원을 들으니 수업이 외국어처럼 들린다. 메우려면 몇 학기 동안 수학에 시간을 크게 써야 한다.', 'bad'); }
   else if (s.flags.mathHole && (a.math || 0) >= 3) { s.mathFix = (s.mathFix || 0) + 1; if (s.mathFix >= 2) { s.flags.mathHole = false; if (!quiet) L(s, '수학 구멍을 메웠다. 앞 단원부터 다시 쌓으니 이제 수업이 들린다.', 'good'); } }
   if (!quiet) {
@@ -669,10 +749,17 @@ function studySubjects(s, a, coef, r, quiet) {
       else if (after[k] < before[k] && (a[k] || 0) >= 3) L(s, SUBJ_UP[k](before[k], after[k], s), 'good');
       else if ((a[k] || 0) === 0 && s.neglect[k] >= 2) L(s, `${SUBJ_NAME[k]}${jo(SUBJ_NAME[k], '을/를')} ${s.neglect[k]}학기째 거의 안 했다. 등급은 아직 버티지만 실력은 계속 빠지고 있다.`, 'warn');
     });
+    if (wasted.length) L(s, `${wasted.map(k => SUBJ_NAME[k]).join('·')} 학원은 다니는데 복습·숙제 시간을 거의 안 뒀다. 수업만 듣고 오니 남는 게 적다.`, 'warn');
+    const kg = korGrades(s), weakP = KOR_PARTS.reduce((w, x) => (kg[x.k] > kg[w.k] ? x : w), KOR_PARTS[0]);
+    if (kg[weakP.k] >= after.kor + 1 && kg[weakP.k] >= 4) L(s, {
+      read: `국어 중 독서(비문학)가 ${kg.read}등급으로 가장 약하다. 긴 지문에서 문단 관계를 놓쳐 시간이 녹는다. 이 약점은 영어 장문·탐구 자료 해석까지 끌어내린다.`,
+      lit: `국어 중 문학이 ${kg.lit}등급으로 가장 약하다. 작품은 읽히는데 선지의 '적절하지 않은 것'을 자꾸 놓친다. 내신 국어 서술형에서도 감점이 나온다.`,
+      lang: `국어 중 화법·언어·매체가 ${kg.lang}등급으로 가장 약하다. 문법 개념이 흔들려 확실히 맞혀야 할 문항에서 점수가 샌다.`,
+    }[weakP.k], 'warn');
     if (eff.kor >= 2.3 && lit > 0.2 && !s.flags.litShown && (s.flags.litShown = true)) L(s, '국어 독해력이 붙으면서 영어 장문과 탐구 지문도 덜 막힌다. 다른 과목 공부 효율이 같이 올랐다.', 'good');
     else if (lit < -0.4 && (a.eng || 0) + (a.inq || 0) >= 4) L(s, '영어·탐구에 시간을 많이 썼는데 지문이 잘 안 읽혀 효율이 떨어졌다. 국어 문해력이 발목을 잡는다.', 'warn');
     if (sci && eff.math >= 2.6 && mathL > 0.4) L(s, '수학이 탄탄해지니 물리·화학 계산 문제도 빨라졌다.', 'good');
-    if (acad > 1 && p.academies >= 2 && s.money < 15) L(s, `학원 ${p.academies}곳 학원비가 집에 부담이 되고 있다.`, 'warn');
+    if (acadCost(s) >= 6 && s.money < 15) L(s, `학원비(${acadText(s)})가 집에 부담이 되고 있다.`, 'warn');
   }
   return { effSum, planned, before };
 }
@@ -684,7 +771,9 @@ function semesterEffects(ctx, turn, a) {
   const baseN = (p.school === 'special' ? 5.1 : p.school === 'jasa' ? 4.8 : p.region === 'gangnam' ? 4.5 : 4.2) + 0.9;
   const memF = 0.85 + p.memory * 0.05;
   // 위로 갈수록 경쟁자들도 그만큼 공부한다 — 기준선이 올라간다
-  const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends;
+  const acadN = SUB_KEYS.reduce((t, k) => t + ((a[k] || 0) >= 2 && s.money >= 3 ? ACAD[s.acad[k] || 'none'].naesin : 0), 0);
+  const korN = ((s.korOff.lit + s.korOff.lang) / 2) * 0.05;   // 국어 내신은 문학·문법 서술형 비중이 크다
+  const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends + acadN + korN;
   s.zN += dN * damp(s.zN);
 
   // 생기부
@@ -725,7 +814,9 @@ function semesterEffects(ctx, turn, a) {
   if (a.work) { s.money += a.work * 4; inc(s, 'mental', -a.work * 0.6); s.flags.workExp = (s.flags.workExp || 0) + a.work; }
 
   // 학원비
-  if (!s.flags.selfStudy) s.money -= p.academies * (p.region === 'gangnam' ? 3.4 : 2.6) * 1.2;
+  if (s.flags.selfStudy) SUB_KEYS.forEach(k => { if (s.acad[k] !== 'online') s.acad[k] = 'none'; });
+  s.money -= acadCost(s);
+  if (s.money < 3 && SUB_KEYS.some(k => s.acad[k] !== 'none')) { L(s, '학원비가 밀렸다. 이번 학기는 학원을 제대로 다니지 못했다.', 'bad'); inc(s, 'parentRel', -3); }
   if (s.money < 0) { s.money = 0; inc(s, 'parentRel', -3); s.flags.moneyTight = true; }
 
   // 스트레스·멘탈
@@ -831,8 +922,47 @@ function vacationTurn(ctx, turn) {
 }
 
 // ── 정해진 이벤트 ─────────────────────────────────────────
+// 국어 공부법 정하기: 학년이 바뀔 때마다. 어떤 방법이냐에 따라 오르는 영역이 다르다
+function korMethod(ctx, turn) {
+  const s = ctx.s, kg = korGrades(s), weak = KOR_PARTS.reduce((w, x) => (kg[x.k] > kg[w.k] ? x : w), KOR_PARTS[0]);
+  const hasAcad = s.acad.kor !== 'none' && s.acad.kor !== 'online';
+  const o = choose(ctx, turn.id + ':korMethod', '국어 공부, 어떻게 할까', `${turn.label}. 국어는 지금 ${korText(kg)}. 가장 약한 건 ${weak.name}이다. ${turn.id === 'g3s1' ? '고3 국어는 평가원 6월·9월 모평과 수능이 같은 원리로 출제된다.' : '국어는 한 학기에 확 오르는 과목이 아니라, 방법이 맞아야 쌓인다.'} ${hasAcad ? `지금 국어는 ${ACAD[s.acad.kor].name}에 다닌다.` : '국어 학원은 다니지 않는다.'}`, [
+    O('read', '독서(비문학) 지문을 매일 2개씩 풀고 구조를 정리한다', '독해력이 오르고 영어·탐구 지문도 덜 막힌다 · 문학·문법은 처진다', ['study']),
+    O('lit', '문학 작품과 개념어(화자·어조·표현법)를 정리한다', '문학과 내신 서술형이 강해진다 · 독서는 그대로', ['study', 'safe']),
+    O('lang', '화법·언어·매체 문법 개념을 정리한다', '확실히 맞힐 문항이 늘어난다 · 독서·문학엔 효과가 작다', ['study', 'safe']),
+    O('gichul', '평가원 기출을 영역별로 분석한다', '세 영역이 고르게 오르고 효율이 좋다 · 꾸준함이 필요하다', ['study', 'self']),
+    hasAcad ? O('hw', '학원 커리큘럼과 숙제를 따라간다', '방향 고민이 없다 · 학원 수준만큼 오른다', ['obey', 'safe']) : O('mock', '모의고사 문제집을 많이 푼다', '실전 감각 · 틀린 유형이 반복된다', ['study']),
+  ]);
+  s.korFocus = o.id;
+  const fn = KOR_FOCUS[o.id].name;
+  L(s, `국어는 '${fn}'${jo(fn, '으로/로')} 간다.`);
+}
+
+// 학원 다시 짜기: 겨울방학마다. 가장 약한 과목부터
+function acadPlan(ctx, turn) {
+  const s = ctx.s, p = s.p, g = mockGrades(s.sub);
+  const weak = SUB_KEYS.reduce((w, k) => (g[k] > g[w] ? k : w), 'kor');
+  const cur = s.acad[weak] || 'none';
+  const lowMoney = s.money < 20;
+  const opts = [
+    cur !== 'director' ? O('director', `${SUBJ_NAME[weak]} — 원장 직강 소규모 학원`, '원장이 직접 가르치고 첨삭·상담·학교별 내신 대비까지 · 학원비 중간', ['study', 'safe']) : null,
+    cur !== 'big' ? O('big', `${SUBJ_NAME[weak]} — 대형 학원 유명 강사 현강`, g[weak] <= 2 ? '상위권 진도와 자료 · 비싸고 경쟁이 세다' : '자료와 강의는 최고 · 기초가 약하면 따라가기 벅차다', ['study', 'risk']) : null,
+    cur !== 'managed' ? O('managed', `${SUBJ_NAME[weak]} — 관리형 학원`, '출결·숙제·자습 관리로 딴짓을 막는다 · 수업 수준은 평범', ['obey', 'study']) : null,
+    cur !== 'tutor' && !lowMoney ? O('tutor', `${SUBJ_NAME[weak]} — 1:1 과외`, '나에게 맞춘 수업 · 가장 비싸고 선생님에 따라 편차가 크다', ['study', 'risk']) : null,
+    cur !== 'online' ? O('online', `${SUBJ_NAME[weak]} — 인강으로 바꾸기`, '돈이 거의 안 든다 · 성실하지 않으면 완강을 못 한다', ['self', 'safe']) : null,
+    O('keep', `지금 그대로 (${ACAD[cur].name})`, '바꾸는 부담이 없다 · 약한 과목은 그대로일 수 있다', ['safe']),
+  ];
+  const o = choose(ctx, turn.id + ':acad', '학원 다시 짜기', `${turn.label}. 다음 학기 학원을 정할 때다. 지금 모의고사는 ${gradesText(g)}, 가장 약한 과목은 ${SUBJ_NAME[weak]}. 지금 학원: ${acadText(s)}. ${lowMoney ? '집에서는 학원비가 부담된다고 한다.' : ''}`, opts);
+  if (o.id === 'keep') { L(s, '학원은 그대로 다니기로 했다.'); return; }
+  s.acad[weak] = o.id;
+  if (o.id === 'tutor') s.tutorQ[weak] = makeRng(s.seed, turn.id + ':tutor').normal() * 0.06;
+  const line = { director: `${SUBJ_NAME[weak]} 원장 직강 학원에 상담을 갔다. 원장님이 레벨테스트지를 직접 채점하더니 약한 단원 세 개를 짚었다. "여기부터 메우자."`, big: `${SUBJ_NAME[weak]} 대형 학원 유명 강사 현강반에 등록했다. 교실에 120명이 앉아 있다.`, managed: `${SUBJ_NAME[weak]} 관리형 학원에 등록했다. 폰은 입구에서 걷고, 자습 시간도 출결로 관리한다.`, tutor: `${SUBJ_NAME[weak]} 1:1 과외를 시작했다. 한 달 60만 원.`, online: `${SUBJ_NAME[weak]}은(는) 인강으로 바꿨다. 학원비가 줄었다.` }[o.id];
+  L(s, line.replace(`${SUBJ_NAME[weak]}은(는)`, SUBJ_NAME[weak] + jo(SUBJ_NAME[weak], '은/는')));
+}
+
 function fixedEvents(ctx, turn) {
   const s = ctx.s, p = s.p;
+  if (['g1s1', 'g2s1', 'g3s1'].indexOf(turn.id) >= 0 || turn.id === HS_TURNS[p.startTurn].id) korMethod(ctx, turn);
   if (turn.id === 'g1s1') {
     const ti = topInterest(s);
     const o = choose(ctx, 'g1s1:club', '동아리 신청서', `입학 2주 차. 동아리 박람회 날, 강당에 부스가 서른 개쯤 있다. 선배들이 귓속말로 알려 준다. "학종 갈 거면 전공 관련 동아리 들어가. 근데 거긴 매주 보고서 써야 돼." 방송부 부스에서는 음악이 크게 나오고, ${s.bestFriend ? `${s.bestName}${jo(s.bestName, '은/는')} 벌써 거기 줄을 섰다.` : '아는 얼굴이 하나도 없다.'}`, [
@@ -1190,7 +1320,7 @@ const HS_EVENTS = [
         O('online', '"인강 패스로 할게요. 그 돈은 아껴 주세요"', '돈을 아낌 · 스스로 끝까지 들어야 한다', ['self', 'safe']),
         O('self', '"혼자 해 볼게요. 대신 성적으로 증명할게요"', '자율성 · 증명 못 하면 더 큰 압박', ['self', 'rebel']),
       ]);
-      if (o.id === 'yes') { s.money -= 16; s.zC += 0.1 * p.comprehension / 3; s.zN += 0.05; inc(s, 'stress', 7); inc(s, 'parentRel', 5); s.autonomy -= 1; L(s, '선생님은 확실히 달랐다. 대신 숙제가 하루 4시간 분량이다. 엄마가 적금을 깼다는 게 계속 마음에 걸렸다.'); }
+      if (o.id === 'yes') { const wk = SUB_KEYS.reduce((w, k) => (s.sub[k] < s.sub[w] ? k : w), 'math'); s.acad[wk] = 'tutor'; s.tutorQ[wk] = Math.abs(s.tutorQ[wk]) + 0.04; s.money -= 16; s.zC += 0.1 * p.comprehension / 3; s.zN += 0.05; inc(s, 'stress', 7); inc(s, 'parentRel', 5); s.autonomy -= 1; L(s, '선생님은 확실히 달랐다. 대신 숙제가 하루 4시간 분량이다. 엄마가 적금을 깼다는 게 계속 마음에 걸렸다.'); }
       if (o.id === 'self') { inc(s, 'parentRel', -5); s.autonomy += 1; s.pressure += 6; if (p.diligence >= 4) { s.zC += 0.05; L(s, '혼자 해 보겠다고 한 말을 지키려고 더 독하게 했다.', 'good'); } else L(s, '혼자 하겠다고 했지만, 혼자는 생각보다 어려웠다.', 'warn'); }
       if (o.id === 'online') { s.money -= 2; s.zC += 0.035 * p.diligence / 3; L(s, '인강 패스를 끊었다. 완강률이 관건이다.'); }
     } },
@@ -1329,7 +1459,7 @@ const HS_EVENTS = [
       ]);
       if (o.id === 'basic') { s.sub.math += (s.p.comprehension >= 3 ? 0.18 : 0.12) * s.p.diligence / 3; s.zN -= 0.01; L(s, '중학교 개념에서 막혀 있던 걸 발견했다. 뭔가 풀리기 시작했다.', 'good'); }
       if (o.id === 'drill') { s.sub.math += s.p.comprehension >= 4 ? 0.22 : 0.07; inc(s, 'stress', 5); L(s, s.p.comprehension >= 4 ? '시간이 남기 시작했다.' : '매일 같은 유형에서 틀렸다.', s.p.comprehension >= 4 ? 'good' : 'warn'); }
-      if (o.id === 'academy') { s.money -= 5; s.sub.math += 0.1; L(s, '새 학원 레벨테스트에서 중간반에 배정됐다.'); }
+      if (o.id === 'academy') { s.money -= 5; s.sub.math += 0.1; s.acad.math = s.sub.math < 0.3 ? 'director' : 'big'; L(s, s.acad.math === 'director' ? '소규모 원장 직강 수학 학원으로 옮겼다. 원장님이 중학교 개념부터 다시 잡자고 했다.' : '대형 학원 레벨테스트에서 중간반에 배정됐다.'); }
       if (o.id === 'giveup') { s.flags.mathGiveUp = true; s.sub.math -= 0.35; s.sub.kor += 0.06; s.sub.eng += 0.06; s.zN += 0.02; inc(s, 'stress', -6); s.interest.hum += 4; L(s, '수학 시간을 국어·영어로 돌렸다. 공대·경영 쪽 원서는 쓰기 어려워졌다.', 'warn'); }
     } },
   { id: 'burnout', w: s => (s.stress >= 62 || s.mental <= 32 ? 3.5 : 0),
@@ -1618,6 +1748,163 @@ const HS_EVENTS = [
       if (o.id === 'push') { if (r.chance(0.45)) { inc(s, 'health', -18); L(s, '감기가 2주를 갔다. 수능 날까지 기침을 했다.', 'bad'); } else { s.zC += 0.02; L(s, '버텼다. 모의고사도 평소만큼 나왔다.'); } }
       if (o.id === 'light') { inc(s, 'health', 4); L(s, '오답노트를 두 번 넘겼다.'); }
     } },
+  // ── 국어 ──────────────────────────────────────────
+  { id: 'vocab', w: s => (s.turnIdx <= 6 ? 1.3 : 0.4), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '모르는 단어',
+        `국어 모의고사 독서 지문. "이 이론은 시장의 자기 조정 기능을 상정(想定)한다." 상정? 그 문장에서 멈췄다. 다음 문단엔 '전제', '수반', '도외시'가 줄줄이 나온다. 아는 단어 같은데 정확한 뜻을 대라면 말을 못 하겠다. 채점해 보니 그 지문에서만 세 개를 틀렸다.`, [
+        O('note', '지문에서 막힌 단어를 어휘 노트에 정리하고 매일 10개씩 본다', '독서 지문이 덜 막힌다 · 효과는 몇 달 뒤에 온다', ['study', 'self']),
+        O('hanja', '한자어 어휘 교재를 한 권 끝낸다', '어휘력이 단단해진다 · 시간이 꽤 든다', ['study']),
+        O('ask', '국어 선생님께 어휘 공부법을 물어본다', '방향을 잡는다 · 실천은 내 몫', ['self', 'kind']),
+        O('skip', '문맥으로 대충 넘긴다. 다들 그렇게 한다', '시간 절약 · 같은 함정에 계속 빠진다', ['fun', 'safe']),
+      ]);
+      if (o.id === 'note') { s.korOff.read += 0.08; s.sub.kor += 0.05; s.flags.vocab = true; L(s, '어휘 노트가 두 권이 됐다. 지문 속 단어가 걸리지 않으니 읽는 속도가 붙었다.', 'good'); }
+      if (o.id === 'hanja') { s.korOff.read += 0.1; s.sub.kor += 0.06; s.sub.inq += 0.02; s.flags.vocab = true; L(s, '한자어 교재를 끝냈다. 사회·과학 지문 속 개념어까지 쉽게 읽힌다.', 'good'); }
+      if (o.id === 'ask') { s.korOff.read += 0.04; L(s, `"모르는 단어는 사전 뜻 말고 지문 속 뜻으로 적어." ${s.acad.kor === 'director' ? '원장님이 다음 수업부터 어휘 테스트를 넣었다.' : '선생님이 정리법을 알려 주셨다.'}`); if (s.acad.kor === 'director') s.korOff.read += 0.04; }
+      if (o.id === 'skip') { s.korOff.read -= 0.06; L(s, '다음 모의고사에서도 비슷한 단어에서 걸렸다.', 'warn'); }
+    } },
+  { id: 'readHabit', w: s => (s.turnIdx <= 5 ? 1.1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '책 한 권',
+        `국어 선생님이 말씀하셨다. "비문학 점수는 결국 평소에 얼마나 읽었느냐로 갈린다." 집에 와서 책을 펴 봤지만 세 쪽째에서 폰을 집었다. 유튜브에는 '책 10분 요약' 영상이 넘쳐난다.`, [
+        O('book', '한 달에 두 권, 신문 칼럼 하루 하나를 읽는다', '긴 글을 버티는 힘이 생긴다 · 당장 점수는 안 오른다', ['study', 'self']),
+        O('club', '독서 토론 동아리에 들어간다', '읽고 말하는 힘, 생기부 · 시간이 든다', ['record', 'social']),
+        O('summary', '요약 영상으로 줄거리만 챙긴다', '시간이 거의 안 든다 · 읽는 힘은 그대로', ['fun']),
+      ]);
+      if (o.id === 'book') { s.korOff.read += 0.1; s.sub.kor += 0.04; s.talent.verbal += 6; L(s, '긴 글을 끝까지 읽는 게 덜 힘들어졌다.', 'good'); }
+      if (o.id === 'club') { s.korOff.read += 0.06; s.record += 5; s.recFit.hum = (s.recFit.hum || 0) + 5; s.talent.verbal += 8; L(s, '토론 준비를 하며 같은 글을 세 번씩 읽었다.', 'good'); }
+      if (o.id === 'summary') { s.korOff.read -= 0.04; L(s, '줄거리는 아는데, 긴 글은 여전히 버겁다.'); }
+    } },
+  { id: 'korTime', w: s => (s.turnIdx >= 2 ? 1.3 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, kg = korGrades(s);
+      const o = choose(ctx, key, '국어 80분이 모자라다',
+        `국어 모의고사. 독서 세트에서 25분을 쓰고 나니 문학 두 세트와 화법·언어·매체가 남았는데 시간은 20분뿐이다. 마지막 다섯 문제는 찍었다. 지금 국어는 ${korText(kg)}. 다음 시험부터 푸는 순서를 바꿔야 할 것 같다.`, [
+        O('langFirst', '화법·언어·매체 → 문학 → 독서 순서로 푼다', '확실한 점수부터 챙긴다 · 독서에서 시간에 쫓긴다', ['safe', 'study']),
+        O('timer', '세트별 제한 시간을 정하고 넘기면 과감히 넘어간다', '시간 관리가 몸에 붙는다 · 연습이 많이 필요하다', ['study', 'self']),
+        O('consult', `${s.acad.kor !== 'none' ? '국어 학원 선생님께' : '담임 선생님께'} 시험지를 들고 가 상담한다`, '내 습관을 정확히 짚어 준다 · 고칠 건 내 몫', ['self', 'kind']),
+        O('same', '순서는 그대로, 그냥 더 빨리 읽으려고 한다', '바꿀 필요 없음 · 다음에도 시간이 모자랄 수 있다', ['safe']),
+      ]);
+      if (o.id === 'langFirst') { s.korOff.lang += 0.05; s.sub.kor += 0.04; L(s, '화법·언어·매체를 15분 안에 끝내니 마음이 편해졌다.'); }
+      if (o.id === 'timer') { s.sub.kor += s.p.diligence >= 3 ? 0.08 : 0.03; L(s, s.p.diligence >= 3 ? '두 달 연습하니 80분 안에 다 풀고 검토까지 했다.' : '타이머를 맞춰 놓고도 자꾸 시간을 넘겼다.', s.p.diligence >= 3 ? 'good' : 'warn'); }
+      if (o.id === 'consult') { const dir = s.acad.kor === 'director'; s.sub.kor += dir ? 0.09 : s.acad.kor !== 'none' ? 0.06 : 0.04; L(s, dir ? '원장님이 시험지에 내 시선 순서를 표시해 가며 짚어 주셨다. "너는 1문단을 너무 꼼꼼히 읽어. 구조만 잡고 넘어가." 다음 시험에서 바로 효과가 났다.' : '선생님이 시간이 새는 곳을 짚어 주셨다.', 'good'); }
+      if (o.id === 'same') { s.sub.kor -= 0.02; L(s, '다음 시험에서도 마지막 장을 찍었다.', 'warn'); }
+    } },
+  { id: 'korNaesin', w: s => (s.turnIdx <= 8 ? 1.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, d = s.acad.kor === 'director';
+      const o = choose(ctx, key, '국어 내신 서술형',
+        `국어 내신 범위는 교과서 작품 12개와 선생님 프린트 30장. 작년 기출을 보니 서술형이 40%, "화자의 태도 변화를 두 문장으로 서술하시오" 같은 문제다. ${d ? '다니는 원장 직강 학원에서는 우리 학교 3년 치 기출을 분석한 자료를 나눠 줬다.' : ''}`, [
+        O('understand', '작품마다 화자·시점·표현법을 직접 정리한다', '서술형에서 강하다 · 시간이 많이 든다', ['study', 'self']),
+        O('memorize', '선생님 프린트를 통째로 외운다', '객관식은 확실 · 처음 보는 서술형에 약하다', ['study', 'safe']),
+        d ? O('academy', '학원 학교별 기출 자료로 예상 문제를 반복한다', '우리 학교 출제 경향에 딱 맞다 · 학원에 의존하게 된다', ['study', 'obey']) : O('cram', '시험 3일 전에 몰아서 본다', '다른 과목 시간을 확보 · 범위가 넓어 다 못 본다', ['fun']),
+      ]);
+      if (o.id === 'understand') { s.korOff.lit += 0.08; s.zN += 0.05; L(s, '서술형 두 문제를 만점 받았다. 처음 보는 작품도 정리한 틀로 읽힌다.', 'good'); }
+      if (o.id === 'memorize') { s.zN += 0.03; L(s, '객관식은 다 맞혔다. 서술형 하나는 교과서 밖 작품이 나와 부분 점수만 받았다.'); }
+      if (o.id === 'academy') { s.zN += 0.07; s.korOff.lit += 0.03; L(s, '예상 문제와 비슷한 서술형이 두 개나 나왔다. 국어 내신 1등급 컷을 넘었다.', 'good'); }
+      if (o.id === 'cram') { s.zN -= 0.05; L(s, '프린트 30장 중 절반도 못 봤다. 서술형 답안 칸을 반쯤 비웠다.', 'bad'); }
+    } },
+  { id: 'critique', w: s => (s.turnIdx <= 8 ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '수행평가 비평문',
+        `국어 수행평가: 소설 한 편을 읽고 1,500자 비평문 쓰기. 세특에 그대로 들어간다. 반에서 몇 명은 AI로 초안을 뽑았다는 소문이 돈다. 담임 선생님은 "AI 문장은 다 티 난다"고 경고했다.`, [
+        O('self', '직접 쓰고, 첨삭을 받아 두 번 고친다', '글쓰기 실력과 세특 · 밤을 두 번 새운다', ['study', 'record']),
+        O('ai', 'AI 초안을 받아 말투만 바꿔 낸다', '시간이 거의 안 든다 · 걸리면 0점에 세특도 날아간다', ['fun', 'risk']),
+        O('quick', '혼자 한 번에 쓰고 제출한다', '무난함 · 세특 문장이 평범해진다', ['safe']),
+      ]);
+      if (o.id === 'self') { const dir = s.acad.kor === 'director' || s.acad.kor === 'tutor'; s.record += dir ? 9 : 6; s.korOff.read += 0.03; s.korOff.lit += 0.03; s.talent.verbal += 6; L(s, dir ? '국어 학원 원장님이 빨간 펜으로 세 번 첨삭해 주셨다. 선생님이 "올해 최고의 비평문"이라며 세특에 길게 적어 주셨다.' : '친구와 서로 첨삭해 주며 두 번 고쳤다. 세특에 "논거가 탄탄하다"고 적혔다.', 'good'); }
+      if (o.id === 'ai') { if (r.chance(0.45)) { s.record -= 10; s.flags.caught = true; inc(s, 'mental', -8); L(s, '표절·AI 검사에 걸렸다. 0점, 그리고 담임 상담. 세특 칸은 비게 됐다.', 'bad'); } else { s.record += 1; L(s, '무사히 넘어갔다. 세특에는 "성실히 제출함" 한 줄뿐이었다.', 'warn'); } }
+      if (o.id === 'quick') { s.record += 3; L(s, '평범한 비평문이었다.'); }
+    } },
+  { id: 'classic', w: s => (s.turnIdx >= 2 && s.turnIdx <= 8 ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '고전시가',
+        `"하늘 아래 떠 있는 구름이 ~" 현대어는 알겠는데, '님'이 임금인지 연인인지, '두어라'가 체념인지 다짐인지 매번 헷갈린다. 고전시가는 시험마다 한 세트씩 나온다. 친구는 "어차피 한 세트니까 버려"라고 한다.`, [
+        O('word', '고전 어휘 200개를 외우고 작품 30개를 정리한다', '문학 한 세트를 확실히 지킨다 · 지루하고 오래 걸린다', ['study']),
+        O('gichul', '평가원 기출에 나온 고전시가만 반복한다', '효율적이다 · 처음 보는 작품엔 약하다', ['study', 'safe']),
+        O('drop', '고전시가는 버린다', '다른 데 시간을 쓴다 · 한 세트 3~4문제를 매번 잃는다', ['fun', 'risk']),
+      ]);
+      if (o.id === 'word') { s.korOff.lit += 0.1; s.sub.kor += 0.04; L(s, '고전시가 세트를 처음으로 다 맞혔다.', 'good'); }
+      if (o.id === 'gichul') { s.korOff.lit += 0.06; s.sub.kor += 0.03; L(s, '기출 작품은 이제 눈에 익었다.'); }
+      if (o.id === 'drop') { s.korOff.lit -= 0.12; s.sub.kor -= 0.05; s.flags.dropClassic = true; L(s, '고전시가 세트는 찍는다. 국어 1등급 컷에서 늘 3~4점이 모자라기 시작했다.', 'bad'); }
+    } },
+  { id: 'korPlateau', w: s => (s.turnIdx >= 4 && s.mockG.length >= 2 && s.mockG[s.mockG.length - 1].kor >= s.mockG[s.mockG.length - 2].kor ? 1.8 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, g = s.mockG[s.mockG.length - 1].kor;
+      const o = choose(ctx, key, '국어는 해도 안 오른다',
+        `국어 ${g}등급. 석 달째 그대로다. 수학은 한 만큼 오르는데 국어는 아무리 풀어도 제자리다. 반 친구들 사이에선 "국어는 타고나는 거야, 차라리 수학에 시간 써"라는 말이 돈다.`, [
+        O('method', '공부법을 바꾼다. 문제 양 대신 지문 하나를 분석하는 데 시간을 쓴다', '근본적인 독해력이 오른다 · 한동안 점수가 안 보인다', ['study', 'self']),
+        O('academy', s.acad.kor === 'director' ? '원장님께 상담을 받는다' : '국어 학원(원장 직강 소규모)에 상담을 받으러 간다', '정확한 진단과 처방 · 학원비가 든다', ['self', 'obey']),
+        O('drop', '국어 시간을 줄이고 수학에 몰아준다', '수학이 오른다 · 국어는 더 떨어지고 영어·탐구 지문도 흔들린다', ['risk']),
+      ]);
+      if (o.id === 'method') { s.korFocus = 'gichul'; s.korOff.read += 0.06; s.sub.kor += s.p.diligence >= 3 ? 0.06 : 0.02; L(s, '평가원 기출 한 지문을 한 시간씩 뜯어봤다. 문단과 문단 사이의 관계가 보이기 시작했다.', 'good'); }
+      if (o.id === 'academy') {
+        if (s.acad.kor !== 'director') { s.acad.kor = 'director'; s.money -= 3; L(s, '원장님이 시험지 세 장을 보고 바로 말했다. "읽는 건 되는데, 선지를 지문에 대조하지 않고 기억으로 풀어." 그 학원에 등록했다.', 'good'); }
+        else L(s, '원장님이 오답을 같이 뜯어보며 말했다. "너는 독서 3문단에서 늘 무너져. 거기만 잡자." 숙제가 바뀌었다.', 'good');
+        s.korFocus = 'gichul'; s.sub.kor += 0.07; inc(s, 'stress', -4);
+      }
+      if (o.id === 'drop') { s.sub.kor -= 0.1; s.korOff.read -= 0.05; s.sub.math += 0.06; L(s, '수학은 조금 올랐다. 국어는 한 등급 더 내려갔고, 영어 장문에서도 시간이 모자라기 시작했다.', 'bad'); }
+    } },
+  { id: 'saseol', w: s => (s.turnIdx >= 6 ? 1.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '사설 모의고사 vs 평가원 기출',
+        `고3이 다가오자 반 친구들이 사설 모의고사를 주 3회씩 푼다. 시중 실전 모의고사 세트가 책상마다 쌓여 있다. 그런데 국어 선생님은 "평가원 기출을 세 번 본 사람이 사설 열 회 푼 사람보다 낫다"고 하신다.`, [
+        O('gichul', '평가원 기출 5개년을 세 번씩 분석한다', '출제 원리가 보인다 · 실전 감각은 느리게 붙는다', ['study', 'self']),
+        O('mock', '사설 모의고사를 주 3회 푼다', '실전 감각과 시간 관리 · 문제 질이 들쭉날쭉하다', ['study']),
+        O('both', '평일엔 기출 분석, 주말엔 사설 1회', '균형 · 시간이 많이 든다', ['study', 'safe']),
+      ]);
+      s.korFocus = o.id === 'mock' ? 'mock' : 'gichul';
+      if (o.id === 'gichul') { s.sub.kor += 0.06; L(s, '기출을 세 번째 볼 때, 평가원이 선지를 만드는 방식이 보였다.', 'good'); }
+      if (o.id === 'mock') { s.sub.kor += 0.02; L(s, '푼 양은 많은데 틀리는 유형이 그대로다.', 'warn'); }
+      if (o.id === 'both') { s.sub.kor += 0.05; inc(s, 'stress', 4); L(s, '주말마다 실전 연습까지 하니 시간 감각도 붙었다.', 'good'); }
+    } },
+  // ── 학원 ──────────────────────────────────────────
+  { id: 'acadHomework', w: s => (SUB_KEYS.filter(k => s.acad[k] !== 'none' && s.acad[k] !== 'online').length >= 2 ? 1.4 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '학원 숙제 폭탄',
+        `학원 두 곳의 숙제가 하루 네 시간 분량이다. 학교 수행평가까지 겹쳐 사흘째 새벽 2시에 잔다. ${acadText(s)}.`, [
+        O('all', '다 한다. 학원비가 아깝다', '학원 효과를 다 뽑는다 · 체력이 바닥난다', ['study', 'obey']),
+        O('choose', '약한 과목 숙제는 다 하고, 나머지는 핵심만 한다', '효율적 · 학원 선생님께 혼날 수 있다', ['self', 'study']),
+        O('skip', '숙제를 안 하고 학원만 간다', '잠은 잔다 · 수업만 듣고 남는 게 없다', ['fun']),
+      ]);
+      if (o.id === 'all') { s.zC += 0.04; inc(s, 'health', -10); inc(s, 'stress', 8); L(s, '숙제는 다 했다. 대신 오후 수업 시간에 졸았다.'); }
+      if (o.id === 'choose') { s.zC += 0.03; L(s, '선생님은 "다음엔 다 해 와"라고만 했다. 약한 과목은 확실히 올랐다.', 'good'); }
+      if (o.id === 'skip') { s.zC -= 0.03; inc(s, 'lazy', 4); L(s, '학원에 앉아 있었지만 머리에 남은 건 없었다.', 'bad'); }
+    } },
+  { id: 'directorCall', w: s => (s.acad.kor === 'director' && s.mockG.length >= 1 ? 2.2 : SUB_KEYS.some(k => s.acad[k] === 'director') ? 1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, sub = SUB_KEYS.find(k => s.acad[k] === 'director') || 'kor';
+      const o = choose(ctx, key, '원장님 면담',
+        `수업이 끝나고 ${SUBJ_NAME[sub]} 학원 원장님이 따로 부르셨다. "요즘 표정이 안 좋다. 숙제도 반만 해 오고. 무슨 일 있니?" 소규모 학원이라 원장님은 반 아이들 사정을 다 안다.`, [
+        O('open', '요즘 힘든 이야기를 솔직하게 털어놓는다', '마음이 가벼워지고 계획을 다시 잡는다 · 자존심이 조금 상한다', ['self', 'kind']),
+        O('plan', '"괜찮아요" 하고 공부 계획만 같이 짠다', '학습 방향을 잡는다 · 속마음은 그대로', ['study', 'safe']),
+        O('nothing', '"아무 일 없어요" 하고 나온다', '그대로 · 원장님이 부모님께 연락할 수도 있다', ['rebel']),
+      ]);
+      if (o.id === 'open') { inc(s, 'mental', 10); inc(s, 'stress', -10); inc(s, 'lazy', -6); s.sub[sub] += 0.05; L(s, '원장님은 한참 듣고 나서 숙제 양을 조정해 주셨다. "성적은 내가 책임질 테니 잠은 자라."', 'good'); }
+      if (o.id === 'plan') { s.sub[sub] += 0.06; inc(s, 'lazy', -4); L(s, '원장님이 4주짜리 계획표를 같이 짜 주셨다.', 'good'); }
+      if (o.id === 'nothing') { if (s.p.pStyle === 'strict' || s.p.pStyle === 'anxious') { inc(s, 'parentRel', -4); L(s, '그날 밤 엄마에게 원장님 전화가 왔다.', 'warn'); } else L(s, '원장님은 더 묻지 않으셨다.'); }
+    } },
+  { id: 'tutorChange', w: s => (SUB_KEYS.some(k => s.acad[k] === 'tutor') ? 1.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, sub = SUB_KEYS.find(k => s.acad[k] === 'tutor');
+      const good = (s.tutorQ[sub] || 0) >= 0;
+      const o = choose(ctx, key, '과외 선생님',
+        `${SUBJ_NAME[sub]} 과외 석 달째. ${good ? '선생님은 꼼꼼하지만 진도가 느리다.' : '대학생 선생님은 친절한데, 수업의 절반이 잡담이다. 성적은 그대로다.'} 한 달에 60만 원이 나간다.`, [
+        O('keep', '그대로 계속한다', '익숙함 · 효과는 지금 그대로', ['safe']),
+        O('change', '경력 많은 전문 과외 선생님으로 바꾼다', '수업 질이 오를 수 있다 · 비용이 더 든다', ['study', 'risk']),
+        O('academy', '과외를 끊고 원장 직강 소규모 학원으로 옮긴다', '비용은 줄고 관리는 된다 · 1:1만큼 맞춤은 아니다', ['safe', 'study']),
+      ]);
+      if (o.id === 'change') { s.tutorQ[sub] = Math.max(s.tutorQ[sub], 0) + 0.05; s.money -= 4; L(s, '새 선생님은 첫 수업에 내 약점 세 가지를 정확히 짚었다.', 'good'); }
+      if (o.id === 'academy') { s.acad[sub] = 'director'; L(s, `${SUBJ_NAME[sub]}${jo(SUBJ_NAME[sub], '은/는')} 원장 직강 소규모 학원으로 옮겼다. 원장님이 레벨테스트 결과를 보고 반을 정해 주셨다.`); }
+      if (o.id === 'keep') L(s, '그대로 다니기로 했다.');
+    } },
+
 ];
 
 function randomEvents(ctx, turn, n) {
@@ -1642,7 +1929,8 @@ function semesterBrief(s, turn) {
   const g = mockGrades(s.sub);
   notes.push(`지난 성적은 내신 상위 ${last.toFixed(0)}%, 모의고사 ${gradesText(g)}.`);
   if (g.kor >= 4 && g.kor >= Math.min(g.eng, g.inq) + 1) notes.push('국어가 약하면 영어·탐구 지문 이해도 같이 막힌다.');
-  if (s.p.academies) notes.push(`학원 ${s.p.academies}곳에 다니는 중이라 공부 효율이 조금 높다(학원비는 매 학기 나간다).`);
+  notes.push(`지금 학원: ${acadText(s)}. 학원 다니는 과목은 복습·숙제용으로 2칸 이상 남겨야 효과가 제대로 난다.`);
+  notes.push(`국어는 ${korText(korGrades(s))}. 공부법: ${(KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock).name}.`);
   if (s.lazy >= 45) notes.push('요즘 계획한 공부 시간이 자꾸 폰으로 새어 나간다.');
   if (s.stress >= 60) notes.push('스트레스가 높다. 쉬지 않으면 무너질 수 있다.');
   if (s.health <= 45) notes.push('체력이 바닥이다.');
@@ -1685,7 +1973,7 @@ function studentZ(s, type, field) {
       const sb = p.school === 'special' ? 0.45 : p.school === 'jasa' ? 0.25 : p.region === 'gangnam' ? 0.05 : 0;
       return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0) - (s.flags.applyMathWeak || 0) * 0.08 - (s.flags.korWeakInterview ? 0.06 : 0);
     }
-    case 'nonsul': return 0.45 * cs.kor + 0.25 * zcs + (p.comprehension - 3) * 0.22 + (s.talent.verbal - 40) / 110;   // 논술은 국어 독해력이 핵심
+    case 'nonsul': return 0.45 * (cs.kor + s.korOff.read) + 0.25 * zcs + (p.comprehension - 3) * 0.22 + (s.talent.verbal - 40) / 110;   // 논술은 국어 독해력이 핵심
     case 'silgi': {
       const tk = FIELDS[field].talent;
       const tal = (s.talent[tk] - 50) / 18 + ((field === 'art' && s.flags.artPath) || (field === 'sport' && s.flags.sportPath) ? 0.5 : 0) + (field === 'perf' && s.flags.trainee ? 0.4 : 0);
@@ -2574,7 +2862,7 @@ function simulate(profile, seed, resolve) {
       const t = HS_TURNS[i];
       s.turnIdx = i; s.turnLabel = t.label; s.age = 17 + Math.floor(i / 4);
       if (t.type === 'sem') semesterTurn(ctx, t);
-      else if (t.type === 'vac') { vacationTurn(ctx, t); randomEvents(ctx, t, 1 + (makeRng(s.seed, t.id + ':n').chance(0.45) ? 1 : 0)); }
+      else if (t.type === 'vac') { if (t.id === 'g1v2' || t.id === 'g2v2' || t.id === 'g1v1' && p.startTurn <= 1) acadPlan(ctx, t); vacationTurn(ctx, t); randomEvents(ctx, t, 1 + (makeRng(s.seed, t.id + ':n').chance(0.45) ? 1 : 0)); }
       else if (t.type === 'apply') applyTurn(ctx, t);
       else if (t.type === 'final') finalTurn(ctx, t);
     }
@@ -2670,6 +2958,9 @@ function view(s) {
     naesin: { pct: last, avg: s.naesinRec.length ? avgNaesin(s) : last, g: s.p.grade >= 3 ? grade9(last) + '등급' : grade5(last) + '등급(5등급제)' },
     mock: { pct: mock, g: grade9(mock) },
     subj: mockGrades(s.csatSub || s.sub),
+    kor: korGrades(s, (s.csatSub || s.sub).kor),
+    acad: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], type: s.acad[k], label: ACAD[s.acad[k]].name })),
+    korFocus: (KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock).name,
     bars: [
       { k: 'record', label: '생기부', v: Math.round(clamp(s.record, 0, 100)) },
       { k: 'mental', label: '멘탈', v: Math.round(s.mental) },
@@ -2689,7 +2980,7 @@ function view(s) {
 
 const API = {
   play, autoplay, analyze, view, normalizeProfile, decisionsOf,
-  FIELDS, GOALS, PARENT_STYLES, PARENT_DESIRES, STYLES, HOBBIES, FRIEND_GROUPS, TIERS,
+  ACAD, KOR_FOCUS, FIELDS, GOALS, PARENT_STYLES, PARENT_DESIRES, STYLES, HOBBIES, FRIEND_GROUPS, TIERS,
   _internal: { persona, simulate, makeRng, topFromZ, zFromTop, grade9, grade5 },
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
