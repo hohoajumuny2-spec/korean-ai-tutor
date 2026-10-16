@@ -234,6 +234,65 @@ const JOBS = {
 };
 const LEVEL_NAMES = ['최상', '상', '중', '하'];
 
+// ── 과목 ───────────────────────────────────────────────
+//  국·수·영·탐을 따로 굴린다. 국어 문해력은 영어 장문·탐구 지문의 효율을 바꾸고,
+//  이과 수학은 탐구(물리·화학) 계산에 도움이 된다. 정시는 계열별 반영 비율로, 수시는 수능 최저로 과목 등급을 쓴다.
+const SUBJECTS = [{ k: 'kor', name: '국어' }, { k: 'math', name: '수학' }, { k: 'eng', name: '영어' }, { k: 'inq', name: '탐구' }];
+const SUBJ_NAME = { kor: '국어', math: '수학', eng: '영어', inq: '탐구' };
+const SUB_KEYS = ['kor', 'math', 'eng', 'inq'];
+const CUT_ENG = [7, 20, 38, 55, 70, 82, 90, 96, 100];   // 영어는 절대평가라 1등급 폭이 더 넓다
+const MID9 = [2, 7.5, 17, 31.5, 50, 68.5, 83, 92.5, 98];
+const MIDENG = [3.5, 13.5, 29, 46.5, 62.5, 76, 86, 93, 98];
+const gradeEng = pct => { for (let i = 0; i < 9; i++) if (pct <= CUT_ENG[i]) return i + 1; return 9; };
+const subjGrade = (k, z) => (k === 'eng' ? gradeEng(topFromZ(z)) : grade9(topFromZ(z)));
+const subjFromGrade = (k, g) => zFromTop((k === 'eng' ? MIDENG : MID9)[clamp(Math.round(g), 1, 9) - 1]);
+const meanSub = o => (o.kor + o.math + o.eng + o.inq) / 4;
+function mockGrades(sub) { const o = {}; SUB_KEYS.forEach(k => { o[k] = subjGrade(k, sub[k]); }); return o; }
+function gradesText(g) { return `국어 ${g.kor} · 수학 ${g.math} · 영어 ${g.eng} · 탐구 ${g.inq}`; }
+function subjAbility(p, k) {
+  return ({ kor: p.comprehension * 0.5 + p.focus * 0.3 + p.memory * 0.2, math: p.comprehension * 0.55 + p.focus * 0.35 + p.memory * 0.1,
+    eng: p.memory * 0.4 + p.comprehension * 0.3 + p.focus * 0.3, inq: p.memory * 0.5 + p.comprehension * 0.3 + p.focus * 0.2 })[k] / 3;
+}
+// 정시 반영 비율(계열별)
+function subjWeights(field) {
+  const t = FIELDS[field] ? FIELDS[field].track : '인문';
+  if (field === 'med') return { kor: 0.2, math: 0.35, eng: 0.1, inq: 0.35 };
+  if (t === '자연') return { kor: 0.2, math: 0.35, eng: 0.15, inq: 0.3 };
+  if (t === '예체') return { kor: 0.4, math: 0.1, eng: 0.3, inq: 0.2 };
+  return { kor: 0.35, math: 0.25, eng: 0.2, inq: 0.2 };
+}
+function compositeZ(sub, field) { const w = subjWeights(field); return SUB_KEYS.reduce((a, k) => a + w[k] * sub[k], 0); }
+// 수능 최저: 국·수·영·탐(1과목) 중 n개 등급 합
+function minReq(tier, type) {
+  if (type === 'silgi' || type === 'jungsi') return null;
+  if (tier.fo === 'med') return tier.key === 'm4' || tier.key === 'm5' ? { n: 3, sum: 5 } : { n: 4, sum: 5 };
+  if (type === 'jonghap') return tier.gi === 1 ? { n: 4, sum: 8 } : null;
+  if (tier.teacher === 'elem') return { n: 4, sum: 12 };
+  const T = { 0: [3, 7], 1: [3, 6], 2: [3, 7], 3: [2, 5], 4: [2, 5], 5: [2, 6], 6: [2, 6], 7: [2, 7] }[tier.gi];
+  return T ? { n: T[0], sum: T[1] } : null;
+}
+const reqText = q => (q ? `${q.n}합 ${q.sum}` : '최저 없음');
+function checkMin(q, g) { const sum = [g.kor, g.math, g.eng, g.inq].sort((a, b) => a - b).slice(0, q.n).reduce((a, b) => a + b, 0); return { ok: sum <= q.sum, sum }; }
+// 학과별 취업률·취업의 질 (계열 평균을 바탕으로 한 대략값, 대학 수준에 따라 조금씩 달라진다)
+const EMPLOY = {
+  med: [90, 'A+', 6000, '면허 직업이라 실업이 거의 없다'], nurse: [83, 'A', 3800, '병원 수요는 많지만 3교대가 힘들다'],
+  eng: [71, 'A-', 4100, '반도체·제조 대기업 채용이 많다'], cs: [70, 'A-', 4300, '개발자 수요는 많지만 신입 경쟁이 세졌다'],
+  sci: [60, 'B', 3300, '대학원 진학이 많고 학부 졸업 후 바로 취업은 적다'], biz: [64, 'B+', 3800, '금융·대기업 사무직, 자격증과 인턴이 갈림길'],
+  law: [57, 'B', 3400, '공무원·공기업 준비 기간이 길다'], edu: [60, 'B+', 3600, '임용 합격이 곧 취업이다'],
+  hum: [54, 'C+', 3000, '전공을 살린 취업 자리가 적다'], soc: [58, 'B-', 3200, '공공·복지 분야가 많고 초봉이 낮다'],
+  media: [59, 'C+', 3100, '경쟁이 심하고 계약직이 많다'], art: [57, 'C', 2800, '프리랜서 비중이 높다'],
+  perf: [50, 'C-', 2400, '정규직 자리가 드물다'], sport: [60, 'C+', 2900, '지도자·트레이너 위주라 소득 편차가 크다'],
+};
+function employOf(field, prestige, teacher) {
+  const e = EMPLOY[field] || EMPLOY.hum, pr = prestige == null ? 62 : prestige;
+  let rate = e[0] + Math.round((pr - 62) * 0.18), grade = e[1], note = e[3];
+  if (teacher === 'elem') { rate = 84; grade = 'A-'; note = '초등 임용 합격률이 높은 편이다'; }
+  if (teacher === 'sec') { rate = 46; grade = 'B'; note = '중등 임용 경쟁률이 높아 기간제·학원으로 가는 경우가 많다'; }
+  const pay = Math.round(e[2] * (1 + (pr - 62) / 250) / 100) * 100;
+  return { rate: clamp(rate, 30, 97), grade, pay, note };
+}
+function employText(field, prestige, teacher) { const e = employOf(field, prestige, teacher); return `취업률 약 ${e.rate}% · 취업의 질 ${e.grade} (초봉 약 ${e.pay.toLocaleString()}만) — ${e.note}`; }
+
 // ── 상태 만들기 ──────────────────────────────────────────
 function normalizeProfile(p) {
   const d = {
@@ -273,8 +332,9 @@ function initState(p, seed) {
   const ps = PARENT_STYLES[p.pStyle] || PARENT_STYLES.warm;
   const s = {
     p, seed,
-    zN: zFromTop(p.gpaPct), zC: zFromTop(p.mockPct),
-    naesinRec: [], mocks: [],
+    zN: zFromTop(p.gpaPct),
+    sub: {}, csatSub: null, csatG: null,
+    naesinRec: [], mocks: [], mockG: [],
     record: 18 + p.recordLv * 6 + (p.school !== 'general' ? 4 : 0),
     recFit: {},
     mental: clamp(42 + p.grit * 5 + ps.mental, 10, 95),
@@ -299,6 +359,9 @@ function initState(p, seed) {
     uni: null, col: null, career: null, ending: null,
     attempts: 0,
   };
+  SUB_KEYS.forEach(k => { s.sub[k] = p.subj ? subjFromGrade(k, p.subj[k]) : zFromTop(p.mockPct) + r.normal() * 0.15; });
+  // 예전 코드가 쓰던 '수능형 실력 하나'(zC)는 네 과목 평균으로 보이고, 더하면 네 과목에 똑같이 더해진다
+  Object.defineProperty(s, 'zC', { enumerable: true, get() { return meanSub(this.sub); }, set(v) { const d = v - meanSub(this.sub); SUB_KEYS.forEach(k => { this.sub[k] += d; }); } });
   s.rivalName = r.pick(FRIEND_NAMES.filter(n => n !== s.bestName));
   s.pressure = ps.pressure + (p.pDesire !== 'free' ? 14 : 0) + (p.sibling === 'better' ? 10 : 0) + (p.pJob === 'pro' ? 6 : 0);
   // 스마트폰·학원·부모님 사이·직업
@@ -314,8 +377,6 @@ function initState(p, seed) {
   // 과목별 모의고사 등급
   if (p.subj) {
     const avg = (p.subj.kor + p.subj.math + p.subj.eng + p.subj.inq) / 4;
-    if (p.subj.math - avg >= 1.5) s.flags.mathWeak = true;
-    if (avg - p.subj.math >= 1.5) s.flags.mathStrong = true;
     s.talent.verbal += (5 - p.subj.kor) * 4 + (5 - p.subj.eng) * 2;
   }
   if (p.subject) { s.subject = p.subject; if (p.subject === 'phys' || p.subject === 'bio') s.track = '자연'; else if (p.subject !== 'easy') s.track = '인문'; }
@@ -441,11 +502,15 @@ function persona(s, prompt) {
   });
   return best;
 }
+const ALLOC_TOTAL = 12;
 function defaultAlloc(s, cats) {
-  const p = s.p, ids = cats.map(c => c.id);
+  const p = s.p, ids = cats.map(c => c.id), T = ALLOC_TOTAL;
+  const studyW = 2.6 + p.diligence * 0.95 - p.impulse * 0.25 + p.academies * 0.35 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.5 : 0);
+  const avg = meanSub(s.sub), wt = subjWeights(s.track === '자연' ? 'eng' : 'biz');
+  const need = {}; let nt = 0;
+  SUB_KEYS.forEach(k => { need[k] = Math.max(0.4, 1 + 0.35 * (avg - s.sub[k]) + (wt[k] - 0.25) * 2); nt += need[k]; });
   const w = {
-    study: 2 + p.diligence * 0.7 - p.impulse * 0.2,
-    academy: s.money > 30 ? 0.6 + p.academies * 0.7 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.6 : 0) : p.academies * 0.3,
+    kor: studyW * need.kor / nt, math: studyW * need.math / nt, eng: studyW * need.eng / nt, inq: studyW * need.inq / nt,
     activity: 0.4 + p.curiosity * 0.3,
     hobby: 0.6 + p.impulse * 0.35,
     friends: 0.3 + p.social * 0.35,
@@ -456,18 +521,19 @@ function defaultAlloc(s, cats) {
   const raw = ids.map(id => Math.max(0, w[id] || 0));
   const tot = raw.reduce((a, b) => a + b, 0) || 1;
   const out = {}; let used = 0;
-  ids.forEach((id, i) => { out[id] = Math.floor(raw[i] / tot * 10); used += out[id]; });
+  ids.forEach((id, i) => { out[id] = Math.floor(raw[i] / tot * T); used += out[id]; });
   // 남는 칸은 큰 순서대로
-  const order = ids.map((id, i) => [id, raw[i] / tot * 10 - out[id]]).sort((a, b) => b[1] - a[1]);
-  for (let i = 0; used < 10; i = (i + 1) % order.length) { out[order[i][0]]++; used++; }
+  const order = ids.map((id, i) => [id, raw[i] / tot * T - out[id]]).sort((a, b) => b[1] - a[1]);
+  for (let i = 0; used < T; i = (i + 1) % order.length) { out[order[i][0]]++; used++; }
   return out;
 }
 function normAlloc(a, cats) {
-  const out = {}; let t = 0;
-  cats.forEach(c => { out[c.id] = clamp(Math.round(+((a || {})[c.id]) || 0), 0, 10); t += out[c.id]; });
-  // 10칸을 넘으면 뒤에서부터 줄이고, 모자라면 휴식에 넣는다
-  for (let i = cats.length - 1; t > 10 && i >= 0; i--) { const cut = Math.min(out[cats[i].id], t - 10); out[cats[i].id] -= cut; t -= cut; }
-  if (t < 10) out.rest = (out.rest || 0) + (10 - t);
+  const out = {}, T = ALLOC_TOTAL; let t = 0;
+  cats.forEach(c => { out[c.id] = clamp(Math.round(+((a || {})[c.id]) || 0), 0, T); t += out[c.id]; });
+  // 칸을 넘으면 뒤에서부터 줄이고, 모자라면 휴식에 넣는다
+  for (let i = cats.length - 1; t > T && i >= 0; i--) { const cut = Math.min(out[cats[i].id], t - T); out[cats[i].id] -= cut; t -= cut; }
+  if (t < T) out.rest = (out.rest || 0) + (T - t);
+  SUB_KEYS.concat(['activity', 'hobby', 'friends', 'rest', 'date', 'work']).forEach(k => { if (out[k] == null) out[k] = 0; });
   return out;
 }
 
@@ -486,10 +552,18 @@ const HS_TURNS = [
   { id: 'g3s2', label: '고3 2학기 · 수능', type: 'final' },
 ];
 
+function subjectCats(s) {
+  const g = mockGrades(s.sub), sci = s.track === '자연';
+  return [
+    { id: 'kor', label: '국어', desc: `지금 ${g.kor}등급. 독해력·문해력은 영어 장문과 탐구 지문 이해에도 그대로 쓰인다.` },
+    { id: 'math', label: '수학', desc: `지금 ${g.math}등급. ${sci ? '이과 정시 반영 비율이 가장 높고, 물리·화학 계산에도 도움이 된다.' : '정시 문과에서도 등급 차이를 크게 가른다.'}` },
+    { id: 'eng', label: '영어', desc: `지금 ${g.eng}등급(절대평가). 수능 최저에 자주 들어간다. 국어 독해력이 약하면 장문에서 막힌다.` },
+    { id: 'inq', label: '탐구', desc: `지금 ${g.inq}등급. 암기가 중요하고, 지문을 빨리 읽을수록 유리하다.` },
+  ];
+}
 function allocCats(s, turn) {
   const cats = [
-    { id: 'study', label: '자습', desc: '혼자 하는 공부. 성실하고 집중력이 좋을수록 효과가 크다.' },
-    { id: 'academy', label: '학원·과외', desc: s.money > 25 ? '돈이 든다. 수능형 실력에 특히 효과.' : '집안 형편이 빠듯해 부담이 크다.' },
+    ...subjectCats(s),
     { id: 'activity', label: '생기부 활동', desc: '동아리·탐구·봉사. 학종에 쓰인다.' },
     { id: 'hobby', label: '취미', desc: s.p.hobbies.length ? s.p.hobbies.map(h => HOBBIES[h].name).join('·') : '좋아하는 것' },
     { id: 'friends', label: '친구', desc: FRIEND_GROUPS[s.friendGroup].name },
@@ -500,28 +574,48 @@ function allocCats(s, turn) {
   return cats;
 }
 
+// 과목별 공부 효과 — 국어 문해력이 영어·탐구 효율을, 이과 수학이 탐구 계산을 끌어올린다
+function studySubjects(s, a, coef, r, quiet) {
+  const p = s.p, st = STYLES[p.style] || STYLES.steady, fg = FRIEND_GROUPS[s.friendGroup];
+  const lossFrac = clamp((s.lazy - 22) / 115, 0, 0.5);
+  const planned = SUB_KEYS.reduce((t, k) => t + (a[k] || 0), 0);
+  const lost = planned * lossFrac;
+  if (!quiet && lost >= 0.8) L(s, `계획한 공부 ${planned}칸 중 약 ${lost.toFixed(1)}칸이 핸드폰·딴짓으로 증발했다. (나태 ${Math.round(s.lazy)})`, 'warn');
+  const cond = 0.72 + s.mental / 380 + s.health / 420 - (s.stress > 70 ? 0.08 : 0);
+  const goal = GOALS[p.goal] || GOALS.inseoul;
+  const motive = 1 + (goal.gi <= 3 && p.diligence >= 3 ? 0.05 : 0) + (s.flags.fireUp ? 0.06 : 0);
+  const acad = p.academies > 0 && s.money >= 6 && !s.flags.selfStudy ? 1 + Math.min(3, p.academies) * 0.06 : 1;
+  const lit = clamp(s.sub.kor, -1.5, 2);
+  const mathL = clamp(s.sub.math, -1.5, 2);
+  const sci = s.track === '자연';
+  const mult = { kor: 1, math: 1 + 0.04 * lit, eng: 1 + 0.1 * lit, inq: 1 + 0.08 * lit + (sci ? 0.06 * mathL : 0) };
+  const eff = {}; let effSum = 0;
+  SUB_KEYS.forEach(k => { eff[k] = (a[k] || 0) * (1 - lossFrac) * subjAbility(p, k) * cond * motive * acad; effSum += eff[k]; });
+  const spill = { kor: 0, math: 0, eng: eff.kor * 0.025, inq: eff.kor * 0.025 + (sci ? eff.math * 0.025 : 0) };
+  const before = mockGrades(s.sub);
+  SUB_KEYS.forEach(k => {
+    const base = 1.55 + Math.max(0, s.sub[k]) * 0.22 + Math.max(0, s.sub[k] - 1.5) * 0.35;   // 최상위권은 경쟁이 더 치열하다
+    const d = (eff[k] * mult[k] * st.csat - base) * coef + spill[k] + fg.study * (a.friends || 0) * 0.7;
+    s.sub[k] += d * damp(s.sub[k]);
+  });
+  if (!quiet) {
+    if (eff.kor >= 2.3 && lit > 0.2) L(s, '국어 독해력이 붙으면서 영어 장문과 탐구 지문도 덜 막힌다. 다른 과목 공부 효율이 같이 올랐다.', 'good');
+    else if (lit < -0.4 && (a.eng || 0) + (a.inq || 0) >= 4) L(s, '영어·탐구에 시간을 많이 썼는데 지문이 잘 안 읽혀 효율이 떨어졌다. 국어 문해력이 발목을 잡는다.', 'warn');
+    if (sci && eff.math >= 2.6 && mathL > 0.4) L(s, '수학이 탄탄해지니 물리·화학 계산 문제도 빨라졌다.', 'good');
+    if (acad > 1 && p.academies >= 2 && s.money < 15) L(s, `학원 ${p.academies}곳 학원비가 집에 부담이 되고 있다.`, 'warn');
+  }
+  return { effSum, planned, before };
+}
 function semesterEffects(ctx, turn, a) {
   const s = ctx.s, p = s.p, r = makeRng(s.seed, turn.id + ':sem');
   const st = STYLES[p.style] || STYLES.steady;
   const fg = FRIEND_GROUPS[s.friendGroup];
-  const lossFrac = clamp((s.lazy - 22) / 115, 0, 0.5);
-  const planned = a.study + a.academy;
-  let academyEff = s.money >= 6 ? 1 : 0.45;
-  const studied = a.study * (1 - lossFrac) + a.academy * academyEff * (1 - lossFrac * 0.45);
-  const lost = a.study * lossFrac + a.academy * lossFrac * 0.45;
-  if (lost >= 0.7) L(s, `계획한 공부 ${planned}칸 중 약 ${lost.toFixed(1)}칸이 핸드폰·딴짓으로 증발했다. (나태 ${Math.round(s.lazy)})`, 'warn');
-  const ability = (p.focus * 0.4 + p.comprehension * 0.35 + p.memory * 0.25) / 3;
-  const cond = 0.72 + s.mental / 380 + s.health / 420 - (s.stress > 70 ? 0.08 : 0);
-  const goal = GOALS[p.goal] || GOALS.inseoul;
-  const motive = 1 + (goal.gi <= 3 && p.diligence >= 3 ? 0.05 : 0) + (s.flags.fireUp ? 0.06 : 0);
-  const eff = studied * ability * cond * motive;
-  const baseN = p.school === 'special' ? 5.1 : p.school === 'jasa' ? 4.8 : p.region === 'gangnam' ? 4.5 : 4.2;
-  const memF = 0.85 + p.memory * 0.05, compF = 0.75 + p.comprehension * 0.08;
+  const { effSum, planned } = studySubjects(s, a, 0.13, r, false);
+  const baseN = (p.school === 'special' ? 5.1 : p.school === 'jasa' ? 4.8 : p.region === 'gangnam' ? 4.5 : 4.2) + 0.9;
+  const memF = 0.85 + p.memory * 0.05;
   // 위로 갈수록 경쟁자들도 그만큼 공부한다 — 기준선이 올라간다
-  const dN = (eff * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends;
-  const dC = (eff * st.csat * compF - 4.3 - Math.max(0, s.zC) * 0.55) * 0.04 + (a.academy * academyEff * 0.012) + fg.study * a.friends * 0.7;
+  const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends;
   s.zN += dN * damp(s.zN);
-  s.zC += dC * damp(s.zC);
 
   // 생기부
   const recGain = a.activity * 2.2 * (0.7 + p.curiosity * 0.1) * (1 - s.record / 160);
@@ -561,18 +655,18 @@ function semesterEffects(ctx, turn, a) {
   if (a.work) { s.money += a.work * 4; inc(s, 'mental', -a.work * 0.6); s.flags.workExp = (s.flags.workExp || 0) + a.work; }
 
   // 학원비
-  s.money -= a.academy * (p.region === 'gangnam' ? 3.4 : 2.6);
+  if (!s.flags.selfStudy) s.money -= p.academies * (p.region === 'gangnam' ? 3.4 : 2.6) * 1.2;
   if (s.money < 0) { s.money = 0; inc(s, 'parentRel', -3); s.flags.moneyTight = true; }
 
   // 스트레스·멘탈
-  const load = planned * 2.1 - 9 + s.pressure * 0.16 + st.stress + fg.stress * 2 + (p.school !== 'general' ? 3 : 0);
+  const load = planned * 1.8 - 9 + s.pressure * 0.16 + st.stress + fg.stress * 2 + (p.school !== 'general' ? 3 : 0);
   inc(s, 'stress', load - (p.pStyle === 'warm' ? 3 : 0) - p.grit * 0.8);
   if (s.stress > 60) inc(s, 'mental', -(s.stress - 60) / 4);
   inc(s, 'mental', (55 - s.mental) * 0.05);  // 시간이 지나면 조금은 돌아온다
 
   // 나태 습관
-  let dl = p.impulse * 1.1 - p.diligence * 1.05 + (phoneHobby(s) ? 0.8 : 0) + (p.pStyle === 'lax' ? 1.8 : p.pStyle === 'strict' ? -1 : 0) - (a.study >= 5 ? 2 : 0) + (a.rest >= 5 ? 1.5 : 0);
-  if (planned <= 2) dl += 3;
+  let dl = p.impulse * 1.1 - p.diligence * 1.05 + (phoneHobby(s) ? 0.8 : 0) + (p.pStyle === 'lax' ? 1.8 : p.pStyle === 'strict' ? -1 : 0) - (planned >= 7 ? 2 : 0) + (a.rest >= 5 ? 1.5 : 0);
+  if (planned <= 3) dl += 3;
   // 습관은 타고난 성향 쪽으로 조금씩 되돌아간다
   const lazyBase = clamp(14 + p.impulse * 8 - p.diligence * 5 + (phoneHobby(s) ? 6 : 0), 3, 75);
   dl -= (s.lazy - lazyBase) * 0.16;
@@ -583,11 +677,10 @@ function semesterEffects(ctx, turn, a) {
   const pct = clamp(topFromZ(sc), 0.4, 99);
   const prev = s.naesinRec.length ? s.naesinRec[s.naesinRec.length - 1] : p.gpaPct;
   s.naesinRec.push(pct);
-  const mockPct = clamp(topFromZ(s.zC + r.normal() * 0.18), 0.1, 99);
-  s.mocks.push(mockPct);
   const diff = prev - pct;
   const word = diff > 4 ? '올랐다' : diff < -4 ? '떨어졌다' : '비슷했다';
-  L(s, `기말 결과 — 내신 상위 ${pct.toFixed(1)}% (${gradeText(s, pct)}). 지난 학기보다 ${word}. 모의고사는 상위 ${mockPct.toFixed(1)}% (${grade9(mockPct)}등급).`, diff < -4 ? 'bad' : diff > 4 ? 'good' : 'info');
+  L(s, `기말 결과 — 내신 상위 ${pct.toFixed(1)}% (${gradeText(s, pct)}). 지난 학기보다 ${word}.`, diff < -4 ? 'bad' : diff > 4 ? 'good' : 'info');
+  mockExam(s, r, '모의고사');
 
   // 부모님 반응
   if ((p.pStyle === 'strict' || p.pStyle === 'anxious') && diff < -4) { inc(s, 'parentRel', -6); inc(s, 'stress', 6); L(s, `성적표를 본 ${parentWord(s)}의 얼굴이 굳었다. 그날 밤 집이 조용했다.`, 'bad'); }
@@ -596,6 +689,18 @@ function semesterEffects(ctx, turn, a) {
   if (p.sibling === 'better' && r.chance(0.35)) { inc(s, 'mental', -3); L(s, '"형(언니)은 이맘때 1등급이었는데." 또 그 얘기다.', 'warn'); }
   // 연애 자연 진행
   if (s.romance.status === 'dating') s.romance.since++;
+}
+// 모의고사: 과목별 등급과 추세. 추세는 멘탈에도 영향을 준다
+function mockExam(s, r, name) {
+  const mk = {}; SUB_KEYS.forEach(k => { mk[k] = s.sub[k] + r.normal() * 0.2; });
+  const g = mockGrades(mk), pct = clamp(topFromZ(meanSub(mk)), 0.1, 99);
+  const prevPct = s.mocks.length ? s.mocks[s.mocks.length - 1] : null;
+  s.mocks.push(pct); s.mockG.push(g);
+  const weak = SUB_KEYS.reduce((w, k) => (g[k] > g[w] ? k : w), 'kor');
+  const trend = prevPct == null ? '' : prevPct - pct > 4 ? ' 지난번보다 올랐다.' : pct - prevPct > 4 ? ' 지난번보다 떨어졌다.' : '';
+  if (trend.indexOf('올랐') >= 0) inc(s, 'mental', 3); if (trend.indexOf('떨어') >= 0) { inc(s, 'mental', -3); inc(s, 'stress', 3); }
+  L(s, `${name} — ${gradesText(g)} (평균 상위 ${pct.toFixed(1)}%).${trend} 가장 약한 과목은 ${SUBJ_NAME[weak]}.`, trend.indexOf('올랐') >= 0 ? 'good' : trend.indexOf('떨어') >= 0 ? 'bad' : 'info');
+  return g;
 }
 function gradeText(s, pct) {
   return s.p.grade >= 3 ? grade9(pct) + '등급(9등급제)' : grade5(pct) + '등급(5등급제)';
@@ -1152,10 +1257,10 @@ const HS_EVENTS = [
         O('academy', '수학 학원을 옮긴다', '새로운 방식 · 적응에 시간이 들고 돈이 든다', ['obey']),
         O('giveup', '수학은 3등급 유지만 하고 다른 과목에 올인', '다른 과목이 오름 · 원서 쓸 때 선택지가 줄어든다', ['fun', 'risk']),
       ]);
-      if (o.id === 'basic') { s.zC += (s.p.comprehension >= 3 ? 0.05 : 0.03) * s.p.diligence / 3; s.zN -= 0.01; L(s, '중학교 개념에서 막혀 있던 걸 발견했다. 뭔가 풀리기 시작했다.', 'good'); }
-      if (o.id === 'drill') { s.zC += s.p.comprehension >= 4 ? 0.06 : 0.02; inc(s, 'stress', 5); L(s, s.p.comprehension >= 4 ? '시간이 남기 시작했다.' : '매일 같은 유형에서 틀렸다.', s.p.comprehension >= 4 ? 'good' : 'warn'); }
-      if (o.id === 'academy') { s.money -= 5; s.zC += 0.025; L(s, '새 학원 레벨테스트에서 중간반에 배정됐다.'); }
-      if (o.id === 'giveup') { s.flags.mathGiveUp = true; s.zC -= 0.06; s.zN += 0.02; inc(s, 'stress', -6); s.interest.hum += 4; L(s, '수학 시간을 국어·영어로 돌렸다. 공대·경영 쪽 원서는 쓰기 어려워졌다.', 'warn'); }
+      if (o.id === 'basic') { s.sub.math += (s.p.comprehension >= 3 ? 0.18 : 0.12) * s.p.diligence / 3; s.zN -= 0.01; L(s, '중학교 개념에서 막혀 있던 걸 발견했다. 뭔가 풀리기 시작했다.', 'good'); }
+      if (o.id === 'drill') { s.sub.math += s.p.comprehension >= 4 ? 0.22 : 0.07; inc(s, 'stress', 5); L(s, s.p.comprehension >= 4 ? '시간이 남기 시작했다.' : '매일 같은 유형에서 틀렸다.', s.p.comprehension >= 4 ? 'good' : 'warn'); }
+      if (o.id === 'academy') { s.money -= 5; s.sub.math += 0.1; L(s, '새 학원 레벨테스트에서 중간반에 배정됐다.'); }
+      if (o.id === 'giveup') { s.flags.mathGiveUp = true; s.sub.math -= 0.35; s.sub.kor += 0.06; s.sub.eng += 0.06; s.zN += 0.02; inc(s, 'stress', -6); s.interest.hum += 4; L(s, '수학 시간을 국어·영어로 돌렸다. 공대·경영 쪽 원서는 쓰기 어려워졌다.', 'warn'); }
     } },
   { id: 'burnout', w: s => (s.stress >= 62 || s.mental <= 32 ? 3.5 : 0),
     run: (ctx, key, r) => {
@@ -1464,7 +1569,10 @@ function randomEvents(ctx, turn, n) {
 function semesterBrief(s, turn) {
   const last = s.naesinRec.length ? s.naesinRec[s.naesinRec.length - 1] : s.p.gpaPct;
   const notes = [];
-  notes.push(`지난 성적은 내신 상위 ${last.toFixed(0)}%, 모의고사 ${grade9(topFromZ(s.zC))}등급.`);
+  const g = mockGrades(s.sub);
+  notes.push(`지난 성적은 내신 상위 ${last.toFixed(0)}%, 모의고사 ${gradesText(g)}.`);
+  if (g.kor >= 4 && g.kor >= Math.min(g.eng, g.inq) + 1) notes.push('국어가 약하면 영어·탐구 지문 이해도 같이 막힌다.');
+  if (s.p.academies) notes.push(`학원 ${s.p.academies}곳에 다니는 중이라 공부 효율이 조금 높다(학원비는 매 학기 나간다).`);
   if (s.lazy >= 45) notes.push('요즘 계획한 공부 시간이 자꾸 폰으로 새어 나간다.');
   if (s.stress >= 60) notes.push('스트레스가 높다. 쉬지 않으면 무너질 수 있다.');
   if (s.health <= 45) notes.push('체력이 바닥이다.');
@@ -1472,7 +1580,7 @@ function semesterBrief(s, turn) {
   if (s.romance.status === 'dating') notes.push(`${s.romance.partner}${jo(s.romance.partner, '은/는')} 더 자주 보고 싶어 한다.`);
   if (turn.id === 'g3s1') notes.push('고3 1학기 내신은 수시에 반영되는 마지막 성적이다.');
   if (turn.id === 'g2s2') notes.push('고2 2학기는 학종에서 가장 꼼꼼히 보는 학기다.');
-  return '하루 중 쓸 수 있는 시간을 10칸으로 나눠 이번 학기를 계획하자. ' + notes.join(' ');
+  return `하루 중 쓸 수 있는 시간을 ${ALLOC_TOTAL}칸으로 나눠 과목별로 이번 학기를 계획하자. ` + notes.join(' ');
 }
 
 function semesterTurn(ctx, turn) {
@@ -1481,7 +1589,7 @@ function semesterTurn(ctx, turn) {
   const cats = allocCats(s, turn);
   const def = defaultAlloc(s, cats);
   const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: turn.label + ' 시간 쓰기',
-    text: semesterBrief(s, turn), cats, def, total: 10 });
+    text: semesterBrief(s, turn), cats, def, total: ALLOC_TOTAL });
   const a = normAlloc(raw, cats);
   ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
@@ -1499,20 +1607,22 @@ function studentZ(s, type, field) {
   const subj = s.subject;
   const subjFit = !subj ? 0 : subj === 'easy' ? -0.18 :
     ({ phys: ['eng', 'cs', 'sci'], bio: ['med', 'nurse', 'sci'], soc: ['biz', 'law', 'soc', 'media'], lang: ['hum', 'edu', 'media', 'soc'] }[subj].indexOf(field) >= 0 ? 0.12 : 0);
-  const zcs = s.zCsat != null ? s.zCsat : s.zC;
+  const cs = s.csatSub || s.sub;
+  const zcs = compositeZ(cs, field);
   switch (type) {
     case 'gyogwa': return zNavg - trackPen * 0.5;
     case 'jonghap': {
       const sb = p.school === 'special' ? 0.45 : p.school === 'jasa' ? 0.25 : p.region === 'gangnam' ? 0.05 : 0;
       return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0);
     }
-    case 'nonsul': return zcs * 0.55 + (p.comprehension - 3) * 0.32 + (s.talent.verbal - 40) / 90;
+    case 'nonsul': return 0.45 * cs.kor + 0.25 * zcs + (p.comprehension - 3) * 0.22 + (s.talent.verbal - 40) / 110;   // 논술은 국어 독해력이 핵심
     case 'silgi': {
       const tk = FIELDS[field].talent;
       const tal = (s.talent[tk] - 50) / 18 + ((field === 'art' && s.flags.artPath) || (field === 'sport' && s.flags.sportPath) ? 0.5 : 0) + (field === 'perf' && s.flags.trainee ? 0.4 : 0);
       return 0.65 * tal + 0.35 * zcs;
     }
-    case 'jungsi': return zcs + (FIELDS[field].track === '자연' ? (s.flags.mathWeak ? -0.15 : s.flags.mathStrong ? 0.08 : 0) : 0) - (s.flags.mathGiveUp && ['eng', 'cs', 'sci', 'med', 'biz'].indexOf(field) >= 0 ? 0.12 : 0);
+    // 계열별 반영 비율로 합친 과목 점수. 다들 반영 비율 높은 과목에 몰아 공부하므로, 평균과의 차이는 절반만 이득으로 친다
+    case 'jungsi': return (zcs + meanSub(cs)) / 2;
   }
   return zcs;
 }
@@ -1522,11 +1632,13 @@ function estimateIdx(s, list, z, field, r, bias) {
   for (let i = 0; i < list.length; i++) if (pz >= cutZ(list[i], field)) return i;
   return list.length - 1;
 }
-function minCsatOk(s, tier, type) {
-  if (type === 'jonghap' && !tier.fo && tier.key !== 'm0') { if (tier.gi > 1) return true; }
-  const pct = topFromZ(s.zCsat);
-  const need = tier.fo === 'med' ? 2.5 : tier.gi <= 1 ? 7 : tier.gi <= 3 ? 12 : tier.gi <= 5 ? 24 : 101;
-  return pct <= need;
+function cardP(s, c, field) {
+  const z = studentZ(s, c.type, field);
+  const k = { gyogwa: 5, jonghap: 3.4, nonsul: 3, silgi: 3, jungsi: 7 }[c.type];
+  let P = sigmoid(k * (z - cutZ(c.tier, field)));
+  if (c.type === 'nonsul') P = P * 0.32 + 0.02;
+  if (c.type === 'jonghap') P = P * 0.92;
+  return P;
 }
 function makeCards(s, field, type, strategy, count, r, estZ) {
   const list = tierList(field, s);
@@ -1544,21 +1656,20 @@ function makeCards(s, field, type, strategy, count, r, estZ) {
     const uni = r.pick(pool.length ? pool : t.unis); used[t.key + uni] = 1;
     const fo = t.fo || field;
     const major = r.pick(t.majors || FIELDS[fo].majors);
-    const k = { gyogwa: 5, jonghap: 3.4, nonsul: 3, silgi: 3, jungsi: 7 }[type];
-    let P = sigmoid(k * (z - cutZ(t, field)));
-    if (type === 'nonsul') P = P * 0.32 + 0.02;
-    if (type === 'jonghap') P = P * 0.92;
-    return { tier: t, uni, major, field: fo, type, P, label: o < 0 ? '상향' : o === 0 ? '적정' : '안정' };
+    const c = { tier: t, uni, major, field: fo, applyField: field, type, label: o < 0 ? '상향' : o === 0 ? '적정' : '안정', req: minReq(t, type) };
+    c.P = cardP(s, c, field);
+    return c;
   });
 }
 function rollCards(s, cards, r) {
   cards.forEach(c => {
-    const need = (c.type === 'gyogwa' || c.type === 'nonsul' || (c.type === 'jonghap' && (c.tier.fo === 'med' || c.tier.gi <= 1)));
-    c.minOk = !need || minCsatOk(s, c.tier, c.type);
+    c.P = cardP(s, c, c.applyField || c.field);
+    if (c.req) { const m = checkMin(c.req, s.csatG || mockGrades(s.sub)); c.minOk = m.ok; c.minSum = m.sum; } else c.minOk = true;
     c.pass = c.minOk && r.next() < c.P;
   });
   return cards;
 }
+function cardText(c) { return `${c.uni} ${c.major}(${TYPE_NAMES[c.type]}·${c.label}${c.req ? ', 최저 ' + reqText(c.req) : ''})`; }
 
 function applyTurn(ctx, turn) {
   const s = ctx.s, p = s.p;
@@ -1582,23 +1693,29 @@ function applyTurn(ctx, turn) {
   const my = topInterest(s), d = PARENT_DESIRES[p.pDesire].field;
   const second = topInterest(s, my);
   const trackOk = f => FIELDS[f].track !== '자연' || s.track === '자연';
-  const fOpts = [{ id: my, label: `${FIELDS[my].name} — 내가 가장 끌리는 분야`, hint: (trackOk(my) ? '하고 싶은 공부 · ' : '선택과목이 맞지 않아 불리 · ') + '합격선은 학과마다 다르다', tags: ['self'] }];
-  if (d && d !== my) fOpts.push({ id: d, label: `${FIELDS[d].name} — 부모님이 원하는 분야`, hint: '부모님의 지지 · 대학 생활 4년을 버틸 수 있을지', tags: ['obey'] });
-  if (second !== d && second !== my) fOpts.push({ id: second, label: `${FIELDS[second].name} — 두 번째로 관심 있는 분야`, hint: '적당히 끌림 · 확신은 없다', tags: ['safe'] });
+  const ej = f => employText(f, 62);
+  const fOpts = [{ id: my, label: `${FIELDS[my].name} — 내가 가장 끌리는 분야`, hint: (trackOk(my) ? '' : '선택과목이 맞지 않아 불리 · ') + ej(my), tags: ['self'] }];
+  if (d && d !== my) fOpts.push({ id: d, label: `${FIELDS[d].name} — 부모님이 원하는 분야`, hint: ej(d), tags: ['obey'] });
+  if (second !== d && second !== my) fOpts.push({ id: second, label: `${FIELDS[second].name} — 두 번째로 관심 있는 분야`, hint: ej(second), tags: ['safe'] });
+  // 취업률 우선: 내 계열에서 갈 만한 학과 중 취업률이 가장 높은 곳(의대는 성적이 될 때만)
+  const pool = (s.track === '자연' ? ['nurse', 'eng', 'cs'] : ['biz', 'edu', 'law']).concat(topFromZ(s.zC) <= 1.5 ? ['med'] : []);
+  const bestJob = pool.reduce((b, f) => (employOf(f, 62).rate > employOf(b, 62).rate ? f : b), pool[0]);
+  if (fOpts.every(o => o.id !== bestJob)) fOpts.push({ id: bestJob, label: `${FIELDS[bestJob].name} — 취업이 잘 되는 학과`, hint: ej(bestJob) + (fitOf(s, bestJob) < 0.5 ? ' · 흥미는 별로 없다' : ''), tags: ['safe', 'obey'] });
   if (p.pDesire === 'prestige' || p.pDesire === 'money' || p.goal === 'sky' || p.goal === 'ssh') {
     const easy = s.track === '자연' ? 'sci' : 'hum';
-    if (fOpts.every(o => o.id !== easy)) fOpts.push({ id: easy, label: `${FIELDS[easy].name} — 학과보다 대학 간판(합격선 낮은 과)`, hint: '한 단계 높은 대학 · 전공에 흥미가 없을 수 있다', tags: ['safe', 'obey'] });
+    if (fOpts.every(o => o.id !== easy)) fOpts.push({ id: easy, label: `${FIELDS[easy].name} — 학과보다 대학 간판(합격선 낮은 과)`, hint: '한 단계 높은 대학 · ' + ej(easy), tags: ['safe', 'obey'] });
   }
   if (s.flags.artPath && fOpts.every(o => o.id !== 'art')) fOpts.push({ id: 'art', label: '디자인·미술 — 준비해 온 미대 실기', tags: ['self', 'risk'] });
   if (s.flags.sportPath && fOpts.every(o => o.id !== 'sport')) fOpts.push({ id: 'sport', label: '체육 — 준비해 온 체대 실기', tags: ['self', 'risk'] });
   const pw = parentWord(s);
-  const fo = choose(ctx, 'g3v1:field', '원서에 쓸 학과', `6월 모평 성적표가 나왔다. 상위 ${topFromZ(s.zC).toFixed(1)}%, 평균 ${grade9(topFromZ(s.zC))}등급. 내신 평균은 상위 ${avgNaesin(s).toFixed(1)}%, 생기부 활동 점수는 ${Math.round(s.record)}점. 담임 선생님과의 원서 상담에서 선생님이 묻는다. "학과부터 정하자. 대학 이름을 볼 거니, 학과를 볼 거니?" ${d && d !== my ? `${pw}${jo(pw, '은/는')} 어젯밤에도 "${FIELDS[d].name} 아니면 안 된다"고 했다.` : ''}`, fOpts);
+  const fo = choose(ctx, 'g3v1:field', '원서에 쓸 학과', `6월 모평 성적표가 나왔다. ${gradesText(mockGrades(s.sub))} (평균 상위 ${topFromZ(s.zC).toFixed(1)}%). 학과마다 취업률과 취업의 질도 다르다. 내신 평균은 상위 ${avgNaesin(s).toFixed(1)}%, 생기부 활동 점수는 ${Math.round(s.record)}점. 담임 선생님과의 원서 상담에서 선생님이 묻는다. "학과부터 정하자. 대학 이름을 볼 거니, 학과를 볼 거니?" ${d && d !== my ? `${pw}${jo(pw, '은/는')} 어젯밤에도 "${FIELDS[d].name} 아니면 안 된다"고 했다.` : ''}`, fOpts);
   s.applyField = fo.id;
   if (d && fo.id === d && d !== my) { s.autonomy -= 2; s.flags.parentField = true; inc(s, 'parentRel', 6); }
   if (d && fo.id !== d) { inc(s, 'parentRel', p.pStyle === 'strict' ? -10 : -4); s.autonomy += 1; }
   // 2) 전형
   const field = fo.id;
-  if (s.flags.ged) { s.applyField = field; s.applyType = 'none'; L(s, '검정고시 출신이라 수시는 쓰지 않고 정시에 모든 걸 건다.'); return; }
+  L(s, `${FIELDS[field].name} 쪽으로 정했다. ${employText(field, 62)}`, 'info');
+  if (s.flags.ged) { s.applyField = field; s.applyType = 'none'; s.susiCards = []; L(s, '검정고시 출신이라 수시는 쓰지 않고 정시에 모든 걸 건다.'); return; }
   const tOpts = [
     { id: 'jonghap', label: `학생부종합 위주 (생기부 ${Math.round(s.record)}점)`, hint: '내신이 조금 낮아도 생기부로 역전 · 면접 준비와 결과 예측이 어렵다', tags: ['record'] },
     { id: 'gyogwa', label: `학생부교과 위주 (내신 상위 ${avgNaesin(s).toFixed(1)}%)`, hint: '가장 예측 가능 · 수능 최저를 못 맞추면 끝', tags: ['safe'] },
@@ -1609,34 +1726,59 @@ function applyTurn(ctx, turn) {
   const to = choose(ctx, 'g3v1:type', '전형 고르기', `수시 원서는 6장. 담임 선생님이 상담 기록을 넘기며 말한다. "기억해. 수시에 하나라도 붙으면 정시에는 지원할 수 없어. 수능을 잘 봐도." 지금 내신은 상위 ${avgNaesin(s).toFixed(1)}%, 모의고사는 상위 ${topFromZ(s.zC).toFixed(1)}%. ${avgNaesin(s) < topFromZ(s.zC) - 3 ? '내신이 모의고사보다 좋은 편이다.' : avgNaesin(s) > topFromZ(s.zC) + 3 ? '모의고사가 내신보다 좋은 편이다.' : '내신과 모의고사가 비슷하다.'}`, tOpts);
   s.applyType = to.id;
   if (to.id !== 'none') {
-    const so = choose(ctx, 'g3v1:strategy', '6장의 배분', `입시 커뮤니티에는 "6광탈(6장 모두 탈락)" 후기와 "안정으로 썼다가 수능 대박 나서 후회" 후기가 같이 올라온다. ${s.p.wealth === 'low' ? '집에서는 재수 비용을 감당하기 어렵다.' : ''} ${s.p.confidence >= 4 ? '솔직히 수능은 잘 볼 것 같은 느낌이다.' : ''}`, [
+    const g6 = mockGrades(s.sub);
+    const so = choose(ctx, 'g3v1:strategy', '6장의 배분', `6월 모평 등급은 ${gradesText(g6)}. 이 등급이면 수능 최저 ${['2합 5', '2합 6', '3합 7', '3합 6', '4합 8'].map(t => { const [n, sm] = t.split('합 ').map(Number); return `${t} ${checkMin({ n, sum: sm }, g6).ok ? '충족' : '미충족'}`; }).join(' · ')}. ` + `입시 커뮤니티에는 "6광탈(6장 모두 탈락)" 후기와 "안정으로 썼다가 수능 대박 나서 후회" 후기가 같이 올라온다. ${s.p.wealth === 'low' ? '집에서는 재수 비용을 감당하기 어렵다.' : ''} ${s.p.confidence >= 4 ? '솔직히 수능은 잘 볼 것 같은 느낌이다.' : ''}`, [
       { id: 'up', label: '상향 위주 — 떨어져도 정시가 있다', hint: '더 높은 대학 가능 · 모두 떨어지고 정시에 몰릴 수 있다', tags: ['risk'] },
       { id: 'mid', label: '상향 2 · 적정 2 · 안정 2', hint: '균형 · 수능을 잘 보면 "수시 납치"가 될 수 있다', tags: ['safe'] },
       { id: 'safe', label: '안정 위주 — 재수는 절대 안 된다', hint: '어디든 붙음 · 내 실력보다 낮은 곳에 갈 수 있다', tags: ['safe', 'obey'] },
     ]);
     s.applyStrategy = so.id;
   }
+  // 원서 접수: 여름에 쓰고, 결과는 수능 뒤에 나온다
+  const rc = makeRng(s.seed, 'susi');
+  if (to.id !== 'none') s.susiCards = makeCards(s, field, to.id, s.flags.matchUni ? 'safe' : s.applyStrategy || 'mid', 6, rc);
+  else s.susiCards = makeCards(s, field, 'nonsul', 'up', 3, rc, studentZ(s, 'jungsi', field) + 0.25);
+  const st6 = minStatus(s, mockGrades(s.sub));
+  L(s, `원서 접수 완료 — ${s.susiCards.map(cardText).join(' / ')}.${st6.total ? ` 지금 모의고사 기준 최저 충족 ${st6.ok}/${st6.total}곳.` : ''}`, 'info');
 }
 
+// 시험 보기: 과목마다 따로 흔들린다. 반환값은 평소 대비 평균 변화
+function sitExam(s, r, sd, common, hardKey, hardD) {
+  const out = {}, k0 = 1.35 - s.mental / 140;
+  SUB_KEYS.forEach(k => { out[k] = s.sub[k] + r.normal() * sd * k0 + (common || 0) + (k === hardKey ? (hardD || 0) : 0); });
+  s.csatSub = out; s.csatG = mockGrades(out);
+  s.zCsat = meanSub(out); s.csatPct = topFromZ(s.zCsat);
+  return s.zCsat - meanSub(s.sub);
+}
+// 지원한 수시 카드들의 최저 충족 여부(지금 등급 g 기준)
+function minStatus(s, g) {
+  const cards = (s.susiCards || []).filter(c => c.req);
+  const miss = [];
+  let ok = 0;
+  cards.forEach(c => { const m = checkMin(c.req, g); if (m.ok) ok++; else miss.push(`${c.uni}(${reqText(c.req)}, 내 합 ${m.sum})`); });
+  return { total: cards.length, ok, miss };
+}
+function minStatusText(s, sub) {
+  const st = minStatus(s, mockGrades(sub));
+  return st.total ? `지원한 수시 중 최저가 있는 곳은 ${st.total}곳, 지금 실력이면 ${st.ok}곳 충족이다.` : '';
+}
 function finalTurn(ctx, turn) {
   const s = ctx.s, p = s.p;
   const cats = allocCats(s, turn).filter(c => c.id !== 'activity');
+  if (!s.susiCards && s.p.startTurn >= 10) s.susiCards = [];
   const def = defaultAlloc(s, cats);
-  const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: '수능까지 남은 넉 달', text: `원서는 냈다. 이제 남은 건 9월 모평과 수능. 지금 모의고사는 ${grade9(topFromZ(s.zC))}등급. 남은 넉 달 동안 하루 10칸을 어떻게 쓸까? ${s.applyType === 'gyogwa' || s.applyType === 'nonsul' ? '수능 최저를 맞춰야 수시가 살아난다.' : s.applyType === 'none' ? '정시 올인이다. 이 넉 달이 전부다.' : ''}`, cats, def, total: 10 });
+  const raw = ask(ctx, { type: 'alloc', key: turn.id + ':alloc', title: '수능까지 남은 넉 달', text: `원서는 냈다. 이제 남은 건 9월 모평과 수능. 지금 모의고사는 ${gradesText(mockGrades(s.sub))}. ${minStatusText(s, s.sub)} 남은 넉 달 동안 하루 ${ALLOC_TOTAL}칸을 과목별로 어떻게 쓸까? ${s.applyType === 'none' ? '정시 올인이다. 계열별 반영 비율이 높은 과목이 결과를 가른다.' : ''}`, cats, def, total: ALLOC_TOTAL });
   const a = normAlloc(raw, cats);
-  ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
   randomEvents(ctx, turn, 2);
   // 마지막 학기 공부 효과(수능만)
-  const lossFrac = clamp((s.lazy - 22) / 115, 0, 0.5);
-  const ability = (p.focus * 0.4 + p.comprehension * 0.35 + p.memory * 0.25) / 3;
-  const cond = 0.72 + s.mental / 380 + s.health / 420 - (s.stress > 70 ? 0.08 : 0);
-  const studied = (a.study + a.academy * (s.money >= 6 ? 1 : 0.45)) * (1 - lossFrac);
-  s.zC += ((studied * ability * cond * (0.75 + p.comprehension * 0.08)) - 4.3 - Math.max(0, s.zC) * 0.55) * 0.05 * damp(s.zC);
-  inc(s, 'stress', (a.study + a.academy) * 2 - 8 - a.rest * 2.5);
+  const { planned } = studySubjects(s, a, 0.13, makeRng(s.seed, 'g3s2:study'), false);
+  inc(s, 'stress', planned * 1.7 - 8 - a.rest * 2.5);
   inc(s, 'mental', (a.rest - 2) * 2 + (a.friends + a.hobby) - 2);
   if (a.date) { s.romance.score += a.date * 6; inc(s, 'mental', a.date * 2); }
-  L(s, `9월 모평 — 상위 ${topFromZ(s.zC).toFixed(1)}% (${grade9(topFromZ(s.zC))}등급).`);
+  const sept = mockExam(s, makeRng(s.seed, 'sept'), '9월 모평');
+  const st9 = minStatus(s, sept);
+  if (st9.total) L(s, `9월 모평 기준 수시 최저: ${st9.total}곳 중 ${st9.ok}곳 충족.${st9.miss.length ? ' 미충족: ' + st9.miss.join(', ') + '.' : ''}`, st9.ok === st9.total ? 'good' : st9.ok === 0 ? 'bad' : 'warn');
 
   const o = choose(ctx, 'g3s2:d100', '수능 D-100', `교실 칠판 오른쪽 구석에 "D-100"이 적혔다. 반 분위기가 확 바뀌었다. 누구는 폰을 공기계로 바꿨고, 누구는 "어차피 수시파"라며 웃는다. 9월 모평은 ${grade9(topFromZ(s.zC))}등급이었다. ${s.romance.status === 'dating' ? `${s.romance.partner}${jo(s.romance.partner, '은/는')} "100일만 덜 보자"고 했다.` : ''}`, [
     { id: 'allin', label: '폰을 공기계로 바꾸고 단톡방도 다 나간다', hint: '하루가 길어진다 · 고립감과 스트레스', tags: ['study'] },
@@ -1655,18 +1797,23 @@ function finalTurn(ctx, turn) {
     { id: 'hold', label: '끝까지 붙잡는다. 포기는 없다', hint: '풀어내면 대박 · 시간이 다 녹을 수 있다', tags: ['study'] },
     { id: 'breath', label: '펜을 내려놓고 10초 심호흡한 뒤 순서대로 푼다', hint: '평정심 회복 · 10초가 아깝게 느껴진다', tags: ['self', 'rest'] },
   ]);
-  let day = r.normal() * 0.2 * (1.35 - s.mental / 140);
-  if (c.id === 'skip') day += p.comprehension >= 3 ? 0.06 : -0.03;
-  if (c.id === 'hold') day += r.normal() * 0.14 - 0.02;
-  if (c.id === 'breath') day += 0.02 + (p.grit - 3) * 0.035;
-  if (s.flags.breakupG3) day -= 0.1;
-  if (s.health < 30) day -= 0.08;
-  if (s.stress > 80) day -= 0.06;
-  s.zCsat = s.zC + day;
-  const pct = topFromZ(s.zCsat);
-  s.csatPct = pct;
+  // 고른 대처는 어려웠던 그 과목에 크게, 몸·마음 상태는 모든 과목에 들어간다
+  const hardKey = { 국어: 'kor', 수학: 'math', 영어: 'eng' }[hard];
+  let choiceD = 0;
+  if (c.id === 'skip') choiceD = p.comprehension >= 3 ? 0.15 : -0.08;
+  if (c.id === 'hold') choiceD = r.normal() * 0.3 - 0.05;
+  if (c.id === 'breath') choiceD = 0.05 + (p.grit - 3) * 0.08;
+  let common = 0;
+  if (s.flags.breakupG3) common -= 0.1;
+  if (s.health < 30) common -= 0.08;
+  if (s.stress > 80) common -= 0.06;
+  if (hardKey === 'eng' || hardKey === 'kor') common += 0;
+  const day = sitExam(s, r, 0.2, common, hardKey, choiceD);
+  const pct = s.csatPct;
   const diffWord = day > 0.12 ? '평소보다 훨씬 잘 봤다.' : day < -0.12 ? '평소 실력이 나오지 않았다.' : '평소 실력만큼 나왔다.';
-  L(s, `수능 가채점 — 상위 ${pct.toFixed(1)}% (평균 ${grade9(pct)}등급). ${diffWord}`, day < -0.12 ? 'bad' : day > 0.12 ? 'good' : 'info');
+  L(s, `수능 가채점 — ${gradesText(s.csatG)} (평균 상위 ${pct.toFixed(1)}%). ${diffWord}`, day < -0.12 ? 'bad' : day > 0.12 ? 'good' : 'info');
+  const stc = minStatus(s, s.csatG);
+  if (stc.total) L(s, `수시 최저 가채점: ${stc.total}곳 중 ${stc.ok}곳 충족.${stc.miss.length ? ' 미충족: ' + stc.miss.join(', ') + '.' : ''}`, stc.ok === stc.total ? 'good' : stc.ok === 0 ? 'bad' : 'warn');
   if (s.flags.breakupG3) L(s, '고3 때의 이별이 끝까지 발목을 잡았다.', 'warn');
   if (s.romance.status === 'pause') { s.romance.status = 'dating'; L(s, `수능이 끝난 날, ${s.romance.partner}에게 전화했다.`); }
 }
@@ -1675,19 +1822,12 @@ function finalTurn(ctx, turn) {
 function admissions(ctx) {
   const s = ctx.s, p = s.p;
   const field = s.applyField || topInterest(s);
-  let susi = [];
-  if (s.applyType && s.applyType !== 'none') {
-    const r = makeRng(s.seed, 'susi');
-    const strat = s.flags.matchUni ? 'safe' : s.applyStrategy || 'mid';
-    susi = rollCards(s, makeCards(s, field, s.applyType, strat, 6, r), r);
-  } else if (s.applyType === 'none' && !s.flags.ged) {
-    const r = makeRng(s.seed, 'susi');
-    // 정시파도 보통 논술 몇 장은 쓴다 — 정시로 갈 곳보다 높은 대학에만
-    susi = rollCards(s, makeCards(s, field, 'nonsul', 'up', 3, r, studentZ(s, 'jungsi', field) + 0.25), r);
-  }
+  const susi = rollCards(s, s.susiCards || [], makeRng(s.seed, 'susiRoll'));
   s.susi = susi;
   const passed = susi.filter(c => c.pass);
-  L(s, '수시 결과 — ' + (susi.length ? susi.map(c => `${c.uni} ${c.major}(${TYPE_NAMES[c.type]}·${c.label}) ${c.pass ? '합격' : c.minOk ? '불합격' : '최저 미충족'}`).join(' / ') : '지원 안 함'), passed.length ? 'good' : 'bad');
+  L(s, '수시 결과 — ' + (susi.length ? susi.map(c => `${c.uni} ${c.major}(${TYPE_NAMES[c.type]}) ${c.pass ? '합격' : c.minOk ? (c.req ? `불합격(최저 ${reqText(c.req)} 충족, 합 ${c.minSum})` : '불합격') : `최저 미충족(${reqText(c.req)} 필요, 내 합 ${c.minSum})`}`).join(' / ') : '지원 안 함'), passed.length ? 'good' : 'bad');
+  const minFail = susi.filter(c => !c.minOk).length;
+  if (minFail) L(s, `수시 ${susi.length}장 중 ${minFail}장이 수능 최저를 못 맞춰 면접·서류와 상관없이 떨어졌다.`, 'bad');
   let options = passed.slice();
   if (passed.length) {
     // 수시 납치: 수능을 너무 잘 봤는데 정시를 못 쓴다
@@ -1701,7 +1841,8 @@ function admissions(ctx) {
 }
 function jungsiRound(ctx, field, key) {
   const s = ctx.s;
-  const o = choose(ctx, key + ':strategy', '정시 원서 3장', `수능 성적표가 나왔다. 상위 ${topFromZ(s.zCsat).toFixed(1)}%, 평균 ${grade9(topFromZ(s.zCsat))}등급. 가·나·다군에 한 장씩, 세 장을 쓸 수 있다. 입시 사이트의 모의지원 결과는 칸마다 "적정", "소신", "위험"이 섞여 있다. 다군은 해마다 합격선이 크게 출렁인다.`, [
+  const w = subjWeights(field);
+  const o = choose(ctx, key + ':strategy', '정시 원서 3장', `수능 성적표가 나왔다. ${gradesText(s.csatG)} (평균 상위 ${topFromZ(s.zCsat).toFixed(1)}%). ${FIELDS[field].name} 계열 반영 비율은 국어 ${Math.round(w.kor * 100)} · 수학 ${Math.round(w.math * 100)} · 영어 ${Math.round(w.eng * 100)} · 탐구 ${Math.round(w.inq * 100)}%. 가·나·다군에 한 장씩, 세 장을 쓸 수 있다. 입시 사이트의 모의지원 결과는 칸마다 "적정", "소신", "위험"이 섞여 있다. 다군은 해마다 합격선이 크게 출렁인다.`, [
     { id: 'up', label: '상향 — 한 장이라도 대박을 노린다', hint: '더 높은 대학 가능 · 셋 다 떨어지면 재수', tags: ['risk'] },
     { id: 'mid', label: '적정 — 상향 하나, 적정 하나, 안정 하나', hint: '하나는 붙을 가능성 · 큰 반전은 어렵다', tags: ['safe'] },
     { id: 'safe', label: '안정 — 무조건 붙는 곳으로', hint: '확실한 합격 · 실력보다 낮은 대학', tags: ['safe', 'obey'] },
@@ -1719,8 +1860,8 @@ function pickUniversity(ctx, passed, key) {
   const canRetry = s.attempts < 2;
   const goal = GOALS[p.goal] || GOALS.inseoul;
   const bestP = passed.reduce((m, c) => Math.max(m, c.tier.prestige), 0);
-  const opts = passed.map((c, i) => ({ id: 'u' + i, label: `${c.uni} ${c.major} 등록`, tags: c.tier.gi <= goal.gi ? ['safe', 'self'] : ['safe'],
-    w: (c.tier.prestige - bestP) / 6 + (c.field === topInterest(s) ? 0.6 : 0) + 1.5 }));
+  const opts = passed.map((c, i) => ({ id: 'u' + i, label: `${c.uni} ${c.major} 등록`, hint: employText(c.field, c.tier.prestige, c.tier.teacher), tags: c.tier.gi <= goal.gi ? ['safe', 'self'] : ['safe'],
+    w: (c.tier.prestige - bestP) / 6 + (c.field === topInterest(s) ? 0.6 : 0) + (employOf(c.field, c.tier.prestige, c.tier.teacher).rate - 60) / 25 + 1.5 }));
   if (canRetry) {
     const pushRetry = (p.pDesire === 'med' || p.pDesire === 'prestige') && p.wealth !== 'low';
     const gap = (passed.length ? Math.min.apply(null, passed.map(c => c.tier.gi)) : 11) - goal.gi;
@@ -1769,9 +1910,8 @@ function retake(ctx) {
   if (s.money < 0) { s.money = 0; inc(s, 'parentRel', -6); }
   inc(s, 'mental', -6); inc(s, 'lazy', -5);
   s.zC += g * damp(s.zC);
-  const day = r.normal() * 0.18 * (1.35 - s.mental / 140);
-  s.zCsat = s.zC + day;
-  L(s, `${n === 1 ? '재수' : '삼수'} 수능 — 상위 ${topFromZ(s.zCsat).toFixed(1)}% (평균 ${grade9(topFromZ(s.zCsat))}등급). ${g + day > 0.15 ? '확실히 올랐다.' : g + day < 0 ? '오히려 떨어졌다. 눈앞이 캄캄했다.' : '조금 올랐다.'}`, g + day > 0.15 ? 'good' : g + day < 0 ? 'bad' : 'info');
+  const day = sitExam(s, r, 0.18, 0, null, 0);
+  L(s, `${n === 1 ? '재수' : '삼수'} 수능 — ${gradesText(s.csatG)} (평균 상위 ${topFromZ(s.zCsat).toFixed(1)}%). ${g + day > 0.15 ? '확실히 올랐다.' : g + day < 0 ? '오히려 떨어졌다. 눈앞이 캄캄했다.' : '조금 올랐다.'}`, g + day > 0.15 ? 'good' : g + day < 0 ? 'bad' : 'info');
   s.flags.retakeGain = (s.flags.retakeGain || 0) + g + day;
   const field = s.applyField || topInterest(s);
   return jungsiRound(ctx, field, 'retake' + n);
@@ -1805,9 +1945,9 @@ function collegePhase(ctx) {
   if (o1.id === 'retake') {
     const r = makeRng(s.seed, 'banSu');
     const g = 0.04 + 0.06 * (p.diligence - 3) + r.normal() * 0.25 - s.lazy / 500;
-    s.zCsat = s.zC + g;
+    s.zC += g; sitExam(s, r, 0.15, 0, null, 0);
     const list = tierList(s.applyField || u.field, s);
-    const idx = estimateIdx(s, list, s.zCsat, u.field, r, 0);
+    const idx = estimateIdx(s, list, compositeZ(s.csatSub, u.field), u.field, r, 0);
     const t = list[idx];
     if (t.prestige > u.prestige + 3) {
       const nu = r.pick(t.unis), nm = r.pick(t.majors || FIELDS[t.fo || u.field].majors);
@@ -1984,7 +2124,8 @@ function collegeEvent(ctx, key) {
 function careerScore(s, r) {
   const c = s.col, u = s.uni;
   const gpaS = clamp((c.gpa - 2.5) / 1.9 * 100, 0, 100);
-  return u.prestige * 0.36 + gpaS * 0.14 + clamp(c.spec, 0, 100) * 0.24 + clamp(c.network, 0, 100) * 0.05 + s.mental * 0.08 + c.effort * 6 + s.fit * 9 - s.lazy * 0.06 + r.normal() * 7;
+  const emp = employOf(u.field, u.prestige, u.teacher).rate;
+  return (emp - 62) * 0.25 + u.prestige * 0.36 + gpaS * 0.14 + clamp(c.spec, 0, 100) * 0.24 + clamp(c.network, 0, 100) * 0.05 + s.mental * 0.08 + c.effort * 6 + s.fit * 9 - s.lazy * 0.06 + r.normal() * 7;
 }
 function jobAt(field, level, r, s) {
   const tbl = JOBS[field] || JOBS.hum;
@@ -2288,6 +2429,7 @@ function finalize(ctx) {
     marital, maritalText: MAR[marital], partner: partnerName, parentTag, friendTag,
     mental: Math.round(s.mental), sat, satTag, life, income: Math.round(income),
     csatPct: s.csatPct, naesinAvg: s.naesinRec.length ? avgNaesin(s) : null,
+    csatG: s.csatG, employ: s.uni ? employOf(s.uni.field, s.uni.prestige, s.uni.teacher) : null,
   };
   s.ending.story = epilogue(s, s.ending);
 }
@@ -2322,6 +2464,7 @@ function epilogue(s, e) {
   const nm = s.p.name;
   const lines = [];
   lines.push(`서른 살의 ${nm}. 지금 하는 일은 「${e.career}」. 연 수입은 약 ${won(e.salary)}.`);
+  if (s.uni && e.employ) lines.push(`${e.major}의 취업률은 약 ${e.employ.rate}%, 취업의 질은 ${e.employ.grade}였다. ${e.employ.note}.`);
   if (s.uni) lines.push(`${e.uni} ${e.major}${jo(e.major, '을/를')} ${s.attempts ? `${s.attempts === 1 ? '재수' : '삼수'} 끝에 들어가 ` : ''}${s.uni.dropped ? '다니다 그만뒀다' : '졸업했다'}.`);
   else lines.push('대학에는 가지 않았다.');
   const mar = { firstlove: `고등학교 때 만난 ${e.partner}${jo(e.partner || '', '와/과')} 결혼했다.`, married: `${e.partner ? e.partner + jo(e.partner, '와/과') : '대학·직장에서 만난 사람과'} 결혼했다.`, dating: `${e.partner ? e.partner + jo(e.partner, '와/과') : '누군가와'} 연애 중이다.`, single: '지금은 혼자다.', never: '연애다운 연애를 해 본 적이 거의 없다.' }[e.marital];
@@ -2376,10 +2519,15 @@ function autoplay(profile, seed, decisions, override) {
 function allocAlternatives(h) {
   const a = Object.assign({}, h.choice), cats = h.prompt.cats.map(c => c.id);
   const alts = [];
+  const subs = SUB_KEYS.filter(k => cats.indexOf(k) >= 0);
+  if (!subs.length) return alts;
   const funKeys = ['hobby', 'friends', 'date', 'rest', 'work'].filter(k => cats.indexOf(k) >= 0);
   const donor = funKeys.slice().sort((x, y) => (a[y] || 0) - (a[x] || 0))[0];
-  if (donor && (a[donor] || 0) >= 2) { const b = Object.assign({}, a); b[donor] -= 2; b.study = (b.study || 0) + 2; alts.push({ choice: b, label: `${catName(h, donor)} 2칸을 자습으로 돌렸다면` }); }
-  if ((a.study || 0) + (a.academy || 0) >= 3) { const b = Object.assign({}, a); const from = (b.academy || 0) >= 2 ? 'academy' : 'study'; b[from] -= 2; b.rest = (b.rest || 0) + 1; b.friends = (b.friends || 0) + 1; alts.push({ choice: b, label: `${catName(h, from)} 2칸을 줄이고 쉬고 친구를 만났다면` }); }
+  const least = subs.slice().sort((x, y) => (a[x] || 0) - (a[y] || 0))[0];
+  const most = subs.slice().sort((x, y) => (a[y] || 0) - (a[x] || 0))[0];
+  if (donor && (a[donor] || 0) >= 2) { const b = Object.assign({}, a); b[donor] -= 2; b[least] = (b[least] || 0) + 2; alts.push({ choice: b, label: `${catName(h, donor)} 2칸을 ${catName(h, least)}에 썼다면` }); }
+  if (most !== 'kor' && (a[most] || 0) >= 3) { const b = Object.assign({}, a); b[most] -= 2; b.kor = (b.kor || 0) + 2; alts.push({ choice: b, label: `${catName(h, most)} 2칸을 국어(문해력)에 썼다면` }); }
+  if ((a[most] || 0) >= 3) { const b = Object.assign({}, a); b[most] -= 2; b.rest = (b.rest || 0) + 1; if (cats.indexOf('friends') >= 0) b.friends = (b.friends || 0) + 1; else b.rest += 1; alts.push({ choice: b, label: `${catName(h, most)} 2칸을 줄이고 쉬고 친구를 만났다면` }); }
   if (cats.indexOf('activity') >= 0 && (a.activity || 0) <= 1 && donor && (a[donor] || 0) >= 2) { const b = Object.assign({}, a); b[donor] -= 2; b.activity = (b.activity || 0) + 2; alts.push({ choice: b, label: `${catName(h, donor)} 2칸을 생기부 활동에 썼다면` }); }
   return alts;
 }
@@ -2433,6 +2581,7 @@ function view(s) {
     name: s.p.name, age: s.age, turn: s.turnLabel, phase: s.phase,
     naesin: { pct: last, avg: s.naesinRec.length ? avgNaesin(s) : last, g: s.p.grade >= 3 ? grade9(last) + '등급' : grade5(last) + '등급(5등급제)' },
     mock: { pct: mock, g: grade9(mock) },
+    subj: mockGrades(s.csatSub || s.sub),
     bars: [
       { k: 'record', label: '생기부', v: Math.round(clamp(s.record, 0, 100)) },
       { k: 'mental', label: '멘탈', v: Math.round(s.mental) },

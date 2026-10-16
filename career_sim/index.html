@@ -175,6 +175,10 @@ input[type=text], input[type=number], select { width: 100%; background: var(--pa
 .step button:disabled { opacity: .35; cursor: default; }
 .step .val { width: 26px; text-align: center; font: 600 17px var(--f-num); }
 .cells { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin: 14px 0 6px; }
+.subj { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: -6px 0 14px; }
+.subj .sg { border-radius: 6px; padding: 5px 0; text-align: center; background: color-mix(in srgb, var(--c) 12%, var(--sheet)); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); }
+.subj .sg span { display: block; font-size: 11px; color: var(--muted); }
+.subj .sg b { font: 600 18px var(--f-num); color: var(--c); }
 .cells i { height: 26px; border-radius: 4px; border: 1.5px solid var(--omr); display: grid; place-items: center; font: 600 10.5px var(--f-body); font-style: normal; color: var(--sheet); overflow: hidden; white-space: nowrap; }
 .cells i.empty { background: transparent; }
 .left { font-size: 13px; color: var(--muted); }
@@ -446,7 +450,7 @@ function renderIntro() {
         <button class="cta secondary" type="button" id="goQuick">예시 학생(고2 2학기)으로 바로 해 보기</button>
       </div>
       <div class="feat">
-        <div><b>현실적인 입시</b>내신 등급, 수능 최저, 수시 6장·정시 3장, 수시 납치, 재수·반수까지</div>
+        <div><b>현실적인 입시</b>과목별 공부와 모의고사, 과목 사이의 연계, 수능 최저, 수시 6장·정시 3장, 학과별 취업률까지</div>
         <div><b>수천 가지 결말</b>대학 × 학과 × 직업 × 연애 × 관계로 갈라지는 서른 살</div>
         <div><b>인생 오답노트</b>"그때 다른 걸 골랐다면?"을 실제로 다시 돌려 본 결과</div>
       </div>
@@ -606,8 +610,9 @@ function statusPanel(v, hist) {
     <div class="who">${esc(v.turn)} · ${Math.floor(v.age)}세${v.uni ? ' · ' + esc(v.uni) : ''}</div>
     <div class="scores">
       <div class="score"><div class="k">${v.gpa ? '대학 학점' : '최근 내신'}</div><div class="g">${v.gpa ? esc(v.gpa) : esc(v.naesin.g.replace('(5등급제)', ''))}<small>${v.gpa ? '/ 4.5' : '상위 ' + v.naesin.pct.toFixed(0) + '%'}</small></div></div>
-      <div class="score"><div class="k">수능형 실력</div><div class="g">${v.mock.g}등급<small>상위 ${v.mock.pct.toFixed(0)}%</small></div></div>
+      <div class="score"><div class="k">모의고사 평균</div><div class="g">${v.mock.g}등급<small>상위 ${v.mock.pct.toFixed(0)}%</small></div></div>
     </div>
+    <div class="subj" aria-label="과목별 모의고사 등급">${[['kor', '국어'], ['math', '수학'], ['eng', '영어'], ['inq', '탐구']].map(([k, n]) => `<div class="sg" style="--c:${CAT_COLOR[k]}"><span>${n}</span><b>${v.subj[k]}</b></div>`).join('')}</div>
     <div class="bars">${v.bars.map(b => `<div class="bar ${b.bad ? 'badv' : ''}"><span>${esc(b.label)}</span><div class="track"><div class="fill" style="width:${b.v}%"></div></div><span class="v">${b.v}</span></div>`).join('')}</div>
     <div class="chips">
       <span class="chip">연애 <b>${esc(v.romance)}</b></span>
@@ -617,7 +622,7 @@ function statusPanel(v, hist) {
     ${dotsHTML(hist || [])}
   </aside>`;
 }
-const CAT_COLOR = { study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
+const CAT_COLOR = { kor: '#e5484d', math: '#2f6fe4', eng: '#12a594', inq: '#8e4ec6', study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
 function renderGame() {
   const res = app.res, s = res.state, v = CS.view(s);
   const logs = s.log;
@@ -639,11 +644,13 @@ function renderGame() {
     const used = pr.cats.reduce((a, c) => a + (cur[c.id] || 0), 0);
     let cells = '';
     pr.cats.forEach(c => { for (let i = 0; i < (cur[c.id] || 0); i++) cells += `<i style="background:${CAT_COLOR[c.id]};border-color:${CAT_COLOR[c.id]}">${i === 0 ? esc(c.label) : ''}</i>`; });
-    for (let i = used; i < 10; i++) cells += `<i class="empty"></i>`;
-    qhtml += `<div class="cells" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${10 - used}</b> / 10</div>
+    const T = pr.total || 12;
+    for (let i = used; i < T; i++) cells += `<i class="empty"></i>`;
+    const studyN = ['kor', 'math', 'eng', 'inq'].reduce((t, k) => t + (cur[k] || 0), 0);
+    qhtml += `<div class="cells" style="grid-template-columns:repeat(${T},1fr)" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${T - used}</b> / ${T} · 공부 ${studyN}칸 (국어가 영어·탐구 효율을, 이과 수학이 탐구 계산을 끌어올린다)</div>
       <div class="alloc" style="margin-top:12px">${pr.cats.map(c => `<div class="arow"><div class="nm"><b>${esc(c.label)}</b><span>${esc(c.desc)}</span></div>
-        <div class="step"><button type="button" data-dec="${c.id}" ${!(cur[c.id] > 0) ? 'disabled' : ''} aria-label="${esc(c.label)} 줄이기">−</button><span class="val">${cur[c.id] || 0}</span><button type="button" data-inc="${c.id}" ${used >= 10 ? 'disabled' : ''} aria-label="${esc(c.label)} 늘리기">+</button></div></div>`).join('')}</div>
-      <div class="qactions"><button class="cta" type="button" id="allocGo" ${used !== 10 ? 'disabled' : ''}>이렇게 보낸다</button><button class="ghost" type="button" id="allocReset">평소의 나대로</button>${used !== 10 ? '<span class="left">10칸을 모두 채워야 합니다</span>' : ''}</div>`;
+        <div class="step"><button type="button" data-dec="${c.id}" ${!(cur[c.id] > 0) ? 'disabled' : ''} aria-label="${esc(c.label)} 줄이기">−</button><span class="val">${cur[c.id] || 0}</span><button type="button" data-inc="${c.id}" ${used >= T ? 'disabled' : ''} aria-label="${esc(c.label)} 늘리기">+</button></div></div>`).join('')}</div>
+      <div class="qactions"><button class="cta" type="button" id="allocGo" ${used !== T ? 'disabled' : ''}>이렇게 보낸다</button><button class="ghost" type="button" id="allocReset">평소의 나대로</button>${used !== T ? `<span class="left">${T}칸을 모두 채워야 합니다</span>` : ''}</div>`;
   }
   $app.innerHTML = `${ruler(pr.turn)}
   <div class="game">
@@ -722,7 +729,7 @@ function renderEnd() {
     <div class="sheet pad">
       <table class="gradebook"><caption class="eyebrow" style="text-align:left;caption-side:top;padding-bottom:8px">영역별 등급 (1등급이 가장 높음)</caption>
         <tbody>${grades.map(([k, g, d]) => `<tr><th scope="row">${k}</th><td class="g">${g}</td><td>${esc(d)}</td></tr>`).join('')}</tbody></table>
-      <div class="meta"><span>수능 상위 <span class="num">${e.csatPct ? e.csatPct.toFixed(1) : '-'}</span>%</span>${e.naesinAvg ? `<span>내신 평균 상위 <span class="num">${e.naesinAvg.toFixed(1)}</span>%</span>` : ''}${e.attempts ? `<span>${e.attempts === 1 ? '재수' : '삼수'}</span>` : ''}</div>
+      <div class="meta">${e.csatG ? `<span>수능 국${e.csatG.kor} 수${e.csatG.math} 영${e.csatG.eng} 탐${e.csatG.inq}</span>` : ''}${e.employ ? `<span>학과 취업률 약 ${e.employ.rate}% · 취업의 질 ${e.employ.grade}</span>` : ''}<span>수능 상위 <span class="num">${e.csatPct ? e.csatPct.toFixed(1) : '-'}</span>%</span>${e.naesinAvg ? `<span>내신 평균 상위 <span class="num">${e.naesinAvg.toFixed(1)}</span>%</span>` : ''}${e.attempts ? `<span>${e.attempts === 1 ? '재수' : '삼수'}</span>` : ''}</div>
     </div>
   </section>
 
