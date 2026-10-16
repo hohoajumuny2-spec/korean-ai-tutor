@@ -151,6 +151,14 @@ input[type=text], input[type=number], select { width: 100%; background: var(--pa
 .note.good { background: var(--good-soft); border-color: var(--good); }
 .note.warn { background: var(--warn-soft); border-color: var(--warn); }
 .note.bad { background: var(--bad-soft); border-color: var(--bad); }
+.note.fate { background: color-mix(in srgb, #7c5cff 12%, var(--sheet)); border-color: #7c5cff; border-left-width: 4px; }
+.note.fate::before { content: "🎲 운 "; font-weight: 700; color: #6b4df0; }
+.fatechip { display: inline-block; font-size: 12px; font-weight: 700; color: #fff; background: #7c5cff; border-radius: 999px; padding: 2px 9px; }
+.fates { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.fates li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: baseline; font-size: 14px; }
+.fates li .when { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.artsbox { display: flex; align-items: baseline; gap: 8px; border: 1px solid color-mix(in srgb, #d6409f 40%, transparent); background: color-mix(in srgb, #d6409f 7%, var(--sheet)); border-radius: 8px; padding: 7px 10px; margin: -4px 0 12px; font-size: 12.5px; }
+.artsbox b { font-size: 20px; color: #d6409f; }
 .note .t { font-size: 11.5px; color: var(--muted); display: block; }
 @media (prefers-reduced-motion: no-preference) { .note.fresh { animation: rise .35s ease both; } @keyframes rise { from { transform: translateY(6px); opacity: .4; } } }
 
@@ -443,7 +451,8 @@ function gradeToPct(g, five) { const t = five ? G5 : G9; g = Math.max(1, Math.mi
 const OPT = {
   gender: [['m', '남'], ['f', '여'], ['x', '밝히지 않음']],
   grade: [[1, '고1'], [2, '고2'], [3, '고3']],
-  track: [['자연', '자연(이과) 쪽'], ['인문', '인문(문과) 쪽']],
+  track: [['자연', '자연(이과) 쪽'], ['인문', '인문(문과) 쪽'], ['예체', '예체능(미술·음악·체육)']],
+  artKind: [['art', '미술·디자인'], ['music', '음악(클래식·실용)'], ['sport', '체육']],
   school: [['general', '일반고'], ['jasa', '자사고'], ['special', '특목고(과고·외고 등)']],
   region: [['gangnam', '서울 강남권'], ['metro', '서울·수도권'], ['city', '지방 대도시'], ['rural', '지방 중소도시·농어촌']],
   wealth: [['high', '여유 있다'], ['mid', '보통'], ['low', '빠듯하다']],
@@ -487,7 +496,7 @@ function gradeOfTurn(t) { return t < 4 ? 1 : t < 8 ? 2 : 3; }
 function startLabel(f) { const g = gradeOfTurn(+f.startTurn || 0); const w = OPT.when[g].find(x => x[0] === +f.startTurn); return `고${g} ${w ? w[1] : ''}`; }
 function fillDefaults(f) {
   if (!f.acad) { const n = +f.academies || 0; f.acad = {}; ['kor', 'math', 'eng', 'inq'].forEach((k, i) => { f.acad[k] = i < n ? 'big' : 'none'; }); }
-  const d = { startTurn: (+f.grade - 1 || 0) * 4, pastMock: 'casual', subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
+  const d = { startTurn: (+f.grade - 1 || 0) * 4, pastMock: 'casual', artKind: 'art', artLv: 3, artAcad: 'local', subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
   Object.keys(d).forEach(k => { if (f[k] == null) f[k] = d[k]; });
   f.grade = gradeOfTurn(+f.startTurn);
   return f;
@@ -534,7 +543,7 @@ function renderIntro() {
       </div>
       <div class="feat">
         <div><b>현실적인 입시</b>과목별 공부법과 모의고사, 수능 최저, 수시 6장·정시 3장. 정시 합격선은 대학어디가 2023~2026 정시 70%컷 자료</div>
-        <div><b>수천 가지 결말</b>대학 × 학과 × 직업 × 연애 × 관계로 갈라지는 서른 살</div>
+        <div><b>수천 가지 결말</b>대학 × 학과 × 직업 × 연애 × 관계로 갈라지는 서른 살. 미대·음대·체대 실기 입시, 그리고 선택과 상관없는 '운'까지</div>
         <div><b>인생 오답노트</b>"그때 다른 걸 골랐다면?"을 실제로 다시 돌려 본 결과</div>
       </div>
     </div>
@@ -543,7 +552,7 @@ function renderIntro() {
       <div class="ticket" aria-label="수험표 예시">
         <div class="head"><span>수험표</span><span class="num">${new Date().getFullYear() + (3 - (+f.grade || 1)) + 1}학년도</span></div>
         <div class="row"><div class="k">성명</div><div class="v">${esc(f.name || '나')}${app.formIsSample ? ' <span class="muted small">(예시)</span>' : ''}</div></div>
-        <div class="row"><div class="k">시작 시점</div><div class="v">${esc(startLabel(f))} · ${esc(f.track)} 쪽 · ${esc((OPT.school.find(x => x[0] === f.school) || [])[1] || '')}</div></div>
+        <div class="row"><div class="k">시작 시점</div><div class="v">${esc(startLabel(f))} · ${f.track === '예체' ? esc({ art: '미술', music: '음악', sport: '체육' }[f.artKind || 'art']) + ' 실기' : esc(f.track) + ' 쪽'} · ${esc((OPT.school.find(x => x[0] === f.school) || [])[1] || '')}</div></div>
         <div class="row"><div class="k">현재 성적</div><div class="v">내신 <span class="num">${esc(f.gpaG)}</span>등급 · 모의 평균 <span class="num">${esc(mockAvg(f))}</span>등급</div></div>
         <div class="row"><div class="k">목표</div><div class="v">${esc(CS.GOALS[f.goal] ? CS.GOALS[f.goal].name : '')}</div></div>
         <div class="row"><div class="k">부모님</div><div class="v">${esc(CS.PARENT_STYLES[f.pStyle].name)} · "${esc(CS.PARENT_DESIRES[f.pDesire].name)}"</div></div>
@@ -572,7 +581,10 @@ function renderSetup() {
       <div class="field"><span class="lab">성별</span>${seg('gender', OPT.gender, f.gender)}<div class="hint">남학생은 군 복무 시기가 진로에 반영됩니다.</div></div>
       <div class="field"><span class="lab">지금 학년</span>${seg('grade', OPT.grade, f.grade)}</div>
       <div class="field"><span class="lab">지금 시점 (여기서부터 시작)</span>${seg('startTurn', OPT.when[f.grade], f.startTurn)}<div class="hint">그 이전 학기 내신은 아래에 입력한 등급으로 채웁니다.</div></div>
-      <div class="field"><span class="lab">생각하는 계열</span>${seg('track', OPT.track, f.track)}</div>
+      <div class="field"><span class="lab">생각하는 계열</span>${seg('track', OPT.track, f.track)}${f.track === '예체' ? '<div class="hint">교과 공부는 인문 계열(사탐)로 진행하고, 실기를 따로 배분합니다.</div>' : ''}</div>
+      ${f.track === '예체' ? `<div class="field"><span class="lab">예체능 종류</span>${seg('artKind', OPT.artKind, f.artKind || 'art')}</div>
+      <div class="field"><span class="lab">지금 실기 수준</span>${bubbles('artLv', f.artLv || 3, '막 시작', '대회 입상급')}<div class="hint">실기 ${28 + 12 * (+f.artLv || 3)}점쯤에서 시작합니다. 연습하지 않으면 바로 무뎌집니다.</div></div>
+      <div class="field"><span class="lab">실기 학원·레슨</span>${seg('artAcad', Object.keys(CS.ARTS_ACAD).map(k => [k, CS.ARTS_ACAD[k].name]), f.artAcad || 'local')}<div class="hint">${esc(CS.ARTS_ACAD[f.artAcad || 'local'].desc)}.</div></div>` : ''}
       ${+f.startTurn > 2 ? `<div class="field"><span class="lab">고2·고3 선택과목</span>${seg('subject', OPT.subject, f.subject)}</div>` : ''}
       <div class="field"><span class="lab">학교</span>${seg('school', OPT.school, f.school)}</div>
       <div class="field"><label for="f-region">사는 곳</label><select id="f-region" data-select="region">${OPT.region.map(([v, l]) => `<option value="${v}" ${f.region === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -634,7 +646,7 @@ function bindSetup() {
   $app.querySelectorAll('[data-set]').forEach(b => {
     b.onclick = () => {
       let v = b.dataset.v;
-      const numeric = ['grade', 'startTurn', 'screen', 'academies', 'clarity'];
+      const numeric = ['grade', 'startTurn', 'screen', 'academies', 'clarity', 'artLv'];
       if (b.dataset.num || numeric.indexOf(b.dataset.set) >= 0) v = +v;
       if (b.dataset.set === 'bestFriend') v = v === 'true';
       f[b.dataset.set] = v; app.formIsSample = false;
@@ -704,6 +716,7 @@ function statusPanel(v, hist) {
     </div>
     <div class="subj" aria-label="과목별 모의고사 등급">${[['kor', '국어'], ['math', '수학'], ['eng', '영어'], ['inq', '탐구']].map(([k, n]) => `<div class="sg" style="--c:${CAT_COLOR[k]}"><span>${n}</span><b>${v.subj[k]}</b></div>`).join('')}</div>
     <div class="fitline">백분위 국 <b class="num">${Math.round(v.pct.kor)}</b> · 수 <b class="num">${Math.round(v.pct.math)}</b> · 탐 <b class="num">${Math.round(v.pct.inq)}</b><br>정시로 보면 <b>${esc(v.jfit.uni)}</b>${v.jfit.cut != null ? ` <span class="num">(${esc(v.jfit.track)} 70%컷 ${v.jfit.cut})</span>` : ''} 수준</div>
+    ${v.arts ? `<div class="artsbox" aria-label="실기"><span>${esc(v.arts.name)} 실기</span><b class="num">${v.arts.talent}</b><span class="muted">${esc(v.arts.acad)}</span></div>` : ''}
     <div class="methbox" aria-label="과목별 공부법"><div class="mt">과목별 공부법 ${v.sense ? `<span>${esc(v.sense)}</span>` : ''}</div>
       ${v.methods.map(m => `<div class="ml"><span class="an" style="color:${CAT_COLOR[m.k]}">${m.name}</span><span>${esc(m.label)}</span></div>`).join('')}
       <div class="ml muted"><span>국어 영역</span><span>독서 ${v.kor.read} · 문학 ${v.kor.lit} · 언매 ${v.kor.lang}</span></div></div>
@@ -717,7 +730,7 @@ function statusPanel(v, hist) {
     ${dotsHTML(hist || [])}
   </aside>`;
 }
-const CAT_COLOR = { kor: '#e5484d', math: '#2f6fe4', eng: '#12a594', inq: '#8e4ec6', study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
+const CAT_COLOR = { kor: '#e5484d', math: '#2f6fe4', eng: '#12a594', inq: '#8e4ec6', silgi: '#d6409f', study: 'var(--ink)', academy: '#3f5b8c', activity: '#2e7d6b', hobby: '#b46a1f', friends: '#8a5aa8', rest: '#7d8796', date: 'var(--omr)', work: '#6b6b2e' };
 function renderGame() {
   const res = app.res, s = res.state, v = CS.view(s);
   const logs = s.log;
@@ -735,7 +748,8 @@ function renderGame() {
     let d = 0;
     if (mood && !first) { AU.sfx(mood); d = 450; }
     const later = n => setTimeout(() => AU.sfx(n), d);
-    if (/:csat$/.test(pr.key)) later('exam');
+    if (fresh.some(l => l.kind === 'fate')) later('fate');
+    else if (/:csat$/.test(pr.key)) later('exam');
     else if (/:pick$/.test(pr.key)) later(pr.options.some(o => /등록/.test(o.label)) ? 'pass' : 'fail');
     else if (app.sndTurn !== pr.turn && /^고/.test(pr.turn || '')) later('bell');
     else if (!mood) later('page');
@@ -773,7 +787,7 @@ function renderGame() {
     <div style="min-width:0">
       <div class="ministat" aria-hidden="true"><span>${esc(v.turn)}</span>${[['kor', '국'], ['math', '수'], ['eng', '영'], ['inq', '탐']].map(([k, n]) => `<b style="--c:${CAT_COLOR[k]}">${n}${v.subj[k]}</b>`).join('')}<span>내신 ${esc(v.naesin.g.replace('(5등급제)', ''))}</span></div>
       ${app.rewindFrom ? `<div class="banner">「${esc(app.rewindFrom)}」 시점으로 돌아왔습니다. 운은 그대로, 선택만 다시 할 수 있습니다. 현실에는 없는 버튼입니다.</div>` : ''}
-      ${mood ? `<div class="verdict"><div class="vh"><span class="vi">${VERDICT[mood].i}</span><span class="vt">${VERDICT[mood].t}</span><span class="vc">${esc(last.title)} — ${VERDICT[mood].c}</span></div>${last.note ? `<div class="note warn" style="margin-bottom:8px">${esc(last.note)}</div>` : ''}
+      ${mood ? `<div class="verdict"><div class="vh"><span class="vi">${VERDICT[mood].i}</span><span class="vt">${VERDICT[mood].t}</span><span class="vc">${esc(last.title)} — ${VERDICT[mood].c}</span>${last.fate ? '<span class="fatechip">🎲 운이 끼었다</span>' : ''}</div>${last.note ? `<div class="note warn" style="margin-bottom:8px">${esc(last.note)}</div>` : ''}
         ${fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}</div>`
         : fresh.length ? `<div class="feed">${fresh.map(l => `<div class="note fresh ${l.kind}"><span class="t">${esc(l.t)}</span>${esc(l.text)}</div>`).join('')}</div>` : ''}
       <section class="sheet omr q">${qhtml}</section>
@@ -854,6 +868,9 @@ function renderEnd() {
       <div class="meta">${e.csatG ? `<span>수능 국${e.csatG.kor} 수${e.csatG.math} 영${e.csatG.eng} 탐${e.csatG.inq}</span>` : ''}${e.employ ? `<span>학과 취업률 약 ${e.employ.rate}% · 취업의 질 ${e.employ.grade}</span>` : ''}<span>수능 상위 <span class="num">${e.csatPct ? e.csatPct.toFixed(1) : '-'}</span>%</span>${e.naesinAvg ? `<span>내신 평균 상위 <span class="num">${e.naesinAvg.toFixed(1)}</span>%</span>` : ''}${e.attempts ? `<span>${e.attempts === 1 ? '재수' : '삼수'}</span>` : ''}</div>
     </div>
   </section>
+
+  ${e.fates && e.fates.length ? `<div class="sectionhead"><h2>이번 인생의 운</h2><p>내 선택과 상관없이 벌어진 일 ${e.fates.length}가지. 오답노트의 다른 답들도 같은 운 위에서 다시 살아 본 결과입니다.</p></div>
+  <div class="sheet pad"><ul class="fates">${e.fates.map(f => `<li><span class="when">${esc(f.t)}</span><span>🎲 ${esc(f.text)}</span></li>`).join('')}</ul></div>` : ''}
 
   <div class="sectionhead"><h2>인생 오답노트</h2><p>${an ? `내가 고른 ${s.history.length}개 답 중 다른 답 ${an.tried}개를 같은 운으로 다시 살아 봤습니다. 그중 ${an.changed}개가 서른 살을 바꿨습니다.` : '같은 운으로 다른 답을 하나씩 다시 살아 보는 중…'}</p></div>
   <div class="wrong" id="wrong">${an ? (an.regrets.length ? an.regrets.map(x => card(x, false)).join('') : '<div class="sheet pad muted">바꿨을 때 더 나아지는 답을 찾지 못했습니다. 이번 인생은 거의 최선의 답을 골랐습니다.</div>') : '<div class="sheet computing">계산 중…</div>'}</div>

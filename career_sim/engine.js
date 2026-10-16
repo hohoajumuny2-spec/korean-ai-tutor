@@ -144,7 +144,54 @@ const EDU_TIERS = [
   { key: 'e5', name: '사립대 사범대',       pct: 40, prestige: 50, gi: 8, unis: ['수도권 4년제 대학', '지방 4년제 대학'], majors: ['국어교육과', '영어교육과', '사회교육과'], teacher: 'sec' },
   { key: 'e6', name: '전문대 유아교육과',   pct: 100, prestige: 30, gi: 10, unis: ['전문대학'], majors: ['유아교육과'], teacher: 'kinder' },
 ];
+// ── 예체능 ──────────────────────────────────────────────
+//  실기(talent)와 수능·내신을 함께 본다. 대학마다 실기 비중(silgiW)이 다르다. 홍익대 미대처럼 실기 없이 서류·수능으로 뽑는 곳도 있다.
+//  음대·실용음악은 경쟁률이 수십~수백 대 일이고, 체대는 수능·내신 비중이 생각보다 높다.
+const ARTS_FIELD = { art: 'art', music: 'perf', sport: 'sport' };
+const ARTS_NAME = { art: '미술', music: '음악', sport: '체육' };
+const ART_TIERS = [
+  { key: 'a0', name: '서울대 미대',            pct: 0.5, prestige: 98, gi: 0, unis: ['서울대'], majors: ['디자인과', '동양화과', '서양화과'], silgiW: 0.55, arts: 'art' },
+  { key: 'a1', name: '홍익대 미대(비실기)',     pct: 1.6, prestige: 90, gi: 1, unis: ['홍익대'], majors: ['시각디자인과', '산업디자인과', '회화과'], silgiW: 0.15, arts: 'art' },
+  { key: 'a2', name: '국민대·건국대·이화여대 미대', pct: 4, prestige: 82, gi: 3, unis: ['국민대', '건국대', '이화여대'], majors: ['시각디자인과', '산업디자인과', '조형예술과'], silgiW: 0.6, arts: 'art' },
+  { key: 'a3', name: '중앙대·경희대·서울과기대 디자인', pct: 7, prestige: 78, gi: 4, unis: ['중앙대', '경희대', '서울과기대', '숙명여대'], majors: ['시각디자인과', '산업디자인과', '공예과'], silgiW: 0.6, arts: 'art' },
+  { key: 'a4', name: '수도권 미대',             pct: 15, prestige: 65, gi: 6, unis: ['상명대', '한성대', '경기대', '단국대'], majors: ['시각디자인과', '애니메이션과', '회화과'], silgiW: 0.65, arts: 'art' },
+  { key: 'a5', name: '지방 미대',               pct: 35, prestige: 50, gi: 8, unis: ['지방 4년제 미대'], majors: ['디자인학과', '미술학과'], silgiW: 0.7, arts: 'art' },
+  { key: 'a6', name: '전문대 디자인과',          pct: 100, prestige: 30, gi: 10, unis: ['전문대학'], majors: ['시각디자인과', '웹툰과'], silgiW: 0.7, arts: 'art' },
+];
+const MUSIC_TIERS = [
+  { key: 'm0', name: '서울대 음대',            pct: 0.3, prestige: 98, gi: 0, unis: ['서울대'], majors: ['성악과', '기악과', '작곡과'], silgiW: 0.8, arts: 'music' },
+  { key: 'm1', name: '한예종',                 pct: 0.45, prestige: 97, gi: 0, unis: ['한국예술종합학교'], majors: ['음악원 기악과', '음악원 성악과'], silgiW: 0.9, arts: 'music' },
+  { key: 'm2', name: '연세대·한양대 음대',       pct: 1.6, prestige: 88, gi: 1, unis: ['연세대', '한양대'], majors: ['성악과', '관현악과', '작곡과'], silgiW: 0.75, arts: 'music' },
+  { key: 'm3', name: '실용음악 명문(경쟁률 100:1)', pct: 2.5, prestige: 74, gi: 4, unis: ['서울예대', '호원대', '동아방송예대'], majors: ['실용음악과'], silgiW: 0.9, arts: 'music' },
+  { key: 'm4', name: '경희대·숙명여대·국민대 음대', pct: 5, prestige: 78, gi: 3, unis: ['경희대', '숙명여대', '국민대'], majors: ['성악과', '피아노과', '포스트모던음악학과'], silgiW: 0.7, arts: 'music' },
+  { key: 'm5', name: '수도권 음대·실용음악과',   pct: 15, prestige: 62, gi: 6, unis: ['단국대', '상명대', '백석대', '한세대'], majors: ['실용음악과', '음악학과'], silgiW: 0.75, arts: 'music' },
+  { key: 'm6', name: '지방 음대',               pct: 35, prestige: 48, gi: 8, unis: ['지방 4년제 음대'], majors: ['음악학과', '실용음악과'], silgiW: 0.75, arts: 'music' },
+  { key: 'm7', name: '전문대 실용음악과',        pct: 100, prestige: 30, gi: 10, unis: ['전문대학'], majors: ['실용음악과'], silgiW: 0.8, arts: 'music' },
+];
+const SPORT_TIERS = [
+  { key: 's0', name: '서울대 체육교육과',        pct: 0.6, prestige: 97, gi: 0, unis: ['서울대'], majors: ['체육교육과'], silgiW: 0.4, teacher: 'sec', arts: 'sport' },
+  { key: 's1', name: '고려대·연세대 체교과',      pct: 2.2, prestige: 90, gi: 1, unis: ['고려대', '연세대'], majors: ['체육교육과', '스포츠응용산업학과'], silgiW: 0.4, teacher: 'sec', arts: 'sport' },
+  { key: 's2', name: '한국체대',                pct: 2.5, prestige: 84, gi: 2, unis: ['한국체대'], majors: ['체육학과', '스포츠건강복지학과'], silgiW: 0.65, arts: 'sport' },
+  { key: 's3', name: '경희대·중앙대·성균관대 스포츠', pct: 5, prestige: 80, gi: 3, unis: ['경희대', '중앙대', '성균관대'], majors: ['스포츠지도학과', '체육학과', '스포츠과학과'], silgiW: 0.5, arts: 'sport' },
+  { key: 's4', name: '인서울 체육학과',          pct: 9, prestige: 72, gi: 5, unis: ['국민대', '동국대', '세종대', '숭실대'], majors: ['스포츠건강재활학과', '체육학과', '스포츠산업학과'], silgiW: 0.5, arts: 'sport' },
+  { key: 's5', name: '수도권 체대',              pct: 18, prestige: 62, gi: 6, unis: ['용인대', '인천대', '가천대', '단국대'], majors: ['체육학과', '경호학과', '태권도학과'], silgiW: 0.55, arts: 'sport' },
+  { key: 's6', name: '지방 체대',                pct: 35, prestige: 50, gi: 8, unis: ['지방 4년제 체대'], majors: ['체육학과', '스포츠지도학과'], silgiW: 0.6, arts: 'sport' },
+  { key: 's7', name: '전문대 생활체육과',         pct: 100, prestige: 30, gi: 10, unis: ['전문대학'], majors: ['생활체육과', '경호과'], silgiW: 0.6, arts: 'sport' },
+];
+// 예체능 학원·레슨. 실기는 혼자 늘기 어렵다 — 입시 전문 학원은 대학별 출제 경향까지 잡아 준다
+const ARTS_ACAD = {
+  none:  { name: '혼자 연습',            mult: 0.8,  cost: 0,   desc: '방향을 봐 줄 사람이 없다. 틀린 습관이 굳으면 연습해도 안 는다' },
+  local: { name: '동네 학원·레슨',        mult: 1.15, cost: 2.2, desc: '기본기는 잡힌다. 입시 유형은 따로 봐야 한다' },
+  ipsi:  { name: '입시 전문 학원',        mult: 1.45, cost: 4.5, desc: '대학별 실기 유형·채점 기준을 안다. 비싸고 주 4~5일' },
+  tutor: { name: '개인 레슨(1:1)',        mult: 1.4,  cost: 6,   desc: '선생님에 따라 편차가 크다. 음대 입시는 거의 필수' },
+};
+const artsField = s => (s.arts ? ARTS_FIELD[s.arts] : s.flags.artPath ? 'art' : s.flags.sportPath ? 'sport' : s.flags.musicPath ? 'perf' : null);
+const artsOf = f => ({ art: 'art', perf: 'music', sport: 'sport' }[f] || null);
+function artsTiers(field) { return field === 'art' ? ART_TIERS : field === 'perf' ? MUSIC_TIERS : field === 'sport' ? SPORT_TIERS : null; }
+function artsMult(s) { const k = s.artsAcad || 'none'; if (s.money < 3) return 1; return ARTS_ACAD[k] ? ARTS_ACAD[k].mult : 1; }
 function tierList(field, s) {
+  const at = artsTiers(field);
+  if (at) return at;
   if (field === 'med') {
     const local = s && (s.p.region === 'city' || s.p.region === 'rural');
     const med = MED_TIERS.map(t => (t.key === 'm3' && local ? Object.assign({}, t, { pct: 1.1, name: '지방 의대(지역인재)' }) : t))
@@ -227,7 +274,7 @@ const JOBS = {
   hum:   [[['대기업 해외영업', 6800], ['출판사 기획편집자(팀장 트랙)', 5200]], [['외국계 기업 마케터', 5400], ['통번역사', 4800]], [['중견기업 사무직', 3900], ['콘텐츠 에디터', 3500]], [['계약직 사무보조', 2700], ['카페 매니저(진로 고민 중)', 2600]]],
   soc:   [[['대기업 HR 피플팀', 6400], ['임상심리전문가', 5600]], [['리서치 회사 연구원', 4700], ['공공기관 상담사', 4300]], [['복지관 사회복지사', 3400], ['기업 상담센터 상담사', 3600]], [['비정규직 상담원', 2700], ['심리 대학원 진학 고민 중', 2000]]],
   media: [[['방송사 PD', 7200], ['대형 광고대행사 AE', 6800]], [['언론사 기자', 5200], ['플랫폼 기업 콘텐츠 마케터', 5400]], [['외주 제작사 조연출', 3300], ['중소 광고회사 기획자', 3700]], [['프리랜서 영상 편집자', 2800], ['MCN 계약직', 2700]]],
-  art:   [[['대기업 UX 디자이너', 6600], ['글로벌 브랜드 디자이너', 6200]], [['IT 기업 프로덕트 디자이너', 5300], ['웹툰 작가(정식 연재)', 5800]], [['디자인 에이전시 디자이너', 3600], ['게임회사 원화가', 4200]], [['불안정한 프리랜서 디자이너', 2500], ['미술 학원 강사', 2800]]],
+  art:   [[['대기업 UX 디자이너', 6600], ['글로벌 브랜드 디자이너', 6200]], [['IT 기업 프로덕트 디자이너', 5300], ['브랜드 패키지 디자이너', 4300]], [['디자인 에이전시 디자이너', 3600], ['게임회사 원화가', 4200]], [['불안정한 프리랜서 디자이너', 2500], ['미술 학원 강사', 2800]]],
   perf:  [[['뮤지컬 주연 배우', 8000], ['히트곡을 낸 작곡가', 9000]], [['세션 연주자', 4200], ['방송 음악감독 팀원', 4500]], [['실용음악 학원 강사', 3200], ['공연기획사 직원', 3400]], [['단역 배우 겸 아르바이트', 1900], ['무명 인디 뮤지션', 1600]]],
   sport: [[['프로 구단 트레이너', 5600], ['체육 정교사', 5000]], [['스포츠 브랜드 마케터', 5000], ['경찰공무원(경장)', 4700]], [['헬스장 PT 트레이너', 3600], ['생활체육 지도자', 3100]], [['아르바이트 트레이너', 2400], ['진로 전환 준비 중', 1800]]],
   none:  [[['대기업 생산직(정규직)', 6500], ['공기업 고졸 채용', 5200]], [['중견기업 기술직', 4500], ['프랜차이즈 점장', 4200]], [['배달·물류 기사', 4000], ['판매직 정규직', 3100]], [['아르바이트 전전', 2100], ['쉬었음 청년', 600]]],
@@ -264,7 +311,9 @@ function subjWeights(field) {
 function compositeZ(sub, field) { const w = subjWeights(field); return SUB_KEYS.reduce((a, k) => a + w[k] * sub[k], 0); }
 // 수능 최저: 국·수·영·탐(1과목) 중 n개 등급 합
 function minReq(tier, type) {
-  if (type === 'silgi' || type === 'jungsi') return null;
+  if (type === 'jungsi') return null;
+  if (tier.arts) return tier.gi <= 1 ? { n: 2, sum: 5 } : tier.gi <= 3 ? { n: 2, sum: 7 } : null;
+  if (type === 'silgi') return null;
   if (tier.fo === 'med') return tier.key === 'm4' || tier.key === 'm5' ? { n: 3, sum: 5 } : { n: 4, sum: 5 };
   if (type === 'jonghap') return tier.gi === 1 ? { n: 4, sum: 8 } : null;
   if (tier.teacher === 'elem') return { n: 4, sum: 12 };
@@ -298,12 +347,12 @@ function employText(field, prestige, teacher) { const e = employOf(field, presti
 //  mult: 그 과목 공부 효율, lazyCut: 나태로 새는 시간을 얼마나 막아 주나, naesin: 학교 내신 대비 효과, cost: 학기당 학원비
 const ACAD = {
   none:     { name: '독학(자기주도)',         mult: 1.0,  lazyCut: 0,    naesin: 0,     cost: 0,   desc: '돈이 안 들지만 방향과 피드백을 혼자 찾아야 한다' },
-  online:   { name: '인강',                  mult: 1.05, lazyCut: 0,    naesin: 0,     cost: 0.6, desc: '싸고 강의 질은 좋지만, 성실하지 않으면 완강을 못 한다' },
-  big:      { name: '대형 학원 유명 강사 현강', mult: 1.12, lazyCut: 0.1,  naesin: 0.004,  cost: 3.2, desc: '상위권에 맞춘 진도와 자료. 기초가 약하면 따라가기 벅차다' },
-  managed:  { name: '관리형 학원',            mult: 1.1,  lazyCut: 0.45, naesin: 0.008,  cost: 3.0, desc: '출결·숙제·자습을 붙잡아 준다. 나태한 학생에게 특히 효과' },
-  director: { name: '원장 직강 소규모 학원',   mult: 1.14, lazyCut: 0.3,  naesin: 0.016,  cost: 2.8, desc: '원장이 직접 가르치고 개별 첨삭·상담을 해 준다. 학교별 내신 대비가 강하다' },
-  group:    { name: '그룹 과외',              mult: 1.12, lazyCut: 0.25, naesin: 0.01,  cost: 3.4, desc: '3~4명 소수 수업. 같이 하는 친구 수준에 따라 효과가 갈린다' },
-  tutor:    { name: '1:1 과외',               mult: 1.15, lazyCut: 0.35, naesin: 0.012,  cost: 5.0, desc: '나에게 딱 맞춘 수업. 비싸고, 선생님에 따라 편차가 크다' },
+  online:   { name: '인강',                  mult: 1.04, lazyCut: 0,    naesin: 0,     cost: 0.6, desc: '싸고 강의 질은 좋지만, 성실하지 않으면 완강을 못 한다' },
+  big:      { name: '대형 학원 유명 강사 현강', mult: 1.15, lazyCut: 0.1,  naesin: 0.005,  cost: 3.2, desc: '상위권에 맞춘 진도와 자료. 기초가 약하면 따라가기 벅차다' },
+  managed:  { name: '관리형 학원',            mult: 1.14, lazyCut: 0.55, naesin: 0.009,  cost: 3.0, desc: '출결·숙제·자습을 붙잡아 준다. 나태한 학생에게 특히 효과' },
+  director: { name: '원장 직강 소규모 학원',   mult: 1.2,  lazyCut: 0.4,  naesin: 0.02,   cost: 2.8, desc: '원장이 직접 가르치고 첨삭·상담·입시 설계까지 해 준다. 학교별 내신 대비가 강하고, 흔들릴 때 잡아 준다' },
+  group:    { name: '그룹 과외',              mult: 1.14, lazyCut: 0.25, naesin: 0.01,  cost: 3.4, desc: '3~4명 소수 수업. 같이 하는 친구 수준에 따라 효과가 갈린다' },
+  tutor:    { name: '1:1 과외',               mult: 1.17, lazyCut: 0.35, naesin: 0.012,  cost: 5.0, desc: '나에게 딱 맞춘 수업. 비싸고, 선생님에 따라 편차가 크다' },
 };
 const ACAD_KEYS = Object.keys(ACAD);
 // 학생에게 맞는 정도까지 넣은 실제 효율
@@ -314,7 +363,7 @@ function acadMult(s, k) {
   let m = A.mult;
   if (t === 'online') m += (p.diligence - 3) * 0.03;               // 성실해야 인강이 산다
   if (t === 'big') m += z > 0.5 ? 0.03 : z < -0.3 ? -0.06 : 0;      // 기초가 약하면 진도를 못 따라간다
-  if (t === 'director') m += z < 0.3 ? 0.02 : 0;                   // 소규모라 하위·중위권을 끌어올리는 힘이 크다
+  if (t === 'director') m += z < 0.3 ? 0.03 : 0.01;                // 소규모라 하위·중위권을 끌어올리는 힘이 크다
   if (t === 'tutor') m += (s.tutorQ && s.tutorQ[k] != null ? s.tutorQ[k] : 0);
   if (t === 'managed') m += p.diligence <= 2 ? 0.03 : 0;
   return m;
@@ -434,6 +483,7 @@ function normalizeProfile(p) {
     friendGroup: 'club', bestFriend: true,
     startTurn: null, subject: null, subj: null,
     pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2, acad: null, korFocus: null, pastMock: 'casual',
+    artKind: null, artLv: 3, artAcad: 'local',
   };
   const out = Object.assign({}, d, p || {});
   out.hobbies = (out.hobbies || []).filter(h => HOBBIES[h]).slice(0, 3);
@@ -452,6 +502,11 @@ function normalizeProfile(p) {
   out.academies = SUB_KEYS.filter(k => acad[k] !== 'none' && acad[k] !== 'online').length;
   if (!KOR_FOCUS[out.korFocus]) out.korFocus = null;
   if (!PAST_MOCK[out.pastMock]) out.pastMock = 'casual';
+  // 예체능: 계열이 '예체'면 종류(미술·음악·체육)·실기 수준·학원이 따라온다. 학과 공부 쪽 계열은 인문으로 둔다
+  if (out.track === '예체' || out.track === '예체능') { out.track = '예체'; if (!ARTS_FIELD[out.artKind]) out.artKind = 'art'; }
+  else out.artKind = null;
+  out.artLv = clamp(parseInt(out.artLv, 10) || 3, 1, 5);
+  if (!ARTS_ACAD[out.artAcad]) out.artAcad = 'local';
   out.clarity = clamp(parseInt(out.clarity, 10) || 2, 1, 3);
   if (out.subj) ['kor', 'math', 'eng', 'inq'].forEach(k => { out.subj[k] = clamp(+out.subj[k] || 5, 1, 9); });
   ['diligence', 'grit', 'social', 'curiosity', 'confidence', 'impulse', 'focus', 'comprehension', 'memory', 'recordLv']
@@ -485,7 +540,9 @@ function initState(p, seed) {
     romance: { status: 'none', partner: null, studious: false, since: 0, score: 0, count: 0, firstLove: null },
     interest: {}, talent: { art: 15, perf: 15, sport: 25, code: 12, verbal: 20, people: 15 + p.social * 5, media: 12, game: 15, craft: 10 },
     money: { high: 110, mid: 60, low: 22 }[p.wealth] || 60,
-    track: p.track,
+    track: p.track === '예체' ? '인문' : p.track,
+    arts: p.track === '예체' ? p.artKind : null,       // 예체능 지망(미술·음악·체육)
+    artsAcad: p.track === '예체' ? p.artAcad : 'none',
     subject: null,
     autonomy: 0,     // 내가 정한 길(+)인지 부모님이 정한 길(-)인지
     flags: {}, seen: {},
@@ -537,6 +594,12 @@ function initState(p, seed) {
   const desire = PARENT_DESIRES[p.pDesire];
   if (desire && desire.field) s.interest[desire.field] += 8;   // 자라면서 스며든 부모님 기대
   if (p.track === '자연') ['med', 'eng', 'cs', 'sci', 'nurse'].forEach(f => { s.interest[f] += 4; });
+  else if (p.track === '예체') {
+    const f = ARTS_FIELD[p.artKind], tk = FIELDS[f].talent;
+    s.interest[f] += 40; s.talent[tk] = clamp(28 + p.artLv * 12 + r.normal() * 5, 10, 95);
+    s.flags[{ art: 'artPath', music: 'musicPath', sport: 'sportPath' }[p.artKind]] = true;
+    s.flags.artsSince = p.startTurn;
+  }
   else ['biz', 'law', 'hum', 'soc', 'media', 'edu'].forEach(f => { s.interest[f] += 4; });
   // 중간에서 시작하면 지난 학기 내신은 입력값으로 채운다
   const prevSem = HS_TURNS.slice(0, p.startTurn).filter(t => t.type === 'sem').length;
@@ -564,9 +627,15 @@ function avgNaesin(s) {
 
 // ── 기록 도우미 ──────────────────────────────────────────
 function inc(s, k, v) { s[k] = clamp((s[k] || 0) + v, 0, 100); }
+function Lf(s, text) { s.log.push({ t: s.turnLabel, text: text + ' (운)', kind: 'fate' }); s.fateSinceLast = text; (s.fates = s.fates || []).push({ t: s.turnLabel, text }); }
 function L(s, text, kind) { s.log.push({ t: s.turnLabel, text, kind: kind || 'info', i: s.log.length }); }
 function hasHobby(s, h) { return s.p.hobbies.indexOf(h) >= 0; }
 const phoneHobby = s => ['game', 'video', 'webtoon', 'idol'].some(h => hasHobby(s, h));
+// 관리형·원장 직강 학원에 다니는 과목이 많을수록 저녁 시간을 자습실에서 보낸다 → PC방·도박·싸움 같은 일에 덜 노출된다
+const guarded = s => SUB_KEYS.filter(k => s.acad && (s.acad[k] === 'managed' || s.acad[k] === 'director')).length;
+const expo = s => 1 - Math.min(0.55, guarded(s) * 0.2);
+const hasDirector = s => SUB_KEYS.some(k => s.acad && s.acad[k] === 'director');
+const noAcademy = s => SUB_KEYS.every(k => !s.acad || s.acad[k] === 'none' || s.acad[k] === 'online');
 const parentWord = s => (s.p.pStyle === 'absent' ? '오랜만에 집에 온 아빠' : s.p.pStyle === 'anxious' ? '엄마' : s.p.pStyle === 'strict' ? '아빠' : '엄마');
 
 // ── 질문하기 ─────────────────────────────────────────────
@@ -600,6 +669,7 @@ function choicePrior(h, b) {
     let v = (study - 6) * 0.8;
     SUB_KEYS.forEach(k => { if (pr.cats.some(c => c.id === k) && !(a[k] > 0)) v -= k === 'kor' || k === 'math' ? 2.5 : 1.5; });
     if (!(a.rest > 0)) v -= 1.5; if ((a.rest || 0) >= 5) v -= 1;
+    if (pr.cats.some(c => c.id === 'silgi')) { if (!(a.silgi > 0)) v -= 2.5; else if (a.silgi >= 2) v += 0.8; }
     if ((a.hobby || 0) + (a.friends || 0) + (a.date || 0) >= 7) v -= 1.5;
     return v;
   }
@@ -620,6 +690,8 @@ function settle(s) {
   const j = judge(s, h.before, snap(s));
   const prior = choicePrior(h, h.before);
   let score = j.score * 0.55 + prior * 1.2;
+  // 그 사이에 운이 끼었으면 결과는 선택 탓이 아니다 — 선택의 성격만 본다
+  if (s.fateSinceLast) { h.fate = s.fateSinceLast; s.fateSinceLast = null; score = prior * 1.2; if (!h.note) h.note = `이 구간엔 운이 끼었다 — ${h.fate} 결과가 나빠졌어도 선택 탓이 아니다.`; }
   // 핵심 과목을 통째로 비우거나, 놀기를 고른 선택은 결과가 잠깐 좋아 보여도 '좋은 선택'이 될 수 없다
   if (h.prompt.type === 'alloc') {
     const a = h.choice || {}, miss = SUB_KEYS.filter(k => h.prompt.cats.some(c => c.id === k) && !(a[k] > 0));
@@ -707,6 +779,7 @@ function defaultAlloc(s, cats) {
   const w = {
     kor: studyW * need.kor / nt, math: studyW * need.math / nt, eng: studyW * need.eng / nt, inq: studyW * need.inq / nt,
     activity: 0.4 + p.curiosity * 0.3,
+    silgi: artsField(s) ? 3.2 : 0,
     hobby: 0.6 + p.impulse * 0.35,
     friends: 0.3 + p.social * 0.35,
     rest: 1.2,
@@ -737,7 +810,7 @@ function normAlloc(a, cats) {
   // 칸을 넘으면 뒤에서부터 줄이고, 모자라면 휴식에 넣는다
   for (let i = cats.length - 1; t > T && i >= 0; i--) { const cut = Math.min(out[cats[i].id], t - T); out[cats[i].id] -= cut; t -= cut; }
   if (t < T) out.rest = (out.rest || 0) + (T - t);
-  SUB_KEYS.concat(['activity', 'hobby', 'friends', 'rest', 'date', 'work']).forEach(k => { if (out[k] == null) out[k] = 0; });
+  SUB_KEYS.concat(['activity', 'silgi', 'hobby', 'friends', 'rest', 'date', 'work']).forEach(k => { if (out[k] == null) out[k] = 0; });
   return out;
 }
 
@@ -775,6 +848,8 @@ function allocCats(s, turn) {
   ];
   if (s.romance.status === 'dating') cats.push({ id: 'date', label: '연애', desc: s.romance.partner + '와(과)의 시간' });
   if (s.p.wealth === 'low' || s.flags.work) cats.push({ id: 'work', label: '아르바이트', desc: '용돈·생활비' });
+  const af = artsField(s);
+  if (af) { const tk = FIELDS[af].talent; cats.splice(4, 0, { id: 'silgi', label: { art: '실기(그림)', perf: '실기(연습)', sport: '실기(훈련)' }[af], desc: `지금 실기 ${Math.round(s.talent[tk])}점 · ${ARTS_ACAD[s.artsAcad || 'none'].name}. 실기는 손을 놓으면 바로 무뎌진다.` }); }
   return cats;
 }
 
@@ -913,6 +988,24 @@ function hakpyeong(ctx, turn) {
   if (o.id === 'naesin') { s.zN += 0.008; L(s, '학평은 그냥 봤다. 성적표는 가방 속에서 구겨졌다.'); }
   if (o.id === 'sleep') { inc(s, 'lazy', 3); L(s, '2교시부터 엎드려 잤다. OMR 카드에는 한 줄로 찍은 자국만 남았다.', 'warn'); }
 }
+function artsPractice(s, a, r, quiet) {
+  const af = artsField(s);
+  if (!af) return;
+  const tk = FIELDS[af].talent, b = a.silgi || 0, cur = s.talent[tk], before = Math.round(cur);
+  const cond = 0.75 + s.mental / 300 + s.health / 400 - (s.flags.reinjury && af === 'sport' ? 0.2 : 0) - (s.flags.handInjury && af === 'art' ? 0.25 : 0) - (s.flags.vocalNodule && af === 'perf' ? 0.25 : 0);
+  // 위로 갈수록 느리게 는다(50점까지는 금방, 80점부터는 한 학기에 2점 늘기도 어렵다)
+  const slow = clamp(1 - Math.max(0, cur - 50) / 60, 0.12, 1) * (s.artsAcad === 'none' && cur > 65 ? 0.6 : 1);   // 봐 주는 사람 없이는 65점 위로 올라가기 어렵다
+  const decay = 3.2 + Math.max(0, cur - 60) * 0.05;
+  const gain = b * 1.25 * artsMult(s) * cond * slow * (1 - clamp((s.lazy - 25) / 150, 0, 0.4)) - (b === 0 ? decay * 1.3 : b === 1 ? decay * 0.5 : 0) + (b >= 2 ? r.normal() * 1.0 : 0);
+  s.talent[tk] = clamp(cur + gain, 5, 100);
+  s.artsSem = (s.artsSem || 0) + (b >= 2 ? 1 : 0);
+  if (s.artsAcad && s.artsAcad !== 'none') s.money -= ARTS_ACAD[s.artsAcad].cost;
+  if (quiet) return;
+  const after = Math.round(s.talent[tk]), nm = { art: '그림', perf: '연주·노래', sport: '기록' }[af];
+  if (after - before >= 4) L(s, `${nm} 실기 ${before} → ${after}. ${s.artsAcad === 'ipsi' ? '학원에서 대학별 유형을 반복하니 손이 먼저 움직인다.' : s.artsAcad === 'none' ? '혼자 연습했다. 늘긴 하는데 뭐가 틀린지는 모르겠다.' : '연습한 만큼 늘었다.'}`, 'good');
+  else if (after - before <= -3) L(s, `${nm} 실기 ${before} → ${after}. 실기는 ${b === 0 ? '한 학기만 손을 놓아도' : '연습이 모자라면'} 바로 무뎌진다. ${af === 'sport' ? '기록이 떨어졌다.' : af === 'art' ? '선이 흔들린다.' : '소리가 흔들린다.'}`, 'bad');
+  if (s.artsAcad !== 'none' && ARTS_ACAD[s.artsAcad].cost >= 4 && s.money < 15) L(s, `${ARTS_ACAD[s.artsAcad].name} 비용이 집에 큰 부담이 되고 있다.`, 'warn');
+}
 function semesterEffects(ctx, turn, a) {
   const s = ctx.s, p = s.p, r = makeRng(s.seed, turn.id + ':sem');
   const st = STYLES[p.style] || STYLES.steady;
@@ -929,6 +1022,8 @@ function semesterEffects(ctx, turn, a) {
   const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends + acadN + korN + methN;
   s.zN += dN * damp(s.zN);
 
+  // 실기: 연습한 만큼 늘고, 안 하면 바로 무뎌진다. 입시 전문 학원이면 같은 시간에 더 는다
+  artsPractice(s, a, r, false);
   // 생기부
   const recGain = a.activity * 2.2 * (0.7 + p.curiosity * 0.1) * (1 - s.record / 160);
   s.record = clamp(s.record + recGain - (a.activity === 0 ? 1.5 : 0), 0, 100);
@@ -1037,6 +1132,8 @@ function vacationTurn(ctx, turn) {
     { id: 'game', label: '폰·게임 몰아서 하기', hint: '스트레스 해소 · 습관이 무너진다', tags: ['fun'] },
     (p.wealth !== 'high' || s.flags.work) ? { id: 'work', label: '아르바이트로 돈 벌기', hint: '용돈과 사회 경험 · 공부 시간 감소', tags: ['work'] } : null,
   ];
+  const afv = artsField(s);
+  if (afv) opts.splice(1, 0, { id: 'camp', label: { art: '입시미술 방학 집중반 (하루 8시간 그림)', perf: '실기 집중 레슨·마스터클래스', sport: '체대 입시 집중 훈련반' }[afv], hint: '실기가 크게 는다 · 비용이 크고 교과 공부는 멈춘다', tags: ['study', 'self'] });
   const lastN = s.naesinRec.length ? s.naesinRec[s.naesinRec.length - 1] : p.gpaPct;
   const vtext = turn.big
     ? `고3 직전 겨울. 학원마다 "고3 수능은 이번 겨울에 결정된다"는 현수막이 걸렸다. 지금 내신은 상위 ${lastN.toFixed(0)}%, 모의고사는 ${grade9(topFromZ(s.zC))}등급. 친구들은 벌써 독서실 정기권을 끊었다. ${p.pStyle === 'strict' || p.pStyle === 'anxious' ? '부모님은 윈터스쿨(기숙 학원) 전단지를 식탁에 올려 두셨다.' : ''} 이 방학을 어떻게 보낼까?`
@@ -1072,6 +1169,12 @@ function vacationTurn(ctx, turn) {
       inc(s, 'mental', 4); inc(s, 'lazy', 7 * big); inc(s, 'health', -4); s.zC -= 0.05 * big; s.zN -= 0.02 * big;
       s.talent.game = clamp(s.talent.game + 10, 0, 100);
       L(s, '방학이 순삭됐다. 개학 전날 밤, 해 놓은 게 없다는 걸 깨달았다.', 'bad'); break;
+    case 'camp': {
+      const tk = FIELDS[artsField(s)].talent;
+      s.money -= 9 * big; if (s.money < 0) { s.money = 0; s.flags.moneyTight = true; inc(s, 'parentRel', -4); }
+      s.talent[tk] = clamp(s.talent[tk] + (4 + 2.5 * big) * artsMult(s) * clamp(1 - Math.max(0, s.talent[tk] - 50) / 60, 0.12, 1) * (1 - s.lazy / 250), 5, 100); s.zC -= 0.03 * big; inc(s, 'health', -5);
+      L(s, `방학 내내 실기만 했다. 실기 ${Math.round(s.talent[tk])}점. 교과서는 한 번도 안 폈다.`, 'good'); break;
+    }
     case 'work':
       s.money += 14; s.flags.work = true; s.flags.workExp = (s.flags.workExp || 0) + 3; inc(s, 'mental', -2); s.zC -= 0.02;
       L(s, '편의점 알바로 번 돈으로 처음 내 돈으로 산 물건이 생겼다. 돈 버는 게 쉽지 않다는 것도 알았다.'); break;
@@ -1198,7 +1301,7 @@ const examSeason = s => s.turnIdx >= 8;
 
 const HS_EVENTS = [
   // ── 친구 ─────────────────────────────────────────
-  { id: 'pc', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 3.2 : hasHobby(s, 'game') ? 1.6 : 0.5),
+  { id: 'pc', w: s => (s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 3.2 : hasHobby(s, 'game') ? 1.6 : 0.5) * expo(s),
     run: (ctx, key, r) => {
       const s = ctx.s, b = s.bestName;
       const o = choose(ctx, key, '학원 가는 길, 단톡방',
@@ -2073,11 +2176,401 @@ const HS_EVENTS = [
       if (o.id === 'keep') L(s, '그대로 다니기로 했다.');
     } },
 
+  // ── 탈선과 위기 ───────────────────────────────────
+  { id: 'gamble', w: s => ((s.friendGroup === 'party' || s.friendGroup === 'gamers' ? 1.7 : 0.55) + (s.p.impulse - 3) * 0.2) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, b = s.bestFriend ? s.bestName : '같은 반 애';
+      const o = choose(ctx, key, '단톡방에 뜬 링크',
+        `${b}${jo(b, '이/가')} 단톡방에 링크를 올렸다. "이거 사다리 게임인데 어제 5만 원 넣고 30만 원 땄음 ㅋㅋ 가입하면 첫 충전 2배." 화면엔 1분마다 결과가 뜬다. 반에서 벌써 여섯 명이 한다고 한다. 누구는 "이걸로 에어팟 샀다"고 했다.`, [
+        O('try', '만 원만 넣어 본다', '재미 반 호기심 반 · 따면 멈추기 어렵다', ['fun', 'risk']),
+        O('no', '"난 안 해" 하고 링크를 안 누른다', '아무 일 없음 · 분위기에 못 낀다', ['safe', 'self']),
+        O('tell', '불법 도박 사이트라고 담임께 알린다', '친구들을 막을 수도 · "고자질"로 찍힌다', ['kind', 'self']),
+      ]);
+      if (o.id === 'try') { s.flags.gambling = 1; if (r.chance(0.6)) { inc(s, 'mental', 4); inc(s, 'lazy', 5); L(s, '만 원이 7만 원이 됐다. 심장이 뛰었다. 그날 밤 세 번 더 들어갔다.', 'warn'); } else { inc(s, 'mental', -3); L(s, '만 원이 3분 만에 사라졌다. "본전은 찾아야지"라는 생각이 들었다.', 'warn'); } }
+      if (o.id === 'no') { inc(s, 'social', -2); L(s, '링크를 누르지 않았다. 다음 날 쉬는 시간, 걔들끼리 모여 폰을 본다.'); }
+      if (o.id === 'tell') { inc(s, 'social', -9); inc(s, 'mental', 2); s.record += 1; L(s, '학교에 교육이 들어왔고 몇 명은 상담을 받았다. 단톡방에서 나는 조용히 강퇴됐다.'); }
+    } },
+  { id: 'gambleDebt', w: s => (s.flags.gambling ? 4 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '50만 원',
+        `두 달 만에 용돈과 세뱃돈이 다 들어갔고, 사이트 "대리 충전"으로 50만 원 빚이 생겼다. 단톡방 아는 형이 "이자 하루 1만 원"이라고 했다. 밤에 잠이 안 온다.`, [
+        O('confess', `${pw}께 전부 털어놓는다`, '빚은 끝난다 · 신뢰가 바닥까지 떨어진다', ['self', 'kind']),
+        O('borrow', '친구들에게 조금씩 빌려 막는다', '당장은 넘어감 · 빚이 사람 관계로 번진다', ['risk', 'social']),
+        O('bet', '한 번 크게 걸어 만회한다', '운 좋으면 끝 · 대부분 빚이 네 배가 된다', ['fun', 'risk']),
+        O('sell', '물건을 팔거나… 돈 될 걸 찾는다', '빚은 갚는다 · 선을 넘기 직전', ['rebel', 'risk']),
+      ]);
+      if (o.id === 'confess') { s.flags.gambling = 0; s.money -= 6; inc(s, 'parentRel', -14); inc(s, 'mental', 6); L(s, `${pw}${jo(pw, '이/가')} 말없이 계좌이체를 했다. 그날 밤 거실에서 우는 소리가 들렸다. 사이트는 그날로 지웠다.`, 'warn'); }
+      if (o.id === 'borrow') { s.flags.gambling = 2; s.flags.owedFavor = true; inc(s, 'social', -6); L(s, '친구 다섯 명에게 5만 원씩 빌렸다. "이번 달에 꼭 갚을게." 못 갚았다.', 'bad'); }
+      if (o.id === 'bet') { if (r.chance(0.2)) { s.flags.gambling = 1; inc(s, 'mental', 6); inc(s, 'lazy', 8); L(s, '땄다. 빚을 갚고도 20만 원이 남았다. 그래서 더 위험해졌다 — 멈출 이유가 사라졌다.', 'warn'); } else { s.flags.gambleSpiral = true; inc(s, 'mental', -12); inc(s, 'lazy', 10); s.zC -= 0.08; L(s, '빚이 200만 원이 됐다. 수업 시간에도 결과창만 새로고침한다.', 'bad'); } }
+      if (o.id === 'sell') { s.flags.theftPlan = true; inc(s, 'mental', -6); L(s, '에어팟과 패딩을 중고로 팔았다. 아직 모자란다.', 'bad'); }
+    } },
+  { id: 'gambleSpiral', w: s => (s.flags.gambleSpiral ? 4 : s.flags.gambling === 2 ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '독촉',
+        `모르는 번호로 하루 열 통씩 전화가 온다. "학교로 찾아간다." 집 앞에 낯선 성인이 서 있던 날, 결국 일이 커졌다. 학교에 알려졌고 선도위원회가 열린다.`, [
+        O('parent', `${pw}과 함께 경찰에 신고하고 해결한다`, '사채는 불법이라 갚지 않아도 된다 · 집이 뒤집힌다', ['self', 'kind']),
+        O('run', '집을 나간다', '마주하지 않음 · 모든 게 더 나빠진다', ['rebel', 'risk']),
+      ]);
+      s.flags.discipline = true; s.record = Math.max(0, s.record - 6); s.zN -= 0.1; s.flags.gambling = 0; s.flags.gambleSpiral = false;
+      if (o.id === 'parent') { inc(s, 'parentRel', -18); inc(s, 'mental', -8); L(s, '경찰에 신고했고 사이트 운영자는 잡혔다. 선도위원회에서 교내봉사 10시간. 부모님은 한 달 동안 나를 똑바로 보지 않았다.', 'bad'); }
+      if (o.id === 'run') { s.flags.runaway = true; inc(s, 'parentRel', -25); inc(s, 'mental', -15); s.zC -= 0.1; inc(s, 'lazy', 10); L(s, '친구 집, PC방, 찜질방을 전전했다. 열흘 만에 경찰이 찾아 데려왔다.', 'bad'); }
+    } },
+  { id: 'theft', w: s => (s.flags.theftPlan ? 5 : (s.friendGroup === 'party' ? 0.45 : 0.15)) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '무인 매장',
+        `${s.flags.theftPlan ? '빚 때문에 머리가 멍하다. ' : ''}밤 11시, 무인 아이스크림 가게. 친구가 과자 두 봉지를 가방에 넣으며 웃는다. "CCTV 고장 났대. 다들 그냥 가져가." 계산대 옆엔 '절도는 범죄입니다' 스티커가 붙어 있다.`, [
+        O('do', '나도 몇 개 넣는다', '별것 아닌 것 같다 · 걸리면 경찰·학교·부모님', ['rebel', 'risk']),
+        O('no', '내 건 계산한다', '아무 일 없음 · 친구가 "쫄보"라고 한다', ['safe', 'self']),
+        O('watch', '말리지도 끼지도 않는다', '중간 · CCTV에는 같이 찍힌다', ['safe']),
+      ]);
+      if (o.id === 'do') { if (r.chance(0.55)) { s.flags.discipline = true; inc(s, 'parentRel', -20); inc(s, 'mental', -12); inc(s, 'social', -8); s.record = Math.max(0, s.record - 5); L(s, 'CCTV는 고장 나지 않았다. 사장이 학교로 연락했고, 경찰서에서 부모님이 데리러 왔다. 교내봉사 처분. 초범이라 기록은 남지 않았지만, 부모님 눈빛은 남았다.', 'bad'); } else { inc(s, 'mental', -5); inc(s, 'lazy', 3); s.flags.theftPlan = false; L(s, '걸리지 않았다. 과자는 맛이 없었다.', 'warn'); } }
+      if (o.id === 'no') { inc(s, 'social', -3); s.flags.theftPlan = false; L(s, '내 것만 계산했다. 다음 날 친구들은 아무 일 없었다는 듯 웃었다.'); }
+      if (o.id === 'watch') { if (r.chance(0.2)) { inc(s, 'parentRel', -8); inc(s, 'mental', -6); L(s, '같이 찍힌 CCTV 때문에 학교에 불려 갔다. 안 가져갔다는 걸 증명하는 데 일주일이 걸렸다.', 'bad'); } else L(s, '그 자리에 있었다는 게 찝찝했다.'); }
+    } },
+  { id: 'pcAddict', w: s => ((hasHobby(s, 'game') && s.lazy >= 42 ? 2.4 : s.lazy >= 58 ? 1.2 : 0)) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '새벽 4시, PC방',
+        `이번 주만 세 번째 밤샘이다. 1교시는 엎드려 자고, 지각이 벌써 일곱 번. 담임 선생님이 "미인정 지각이 더 쌓이면 출결에 남는다"고 했다. 게임을 끄면 손이 허전하고, 켜면 시간이 사라진다.`, [
+        O('quit', '계정을 지우고 PC방 출입을 끊는다', '가장 확실함 · 처음 2주가 지옥', ['study', 'self']),
+        O('weekend', '주말에만 하기로 정한다', '현실적인 타협 · 지키기가 쉽지 않다', ['safe']),
+        O('go', '어차피 공부는 글렀다. 계속한다', '지금은 편함 · 출결·성적이 무너진다', ['fun']),
+      ]);
+      if (o.id === 'quit') { inc(s, 'lazy', -14); inc(s, 'mental', -4); inc(s, 'health', 6); L(s, '첫 주는 손이 떨렸다. 셋째 주부터 아침에 눈이 떠졌다.', 'good'); }
+      if (o.id === 'weekend') { if (r.chance(0.5 + (s.p.diligence - 3) * 0.12)) { inc(s, 'lazy', -5); L(s, '주말 규칙을 지켰다. 평일 밤이 길어졌다.'); } else { inc(s, 'lazy', 5); s.zC -= 0.03; L(s, '"오늘만"이 매일이 됐다.', 'warn'); } }
+      if (o.id === 'go') { inc(s, 'lazy', 12); s.zC -= 0.08; s.zN -= 0.08; s.flags.lateHabit = true; inc(s, 'health', -8); L(s, '미인정 지각 15회, 결석 3회가 생기부 출결에 남았다. 교과 전형에서 출결 감점을 받는 대학이 많다.', 'bad'); }
+    } },
+  { id: 'gameSpend', w: s => (hasHobby(s, 'game') && s.p.impulse >= 3 ? 1.1 : 0.3), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '결제 문자',
+        `${pw} 폰에 "결제 완료 59,000원"이 떴다. 이번 달에 여섯 번째. 게임 뽑기에 쓴 돈이 모두 합쳐 60만 원이 넘는다. ${pw}${jo(pw, '이/가')} 카드 명세서를 들고 방문을 열었다.`, [
+        O('confess', '사실대로 말하고 갚겠다고 한다', '신뢰는 지킨다 · 폰을 뺏길 수 있다', ['self', 'kind']),
+        O('lie', '"해킹당한 것 같다"고 한다', '오늘은 넘어감 · 들키면 거짓말까지 더해진다', ['fun', 'risk']),
+      ]);
+      if (o.id === 'confess') { inc(s, 'parentRel', -8); s.money -= 6; inc(s, 'lazy', -4); L(s, '석 달 동안 용돈이 끊겼다. 뽑기는 그 뒤로 안 했다.'); }
+      if (o.id === 'lie') { if (r.chance(0.55)) { inc(s, 'parentRel', -18); s.flags.liar = true; inc(s, 'mental', -6); L(s, `카드사에 확인한 ${pw}${jo(pw, '이/가')} 결제 기기 정보를 보여 줬다. 내 폰이었다.`, 'bad'); } else { inc(s, 'mental', -3); L(s, '넘어갔다. 카드는 정지됐고, 거짓말이 하나 쌓였다.', 'warn'); } }
+    } },
+  { id: 'smoke', w: s => (s.friendGroup === 'party' ? 1.5 : 0.4) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '학교 뒤 골목',
+        `점심시간, 학교 뒤 골목. 친구가 전자담배를 내민다. "이거 냄새 안 나. 선생님도 몰라." 멀리서 학생부 선생님이 순찰을 도는 게 보인다.`, [
+        O('yes', '한 모금 빤다', '어울림 · 걸리면 선도 조치, 습관이 되면 끊기 어렵다', ['fun', 'social', 'risk']),
+        O('no', '"난 됐어" 하고 교실로 간다', '아무 일 없음 · 그 무리에서 조금 멀어진다', ['safe', 'self']),
+      ]);
+      if (o.id === 'yes') { inc(s, 'health', -4); inc(s, 'lazy', 3); if (r.chance(0.3)) { s.flags.discipline = true; s.record = Math.max(0, s.record - 4); inc(s, 'parentRel', -10); L(s, '학생부에 적발됐다. 금연 교육 8시간, 부모님 호출. 생기부 행동특성란에 한 줄이 들어갈 뻔했다.', 'bad'); } else { s.flags.smoker = true; L(s, '안 걸렸다. 그 뒤로 점심시간마다 골목에 간다.', 'warn'); } }
+      if (o.id === 'no') { inc(s, 'social', -3); L(s, '교실로 돌아왔다. 그 애들과는 조금 멀어졌다.'); }
+    } },
+  { id: 'runaway', w: s => (s.parentRel < 32 && s.turnIdx <= 8 && !s.flags.runaway ? 2.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '현관문',
+        `${pw}${jo(pw, '와/과')} 또 싸웠다. "너 같은 애 키우려고 내가…"에서 뭔가 끊어졌다. 밤 11시, 패딩을 집어 들고 현관문을 나왔다. 폰 배터리 40%. 갈 데가 없다.`, [
+        O('friend', s.bestFriend ? `${s.bestName}네 집에서 이틀 지낸다` : '친구 집에서 이틀 지낸다', '숨을 돌린다 · 돌아가면 더 큰 싸움', ['rebel', 'social']),
+        O('walk', '밤새 걷다가 새벽에 들어간다', '아무도 모른다 · 아무것도 해결되지 않는다', ['safe']),
+        O('leave', '진짜 나간다. 알바하며 혼자 산다', '독립 · 학교와 입시가 통째로 흔들린다', ['rebel', 'risk']),
+      ]);
+      if (o.id === 'friend') { s.flags.runaway = true; s.zN -= 0.05; inc(s, 'mental', -4); if (s.p.pStyle === 'warm' || s.p.pStyle === 'anxious' || r.chance(0.4)) { inc(s, 'parentRel', 8); L(s, `이틀 뒤 ${pw}${jo(pw, '이/가')} 친구 집 앞에 와 있었다. 아무 말 없이 같이 걸어 돌아왔다. 그날 처음으로 길게 이야기했다.`); } else { inc(s, 'parentRel', -8); L(s, '돌아간 집은 더 차가웠다. "나갈 거면 아예 나가라"는 말을 들었다.', 'bad'); } }
+      if (o.id === 'walk') { inc(s, 'mental', -6); inc(s, 'health', -4); L(s, '편의점 앞 벤치에서 해 뜨는 걸 봤다. 집에 들어가니 아무도 깨어 있지 않았다.', 'warn'); }
+      if (o.id === 'leave') { s.flags.runaway = true; s.flags.work = true; inc(s, 'parentRel', -25); s.zN -= 0.2; s.zC -= 0.12; inc(s, 'lazy', 8); s.money += 10; inc(s, 'mental', -10); L(s, '고시원 월세 35만 원, 편의점 야간 알바. 학교는 가다 말다 했다.', 'bad'); }
+    } },
+  { id: 'brawl', w: s => ((s.friendGroup === 'party' ? 1.3 : 0.5) + (s.p.impulse - 3) * 0.25) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '급식실 앞',
+        `급식 줄에서 옆 반 애가 어깨를 치고 지나갔다. "뭘 봐?" 주변에서 "오오" 소리가 난다. 걔가 먼저 밀었다. 학폭 조치는 생기부에 기재되고, 학종은 물론 2026학년도부터는 정시에서도 반영된다는 걸 머리로는 안다.`, [
+        O('punch', '주먹이 먼저 나간다', '속은 시원함 · 학폭위, 생기부 기재', ['rebel', 'risk']),
+        O('words', '밀치지 않고 말로 받아친다', '선을 안 넘음 · 쌍방으로 신고당할 수도', ['safe', 'self']),
+        O('leave', '자리를 뜬다', '아무 일 없음 · "쫄았다"는 말이 돈다', ['safe']),
+      ]);
+      if (o.id === 'punch') { const heavy = r.chance(0.6); s.flags.violence = heavy ? 2 : 1; s.record = Math.max(0, s.record - (heavy ? 12 : 6)); inc(s, 'parentRel', -14); inc(s, 'mental', -8); inc(s, 'social', heavy ? -6 : 2); L(s, heavy ? '상대가 코뼈에 금이 갔다. 학폭위에서 출석정지 5일(6호). 생기부에 기재됐다. 학종은 사실상 닫혔고 교과·정시도 감점이다. 치료비 180만 원.' : '학폭위에서 서면사과(1호) 처분. 졸업과 동시에 삭제되는 조치지만, 담임의 눈빛이 달라졌다.', 'bad'); }
+      if (o.id === 'words') { if (r.chance(0.3)) { s.flags.violence = 1; s.record = Math.max(0, s.record - 4); inc(s, 'mental', -6); L(s, '걔 부모가 "언어폭력"으로 신고했다. 쌍방 학폭위. 서면사과 처분을 받았다. 억울했다.', 'bad'); } else { inc(s, 'mental', 2); L(s, '"너 지금 밀었다. 선생님 부른다." 걔가 먼저 물러섰다.'); } }
+      if (o.id === 'leave') { inc(s, 'social', -4); inc(s, 'mental', -3); L(s, '자리를 떴다. 며칠 동안 "쫄보"라는 말이 들렸다. 일주일 뒤엔 아무도 기억하지 않았다.'); }
+    } },
+  { id: 'bullyWitness', w: s => (s.turnIdx <= 8 ? 1.0 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '뒷자리의 일',
+        `반에서 조용한 애 하나가 표적이 됐다. 체육복이 변기에 들어가 있었고, 단톡방엔 그 애 사진으로 만든 짤이 돈다. 다들 웃는다. 그 애는 요즘 급식을 안 먹는다.`, [
+        O('report', '담임·117에 알린다', '멈출 수 있다 · "고자질"로 찍히고 보복이 있을 수도', ['kind', 'self']),
+        O('side', '그 애 옆에 가서 같이 밥을 먹는다', '한 사람이 생긴다 · 나도 표적이 될 수 있다', ['kind', 'social']),
+        O('ignore', '모른 척한다', '안전함 · 밤에 떠오른다', ['safe']),
+        O('laugh', '분위기 맞춰 같이 웃는다', '무리에 낀다 · 가해자로 지목될 수 있다', ['fun', 'social']),
+      ]);
+      if (o.id === 'report') { inc(s, 'mental', 5); s.record += 3; if (r.chance(0.3)) { inc(s, 'social', -10); inc(s, 'mental', -8); L(s, '신고한 게 알려졌다. 한동안 내 책상에도 낙서가 생겼다.', 'bad'); } else { inc(s, 'social', -3); L(s, '학폭위가 열렸고 가해자들은 분리됐다. 그 애가 복도에서 작게 "고마워"라고 했다.', 'good'); } }
+      if (o.id === 'side') { inc(s, 'mental', 6); if (r.chance(0.25)) { inc(s, 'social', -8); L(s, '나도 표적이 됐다. 그래도 둘이라서 버틸 만했다.', 'warn'); } else { inc(s, 'social', 3); s.flags.friendForever = true; L(s, '그 애와 지금도 연락한다.', 'good'); } }
+      if (o.id === 'ignore') { inc(s, 'mental', -5); L(s, '모른 척했다. 그 애는 학기 중에 전학 갔다.', 'warn'); }
+      if (o.id === 'laugh') { inc(s, 'social', 3); if (r.chance(0.25)) { s.flags.violence = 1; s.record = Math.max(0, s.record - 6); inc(s, 'parentRel', -10); inc(s, 'mental', -8); L(s, '피해 학생 진술서에 내 이름이 있었다. "같이 웃었다." 학폭위에서 서면사과 처분. 생기부에 남았다.', 'bad'); } else L(s, '웃었다. 그 애 얼굴이 가끔 떠오른다.', 'warn'); }
+    } },
+  { id: 'snsBully', w: s => (s.p.social >= 3 ? 0.7 : 0.4), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '저격 글',
+        `익명 커뮤니티에 내 얘기가 올라왔다. 이름은 없지만 다 알 수 있는 내용. 댓글 40개. "걔 원래 그래." 누가 썼는지 짐작은 간다.`, [
+        O('capture', '캡처해 두고 담임·학폭 신고', '사이버폭력도 학폭이다 · 시간이 걸린다', ['self']),
+        O('confront', '쓴 애한테 직접 간다', '속은 시원함 · 싸움으로 번질 수 있다', ['rebel', 'risk']),
+        O('ignore', '무시한다', '시간이 지나면 묻힌다 · 밤마다 새로고침하게 된다', ['safe']),
+      ]);
+      if (o.id === 'capture') { if (r.chance(0.6)) { inc(s, 'mental', 6); L(s, '게시글은 삭제됐고 쓴 학생은 서면사과했다.', 'good'); } else { inc(s, 'mental', -4); L(s, '"특정이 어렵다"고 했다. 글은 그대로 남았다.', 'warn'); } }
+      if (o.id === 'confront') { if (r.chance(0.35)) { s.flags.violence = 1; s.record = Math.max(0, s.record - 4); inc(s, 'mental', -8); L(s, '복도에서 멱살을 잡았다. 쌍방 학폭위. 서면사과 처분을 받았다.', 'bad'); } else { inc(s, 'mental', 3); inc(s, 'social', 2); L(s, '"네가 썼지." 걔가 글을 지웠다.'); } }
+      if (o.id === 'ignore') { inc(s, 'mental', -7); inc(s, 'lazy', 3); L(s, '무시했다. 그래도 매일 밤 댓글을 확인했다.', 'warn'); }
+    } },
+  { id: 'teacherClash', w: s => (s.p.impulse >= 3 ? 1.0 : 0.4), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '압수된 폰',
+        `수업 중 폰을 보다 걸렸다. 선생님이 폰을 가져가며 "종례 때 찾아가"라고 했다. 반 애들이 다 보고 있다. 억울한 건, 옆자리 애는 아까부터 보고 있었다는 거다.`, [
+        O('sorry', '"죄송합니다" 하고 넘어간다', '끝 · 억울함은 남는다', ['safe', 'obey']),
+        O('argue', '"왜 저만요?" 하고 따진다', '할 말은 함 · 벌점, 행동특성란이 달라진다', ['rebel']),
+        O('later', '종례 뒤 따로 가서 차분히 말한다', '어른스럽다 · 당장은 참아야 한다', ['self', 'kind']),
+      ]);
+      if (o.id === 'sorry') L(s, '종례 때 폰을 돌려받았다. 옆자리 애는 끝까지 안 걸렸다.');
+      if (o.id === 'argue') { s.record = Math.max(0, s.record - 5); inc(s, 'mental', -3); s.flags.teacherBad = true; L(s, '"지금 선생님한테 대드는 거니?" 벌점 5점. 그 선생님이 담임이었다. 행동특성란에 "교사와의 관계에서 다소 감정적" 한 줄이 들어갔다.', 'bad'); }
+      if (o.id === 'later') { s.record += 2; inc(s, 'mental', 2); L(s, '종례 뒤 교무실. "선생님, 아까 저만 걸린 건 억울했어요. 그래도 제가 본 건 맞아요." 선생님이 웃었다.', 'good'); }
+    } },
+  { id: 'lateHabit', w: s => (s.lazy >= 50 && !s.flags.lateHabit ? 1.4 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '지각 9회',
+        `담임 선생님이 출결 화면을 보여 줬다. 미인정 지각 9회, 조퇴 2회. "10회 넘으면 교과 전형 출결 감점이고, 학종 서류에서도 성실성으로 읽혀. 이번 학기 안에 끊어."`, [
+        O('fix', '알람 세 개, 밤 12시 취침을 지킨다', '습관을 바꾼다 · 처음 2주가 힘들다', ['study', 'self']),
+        O('same', '어차피 아침잠은 못 이긴다', '편함 · 출결이 생기부에 남는다', ['fun']),
+      ]);
+      if (o.id === 'fix') { inc(s, 'lazy', -8); inc(s, 'health', 4); L(s, '첫 주는 지각 1회. 둘째 주부터 0회.', 'good'); }
+      if (o.id === 'same') { s.flags.lateHabit = true; s.zN -= 0.05; s.record = Math.max(0, s.record - 4); L(s, '학기 말 미인정 지각 17회. 생기부 출결란에 그대로 찍혔다.', 'bad'); }
+    } },
+  { id: 'motorbike', w: s => (s.money < 25 && s.turnIdx >= 3 && s.turnIdx <= 8 ? 1.2 : 0.2), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '배달 알바 제안',
+        `동네 형이 "배달 알바 할래? 하루 4시간에 6만 원"이라고 한다. 오토바이는 빌려준단다. 면허는 원동기 면허가 있으면 된다고. 편의점 알바는 시급 1만 원이다.`, [
+        O('bike', '배달을 한다', '돈이 빨리 모인다 · 사고 위험, 밤이 짧아진다', ['work', 'risk']),
+        O('store', '편의점 알바를 한다', '안전함 · 시간당 돈은 적다', ['work', 'safe']),
+        O('no', '지금은 공부에 집중한다', '시간을 지킴 · 용돈이 늘 모자라다', ['study']),
+      ]);
+      if (o.id === 'bike') { s.money += 18; s.flags.work = true; s.zC -= 0.04; inc(s, 'health', -4); if (r.chance(0.12)) { inc(s, 'health', -25); inc(s, 'mental', -10); s.zN -= 0.1; L(s, '빗길 코너에서 미끄러졌다. 쇄골 골절, 입원 2주. 번 돈은 치료비로 다 나갔다.', 'bad'); } else L(s, '한 달에 100만 원 넘게 벌었다. 수업 시간엔 졸았다.'); }
+      if (o.id === 'store') { s.money += 8; s.flags.work = true; s.zC -= 0.02; L(s, '주말 편의점 알바. 돈은 적지만 손님 없는 새벽엔 단어장을 외웠다.'); }
+      if (o.id === 'no') L(s, '거절했다. 용돈은 여전히 빠듯하다.');
+    } },
+  { id: 'drinkParty', w: s => (s.friendGroup === 'party' ? 1.3 : 0.3) * expo(s), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '생일 파티',
+        `친구 생일. 부모님 없는 집에서 모인다는데, 술이 있을 거라고 한다. ${s.romance.status === 'dating' ? `${s.romance.partner}도 온다.` : ''} 내일은 학교 가는 날이다.`, [
+        O('go', '간다. 끝까지 논다', '추억 · 신고가 들어오면 경찰·부모님', ['fun', 'social', 'risk']),
+        O('early', '얼굴만 비추고 10시에 나온다', '적당히 · 분위기 깨는 애가 된다', ['social', 'safe']),
+        O('no', '안 간다', '아무 일 없음 · 다음 날 대화에 못 낀다', ['study', 'safe']),
+      ]);
+      if (o.id === 'go') { inc(s, 'social', 6); inc(s, 'mental', 3); inc(s, 'lazy', 4); s.zN -= 0.02; if (r.chance(0.2)) { s.flags.discipline = true; inc(s, 'parentRel', -12); inc(s, 'mental', -6); L(s, '이웃 신고로 경찰이 왔다. 새벽 1시에 부모님이 지구대로 데리러 왔다. 학교에도 통보됐다.', 'bad'); } else L(s, '새벽 2시에 들어왔다. 다음 날 1교시부터 4교시까지 잤다.'); }
+      if (o.id === 'early') { inc(s, 'social', 2); L(s, '10시에 나왔다. 단톡방은 새벽 3시까지 울렸다.'); }
+      if (o.id === 'no') { inc(s, 'social', -3); inc(s, 'lazy', -1); L(s, '안 갔다. 다음 날 걔들끼리만 아는 얘기가 하루 종일 돌았다.'); }
+    } },
+  { id: 'depression', w: s => (s.mental <= 36 ? 2.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s), warm = s.p.pStyle === 'warm';
+      const o = choose(ctx, key, '아무것도 하기 싫다',
+        `2주째 아침에 일어나는 게 힘들다. 좋아하던 것도 재미가 없고, 이유 없이 눈물이 난다. 성적 때문이 아니라 그냥 다 무겁다. 보건 선생님이 "이건 의지 문제가 아니라 치료 문제"라고 했다.`, [
+        O('help', '위클래스·정신건강의학과 상담을 받는다', '회복이 시작된다 · 용기가 필요하다', ['self', 'kind']),
+        O('parent', `${pw}께 지금 상태를 말한다`, '혼자가 아니게 된다 · 반응은 부모님에 달렸다', ['kind']),
+        O('alone', '혼자 버틴다. 티 안 낸다', '아무도 모른다 · 더 깊어질 수 있다', ['safe']),
+      ]);
+      if (o.id === 'help') { inc(s, 'mental', 16); inc(s, 'stress', -10); L(s, '상담과 약을 시작했다. 한 달 뒤, 아침에 일어나는 게 조금 덜 무거웠다.', 'good'); }
+      if (o.id === 'parent') { if (warm || s.p.pStyle === 'anxious') { inc(s, 'mental', 11); inc(s, 'parentRel', 8); L(s, `${pw}${jo(pw, '이/가')} 다음 날 바로 병원을 예약했다. "진작 말하지." 그 말에 울었다.`, 'good'); } else { inc(s, 'mental', 2); inc(s, 'parentRel', -3); L(s, '"다들 힘들어. 정신력 문제야." 더 말하지 않았다.', 'warn'); } }
+      if (o.id === 'alone') { inc(s, 'mental', -8); inc(s, 'lazy', 6); if (r.chance(0.4)) { s.zC -= 0.1; s.zN -= 0.08; L(s, '한 학기가 통째로 비었다. 책상에 앉아 있었지만 아무것도 남지 않았다.', 'bad'); } else L(s, '어떻게든 버텼다. 지금도 그 시기를 떠올리면 가슴이 답답하다.', 'warn'); }
+    } },
+  { id: 'fakeGrade', w: s => ((s.p.pStyle === 'strict' || s.p.pStyle === 'anxious') && s.naesinRec.length >= 2 && s.naesinRec[s.naesinRec.length - 1] > s.naesinRec[s.naesinRec.length - 2] + 5 ? 1.3 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, pw = parentWord(s);
+      const o = choose(ctx, key, '성적표',
+        `성적표가 나왔다. 지난 학기보다 떨어졌다. ${pw}${jo(pw, '은/는')} "성적표 나오면 바로 보여 줘"라고 했다. 가방 안에서 종이가 구겨진다.`, [
+        O('show', '그대로 보여 드린다', '혼나지만 끝난다 · 학원이 늘 수도', ['self', 'kind']),
+        O('hide', '"아직 안 나왔어요"라고 한다', '당장은 피함 · 학교 알림으로 들통난다', ['fun', 'risk']),
+      ]);
+      if (o.id === 'show') { inc(s, 'parentRel', -4); inc(s, 'stress', 5); const k = SUB_KEYS.reduce((w, k) => (s.sub[k] < s.sub[w] ? k : w), 'kor'); if (s.money > 20 && r.chance(0.5) && (s.acad[k] === 'none' || s.acad[k] === 'online')) { s.acad[k] = 'managed'; L(s, `그날 밤 ${SUBJ_NAME[k]} 관리형 학원이 등록됐다.`); } else L(s, '한참 혼났다. 다음 날 아침엔 평소처럼 밥을 차려 주셨다.'); }
+      if (o.id === 'hide') { if (r.chance(0.65)) { inc(s, 'parentRel', -18); s.flags.liar = true; inc(s, 'mental', -6); L(s, '학교 알림 앱으로 성적이 먼저 갔다. 거짓말이 성적보다 더 큰 문제가 됐다.', 'bad'); } else { inc(s, 'mental', -3); L(s, '넘어갔다. 다음 성적표가 더 무서워졌다.', 'warn'); } }
+    } },
+  // ── 학원: 방향을 잡아 주는 사람 ─────────────────────────
+  { id: 'lostDirection', w: s => (noAcademy(s) && s.turnIdx >= 2 && s.turnIdx <= 8 ? 1.9 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, g = mockGrades(s.sub), weak = SUB_KEYS.reduce((w, k) => (g[k] > g[w] ? k : w), 'kor');
+      const o = choose(ctx, key, '혼자 공부의 벽',
+        `석 달째 ${SUBJ_NAME[weak]} 성적이 그대로다. 문제집은 세 권째인데 틀리는 데서 계속 틀린다. 뭐가 문제인지 봐 줄 사람이 없다. 인터넷엔 "이 방법이 정답"이라는 글이 서로 다른 말을 한다.`, [
+        O('director', `${SUBJ_NAME[weak]} 원장 직강 소규모 학원에 상담을 간다`, '약점을 짚어 준다 · 학원비', ['study', 'safe']),
+        O('managed', `${SUBJ_NAME[weak]} 관리형 학원에 등록한다`, '시간을 잡아 준다 · 학원비', ['study', 'obey']),
+        O('online', '인강 커리큘럼을 처음부터 따라간다', '돈이 덜 든다 · 완강할 수 있을까', ['self', 'safe']),
+        O('alone', '내 방식대로 계속 밀고 간다', '돈 안 듦 · 같은 자리를 맴돌 수 있다', ['self', 'risk']),
+      ]);
+      if (o.id === 'director') { s.acad[weak] = 'director'; s.sub[weak] += 0.06; L(s, `레벨테스트를 채점한 원장님이 틀린 문제 다섯 개를 묶어 보여 줬다. "다 같은 이유야." 석 달 동안 못 본 걸 10분 만에 봤다.`, 'good'); }
+      if (o.id === 'managed') { s.acad[weak] = 'managed'; s.sub[weak] += 0.03; inc(s, 'lazy', -4); L(s, '매일 자습 시간이 생겼다. 방향은 여전히 내가 찾아야 하지만 시간은 확보됐다.'); }
+      if (o.id === 'online') { s.acad[weak] = 'online'; if (s.p.diligence >= 4) { s.sub[weak] += 0.04; L(s, '완강했다. 커리큘럼대로 가니 구멍이 보였다.'); } else { L(s, '3강까지 듣고 멈췄다. 결제 내역만 남았다.', 'warn'); } }
+      if (o.id === 'alone') { s.sub[weak] -= 0.05; inc(s, 'lazy', 3); L(s, `한 학기가 더 지났다. ${SUBJ_NAME[weak]}${jo(SUBJ_NAME[weak], '은/는')} 그대로였다.`, 'bad'); }
+    } },
+  { id: 'directorCare', w: s => (hasDirector(s) && (s.mental <= 42 || s.stress >= 62 || (s.mocks.length >= 2 && s.mocks[s.mocks.length - 1] > s.mocks[s.mocks.length - 2] + 4)) ? 2.6 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, k = SUB_KEYS.find(k => s.acad[k] === 'director') || 'kor';
+      const o = choose(ctx, key, '원장실',
+        `수업이 끝나고 원장님이 불렀다. "요즘 눈빛이 다르다. 무슨 일 있어?" 성적 얘기가 아니었다. 30분 동안 내 얘기를 들었다. 그리고 ${SUBJ_NAME[k]} 공부 계획을 처음부터 다시 짜 줬다.`, [
+        O('open', '솔직하게 털어놓는다', '마음이 가벼워지고 계획이 생긴다 · 부끄럽다', ['self', 'kind']),
+        O('fine', '"괜찮아요" 하고 넘긴다', '편함 · 기회를 놓친다', ['safe']),
+      ]);
+      if (o.id === 'open') { inc(s, 'mental', 10); inc(s, 'stress', -8); s.sub[k] += 0.05; inc(s, 'lazy', -4); L(s, '원장님이 부모님과도 통화했다. 집 분위기가 조금 달라졌다. 계획표대로 2주를 보내니 다시 문제가 풀렸다.', 'good'); if (s.p.pStyle === 'strict' || s.p.pStyle === 'anxious') inc(s, 'parentRel', 5); }
+      if (o.id === 'fine') { inc(s, 'mental', 2); L(s, '"그래, 힘들면 언제든 와." 그 말이 묘하게 남았다.'); }
+    } },
+  { id: 'acadFriend', w: s => (SUB_KEYS.some(k => s.acad[k] === 'managed' || s.acad[k] === 'director' || s.acad[k] === 'group') && s.turnIdx <= 8 ? 1.1 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s;
+      const o = choose(ctx, key, '학원 자습실의 그 애',
+        `학원 자습실 옆자리에 다른 학교 애가 앉는다. 매일 밤 10시까지 있다. 쉬는 시간에 틀린 문제를 서로 물어보기 시작했다. 학교 친구들과는 다른 종류의 친구다.`, [
+        O('study', '매일 같이 남아 공부하는 사이가 된다', '서로 끌어올림 · 학교 친구와 멀어진다', ['study', 'social']),
+        O('casual', '가끔 묻는 정도로 둔다', '부담 없음 · 큰 변화는 없다', ['safe']),
+      ]);
+      if (o.id === 'study') { s.zC += 0.05; inc(s, 'lazy', -6); inc(s, 'mental', 4); inc(s, 'social', 2); s.flags.studyGroup = true; L(s, '자습실 라이벌이 생겼다. 걔가 남아 있으면 나도 못 일어난다.', 'good'); }
+      if (o.id === 'casual') { s.zC += 0.01; L(s, '가끔 문제를 묻는 사이로 남았다.'); }
+    } },
+  // ── 예체능 ─────────────────────────────────────────
+  { id: 'artsContest', w: s => (artsField(s) && s.turnIdx <= 8 ? 1.7 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, af = artsField(s), tk = FIELDS[af].talent, tl = s.talent[tk];
+      const nm = { art: '전국 학생 미술 공모전', perf: '청소년 음악 콩쿠르', sport: '시도 학생체육대회' }[af];
+      const o = choose(ctx, key, nm,
+        `${nm} 공고가 붙었다. ${s.artsAcad !== 'none' ? '학원 선생님은 "지금 실력이면 해 볼 만하다"고 했다.' : '봐 줄 사람이 없어 내 실력이 어디쯤인지 모르겠다.'} 준비하려면 한 달은 교과 공부를 접어야 한다. 입상하면 생기부와 포트폴리오에 남는다.`, [
+        O('go', '출전한다', '입상하면 큰 자산 · 떨어지면 한 달이 날아간다', ['self', 'risk']),
+        O('skip', '이번엔 넘어간다', '교과 공부 유지 · 경험을 쌓을 기회를 놓친다', ['safe', 'study']),
+      ]);
+      if (o.id === 'go') { s.zC -= 0.03; const P = clamp((tl - 55) / 45 + (s.artsAcad === 'ipsi' ? 0.12 : 0), 0.05, 0.85); if (r.chance(P)) { s.record += 9; s.talent[tk] = clamp(tl + 3, 5, 100); inc(s, 'mental', 10); s.flags.award = (s.flags.award || 0) + 1; L(s, `${nm} 입상! 처음으로 내 이름이 상장에 적혔다.`, 'good'); } else { inc(s, 'mental', -6); s.talent[tk] = clamp(tl + 1, 5, 100); L(s, '예선 탈락. 심사평은 "기본기는 있으나 완성도 부족". 한 달이 아까웠다.', 'bad'); } }
+      if (o.id === 'skip') L(s, '이번엔 넘어갔다. 입상한 애들 사진이 학교 게시판에 붙었다.');
+    } },
+  { id: 'artsSlump', w: s => (artsField(s) && (s.artsSem || 0) >= 2 ? 1.3 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, af = artsField(s), tk = FIELDS[af].talent;
+      const o = choose(ctx, key, '슬럼프',
+        `${{ art: '그리는 것마다 마음에 안 든다. 한 달 전 그림이 더 나은 것 같다.', perf: '연습할수록 소리가 이상하다. 녹음을 들으면 지우고 싶다.', sport: '기록이 두 달째 제자리다. 몸이 무겁다.' }[af]} 실기 하는 애들은 다 겪는다는데, 내 것만 끝이 없는 것 같다.`, [
+        O('rest', '일주일 완전히 쉰다', '머리가 비워진다 · 감이 조금 떨어진다', ['rest']),
+        O('push', '더 많이 한다. 양으로 뚫는다', '뚫리면 한 단계 오른다 · 번아웃 위험', ['study', 'risk']),
+        O('teacher', s.artsAcad !== 'none' ? '선생님께 지금 상태를 보여 주고 처방을 받는다' : '유튜브·커뮤니티에서 방법을 찾는다', s.artsAcad !== 'none' ? '원인을 짚어 준다 · 자존심이 상한다' : '혼자 찾아야 한다 · 맞는 방법인지 모른다', ['self']),
+      ]);
+      if (o.id === 'rest') { s.talent[tk] = clamp(s.talent[tk] - 2, 5, 100); inc(s, 'mental', 7); L(s, '일주일 뒤 다시 잡으니 오히려 편했다.'); }
+      if (o.id === 'push') { if (r.chance(0.55)) { s.talent[tk] = clamp(s.talent[tk] + 4, 5, 100); inc(s, 'mental', -5); L(s, '어느 날 갑자기 뚫렸다. 선이(소리가, 몸이) 달라졌다.', 'good'); } else { inc(s, 'mental', -12); inc(s, 'stress', 10); inc(s, 'health', -6); L(s, '번아웃이 왔다. 2주 동안 손도 못 댔다.', 'bad'); } }
+      if (o.id === 'teacher') { if (s.artsAcad !== 'none') { s.talent[tk] = clamp(s.talent[tk] + 4, 5, 100); inc(s, 'mental', 5); L(s, '선생님이 10초 보고 말했다. "힘이 들어갔어. 기본 연습으로 돌아가." 2주 뒤 풀렸다.', 'good'); } else { if (r.chance(0.4)) { s.talent[tk] = clamp(s.talent[tk] + 1, 5, 100); L(s, '영상 하나가 도움이 됐다. 운이 좋았다.'); } else { inc(s, 'mental', -4); L(s, '방법은 많은데 내 것은 없었다. 슬럼프가 길어졌다.', 'warn'); } } }
+    } },
+  { id: 'artsInjury', w: s => (artsField(s) === 'art' ? 0.7 : artsField(s) === 'perf' ? 0.7 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, af = artsField(s), tk = FIELDS[af].talent;
+      const o = choose(ctx, key, af === 'art' ? '손목' : '목',
+        af === 'art' ? '하루 8시간 그리던 손목이 저리기 시작했다. 정형외과: "손목터널증후군 초기. 3주는 쉬어야 해요." 실기 시험이 두 달 남았다.' : '고음에서 소리가 갈라진다. 이비인후과: "성대 결절 초기. 2주 침묵 치료." 실기 시험이 두 달 남았다.', [
+        O('rest', '시키는 대로 쉰다', '제대로 낫는다 · 두 달 중 3주를 잃는다', ['rest', 'safe']),
+        O('push', '참고 연습한다', '시간을 지킨다 · 악화되면 실기 당일이 위험하다', ['study', 'risk']),
+      ]);
+      if (o.id === 'rest') { s.talent[tk] = clamp(s.talent[tk] - 3, 5, 100); L(s, '3주를 쉬었다. 돌아오니 감은 떨어졌지만 통증은 사라졌다.'); }
+      if (o.id === 'push') { if (r.chance(0.45)) { s.flags[af === 'art' ? 'handInjury' : 'vocalNodule'] = true; s.talent[tk] = clamp(s.talent[tk] - 8, 5, 100); inc(s, 'mental', -10); L(s, af === 'art' ? '악화됐다. 연필을 10분 이상 못 쥔다. 실기 당일까지 낫는다는 보장이 없다.' : '결절이 커졌다. 수술 얘기가 나왔다. 실기 당일까지 낫는다는 보장이 없다.', 'bad'); } else { s.talent[tk] = clamp(s.talent[tk] + 1, 5, 100); L(s, '버텼다. 운이 좋았다.'); } }
+    } },
+  { id: 'artsCost', w: s => (artsField(s) && s.artsAcad && s.artsAcad !== 'none' && s.money < 25 ? 2.2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, af = artsField(s), pw = parentWord(s);
+      const o = choose(ctx, key, '현실적으로 생각해',
+        `${pw}${jo(pw, '이/가')} 학원비 고지서를 식탁에 올려놓았다. "${ARTS_ACAD[s.artsAcad].name} 한 달에 ${Math.round(ARTS_ACAD[s.artsAcad].cost * 25)}만 원이야. 재료비까지. 솔직히 이걸로 먹고살 수 있겠니? 현실적으로 생각해 보자."`, [
+        O('keep', '"1년만 더 믿어 줘" 하고 설득한다', '꿈을 지킨다 · 집에 부담, 결과로 보여야 한다', ['self', 'risk']),
+        O('cheap', '학원을 끊고 혼자 연습한다', '돈은 아낀다 · 실기는 혼자 늘기 어렵다', ['safe', 'self']),
+        O('quit', `${ARTS_NAME[artsOf(af)]}을 접고 공부로 돌아간다`, '현실적인 선택 · 몇 년 연습이 사라진다', ['safe', 'obey']),
+      ]);
+      if (o.id === 'keep') { s.money -= 6; inc(s, 'parentRel', s.p.pDesire === 'free' ? 0 : -7); inc(s, 'stress', 6); L(s, `${pw}${jo(pw, '은/는')} 한참 말이 없다가 "1년"이라고 했다. 이제 결과로 보여야 한다.`); }
+      if (o.id === 'cheap') { s.artsAcad = 'none'; L(s, '학원을 끊었다. 혼자 그리는(연습하는) 밤, 뭐가 틀렸는지 봐 줄 사람이 없다.', 'warn'); }
+      if (o.id === 'quit') { const f = af; s.arts = null; s.flags.artPath = s.flags.musicPath = s.flags.sportPath = false; s.flags.artsQuit = true; s.interest[f] -= 20; inc(s, 'mental', -14); s.zC += 0.03; L(s, '도구를 정리해 상자에 넣었다. 교과서를 폈는데 글자가 눈에 안 들어왔다.', 'bad'); }
+    } },
+  { id: 'artsParent', w: s => (artsField(s) && ['med', 'prestige', 'stable', 'law'].indexOf(s.p.pDesire) >= 0 && s.turnIdx <= 6 && !s.flags.artsParentOk ? 2 : 0), once: true,
+    run: (ctx, key, r) => {
+      const s = ctx.s, af = artsField(s), pw = parentWord(s);
+      const o = choose(ctx, key, '"그걸로 뭐 하려고"',
+        `${pw}${jo(pw, '이/가')} 실기 가방을 보며 말했다. "${ARTS_NAME[artsOf(af)]}은 취미로 해. ${PARENT_DESIRES[s.p.pDesire].name}." 식탁이 조용해졌다.`, [
+        O('persuade', '포트폴리오(기록)와 입시 자료를 보여 주며 설득한다', '인정받으면 든든하다 · 안 되면 더 멀어진다', ['self']),
+        O('secret', '"알겠어요" 하고 몰래 계속한다', '당장은 조용함 · 들키면 신뢰가 깨진다', ['rebel', 'risk']),
+        O('quit', '접는다', '집이 조용해진다 · 마음 한쪽이 비어 간다', ['obey', 'safe']),
+      ]);
+      if (o.id === 'persuade') { if (r.chance(0.4 + (s.p.confidence - 3) * 0.1 + (s.talent[FIELDS[af].talent] >= 70 ? 0.2 : 0))) { s.flags.artsParentOk = true; inc(s, 'parentRel', 6); s.autonomy += 1; L(s, `${pw}${jo(pw, '이/가')} 자료를 한참 보더니 "그래, 해 봐"라고 했다. 대신 "교과 성적도 놓지 마"가 붙었다.`, 'good'); } else { inc(s, 'parentRel', -9); inc(s, 'mental', -5); L(s, '"그 대학 나와서 뭐 하는데." 대화가 끊겼다.', 'bad'); } }
+      if (o.id === 'secret') { s.flags.secretPath = true; s.autonomy += 1; L(s, '학원비는 알바로 댔다. 가방은 친구 집에 뒀다.', 'warn'); }
+      if (o.id === 'quit') { const f = af; s.arts = null; s.flags.artPath = s.flags.musicPath = s.flags.sportPath = false; s.flags.artsQuit = true; s.interest[f] -= 20; inc(s, 'mental', -12); inc(s, 'parentRel', 4); L(s, '접었다. 집은 조용해졌다.', 'bad'); }
+    } },
 ];
 
+// ── 운 ────────────────────────────────────────────────
+//  내 선택과 상관없이 벌어지는 일. 바르게 살아도 겪고, 대충 살아도 피해 간다. 기록에 '(운)'으로 남고, 선택 평가에서는 뺀다.
+const FATES = [
+  { id: 'accident', w: s => 1, run: (ctx, key, r) => { const s = ctx.s;
+      if (r.chance(0.22)) { Lf(s, '등굣길 횡단보도에서 신호를 어긴 차에 치였다. 골반 골절과 뇌진탕, 입원 석 달. 한 학기가 통째로 비었다.'); inc(s, 'health', -40); inc(s, 'mental', -16); s.zN -= 0.24; s.zC -= 0.14; s.record = Math.max(0, s.record - 6); s.flags.bigAccident = true; L(s, '퇴원하니 반 애들은 다음 단원을 나가고 있었다. 재활 때문에 저녁 공부도 어렵다.', 'bad'); return; }
+      Lf(s, '등굣길 횡단보도에서 우회전하던 차에 치였다. 다리 골절, 입원 3주.'); inc(s, 'health', -20); inc(s, 'mental', -6); s.zN -= 0.08; s.zC -= 0.03;
+      const o = choose(ctx, key, '병실에서', '깁스를 한 채 병실 천장을 보고 있다. 중간고사가 2주 뒤다. 담임 선생님은 "병결은 인정 결석이니 걱정 말고, 시험은 인정점(직전 시험의 80%)으로 처리할 수도 있다"고 하셨다.', [
+        O('rest', '치료에 집중한다. 시험은 인정점으로', '몸이 제대로 낫는다 · 이번 내신은 깎인다', ['rest', 'safe']),
+        O('study', '병실에서 문제집을 푼다. 시험은 본다', '내신을 지킬 수도 · 회복이 늦어진다', ['study']),
+      ]);
+      if (o.id === 'rest') { s.zN -= 0.04; inc(s, 'health', 8); L(s, '3주 뒤 목발을 짚고 등교했다. 인정점으로 처리된 내신은 평소보다 조금 낮았다.'); }
+      else { s.zN += 0.03; inc(s, 'health', -6); L(s, '병원 침대에서 문제집 두 권을 끝냈다. 시험은 평소만큼 봤다. 뼈는 예정보다 2주 늦게 붙었다.'); } } },
+  { id: 'parentIll', w: s => 0.7, once: true, run: (ctx, key, r) => { const s = ctx.s, pw = parentWord(s); Lf(s, `${pw}${jo(pw, '이/가')} 건강검진에서 암 진단을 받았다. 수술과 항암이 시작됐다.`); s.money = Math.max(4, s.money - 22); inc(s, 'mental', -14); inc(s, 'stress', 10);
+      const o = choose(ctx, key, '병원과 학교 사이', `주말마다 병원에 간다. 집안 분위기가 가라앉았고, 학원비 얘기는 아무도 꺼내지 않는다. ${s.p.sibling === 'younger' ? '동생 저녁은 내가 챙긴다.' : ''} 어떻게 할까?`, [
+        O('care', '간병과 집안일을 많이 맡는다', '가족이 가까워진다 · 공부 시간이 준다', ['kind']),
+        O('study', '"내가 할 수 있는 건 공부"라며 책상에 앉는다', '성적은 지킨다 · 죄책감이 남는다', ['study']),
+        O('talk', '담임·위클래스에 사정을 말하고 도움을 받는다', '장학·지원 정보를 얻는다 · 알려지는 게 싫을 수 있다', ['self', 'kind']),
+      ]);
+      if (o.id === 'care') { inc(s, 'parentRel', 10); s.zC -= 0.06; s.zN -= 0.05; inc(s, 'mental', 4); s.flags.caregiver = true; L(s, '병원 복도에서 단어장을 외웠다. 성적은 조금 떨어졌지만 후회는 없다.'); }
+      if (o.id === 'study') { s.zC += 0.01; inc(s, 'parentRel', -4); inc(s, 'mental', -5); L(s, '"공부 열심히 하는 게 효도"라는 말을 붙잡고 책상에 앉았다. 밤마다 죄책감이 올라왔다.'); }
+      if (o.id === 'talk') { s.money += 10; inc(s, 'mental', 6); s.record += 2; L(s, '학교에서 긴급 복지 지원과 장학금을 연결해 줬다. 담임 선생님이 자주 들여다봐 주셨다.', 'good'); } } },
+  { id: 'bankrupt', w: s => (s.p.wealth === 'high' ? 0.25 : s.p.pJob === 'self' ? 1.3 : 0.7), once: true, run: (ctx, key, r) => { const s = ctx.s; const t = s.p.pJob === 'self' ? '가게가 문을 닫았다. 보증금까지 날렸다.' : s.p.pJob === 'labor' ? '아빠가 다니던 공장이 폐업했다.' : '회사 구조조정 명단에 아빠 이름이 있었다.'; Lf(s, `집에 큰일이 났다. ${t}`); s.money = Math.max(4, s.money - 35); s.flags.moneyTight = true; inc(s, 'mental', -10); inc(s, 'stress', 10);
+      const cut = SUB_KEYS.filter(k => s.acad[k] !== 'none' && s.acad[k] !== 'online');
+      if (cut.length) { cut.forEach(k => { s.acad[k] = 'online'; }); L(s, `${cut.map(k => SUBJ_NAME[k]).join('·')} 학원을 모두 끊고 인강으로 바꿨다.`, 'bad'); }
+      if (s.artsAcad && s.artsAcad !== 'none') { s.artsAcad = 'none'; L(s, '실기 학원도 끊었다. 이제 혼자 연습해야 한다.', 'bad'); }
+      const o = choose(ctx, key, '달라진 식탁', '저녁 식탁에서 부모님이 말을 아낀다. 학원비 자동이체 문자가 더 이상 오지 않는다. 어떻게 할까?', [
+        O('work', '주말 알바를 시작한다', '내 용돈은 내가 번다 · 공부 시간이 준다', ['work']),
+        O('scholar', '교육청·학교 장학과 교육비 지원을 알아본다', '학원 하나는 다시 다닐 수 있다 · 서류와 시간이 든다', ['self', 'study']),
+        O('hold', '아무 말 않고 하던 대로 한다', '부모님 부담을 안 늘림 · 혼자 삭인다', ['safe']),
+      ]);
+      if (o.id === 'work') { s.flags.work = true; s.money += 12; s.zC -= 0.03; L(s, '주말 열 시간 알바. 월말에 처음으로 내 돈으로 문제집을 샀다.'); }
+      if (o.id === 'scholar') { s.money += 8; const k = SUB_KEYS.reduce((w, k) => (s.sub[k] < s.sub[w] ? k : w), 'kor'); s.acad[k] = 'director'; L(s, `교육비 지원으로 ${SUBJ_NAME[k]} 학원 하나는 다시 다닌다. 원장님이 사정을 듣고 수강료를 깎아 주셨다.`, 'good'); }
+      if (o.id === 'hold') { inc(s, 'mental', -5); L(s, '아무 일 없는 것처럼 지냈다. 밤에 부모님이 작게 다투는 소리가 들렸다.'); } } },
+  { id: 'divorce', w: s => (s.p.pBond === 'fight' ? 2 : s.p.pBond === 'cold' ? 1 : 0.3), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '부모님이 이혼하기로 했다. 누구와 살지 묻는 자리가 있었다.'); inc(s, 'mental', -14); inc(s, 'parentRel', -6); inc(s, 'lazy', 4); s.p.pBond = 'single';
+      const o = choose(ctx, key, '아무에게도 말하지 못한 일', '학교에서는 아무 일 없는 척한다. 그런데 수업 시간에 자꾸 멍해진다. 어떻게 할까?', [
+        O('counsel', '위클래스 상담 선생님을 찾아간다', '마음이 정리된다 · 처음 한 걸음이 어렵다', ['self', 'kind']),
+        O('friend', s.bestFriend ? `${s.bestName}에게 털어놓는다` : '친구에게 털어놓는다', '혼자가 아니게 된다 · 소문이 날 수도', ['social']),
+        O('alone', '아무에게도 말하지 않는다', '티가 안 난다 · 속으로 곪는다', ['safe']),
+      ]);
+      if (o.id === 'counsel') { inc(s, 'mental', 10); L(s, '매주 수요일 점심시간, 상담실. 울고 나니 조금 가벼워졌다.', 'good'); }
+      if (o.id === 'friend') { inc(s, 'mental', 6); inc(s, 'social', 4); if (r.chance(0.2)) { inc(s, 'social', -8); L(s, '반에 소문이 돌았다. 믿었던 만큼 아팠다.', 'bad'); } else L(s, '친구가 아무 말 없이 떡볶이를 사 줬다.'); }
+      if (o.id === 'alone') { inc(s, 'mental', -6); s.zC -= 0.03; L(s, '혼자 삭였다. 성적표가 나올 때쯤 티가 났다.', 'warn'); } } },
+  { id: 'victim', w: s => (s.turnIdx <= 6 ? 0.9 : 0.3) * (s.social < 35 ? 1.6 : 1), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '이유 없이 표적이 됐다. 책상에 낙서, 단톡방에서 저격, 급식실에서 혼자. 학교폭력 피해자가 됐다.'); inc(s, 'social', -14); inc(s, 'mental', -16); inc(s, 'stress', 10);
+      const o = choose(ctx, key, '어떻게 할까', '한 달째다. 등교하는 아침마다 배가 아프다. 부모님은 아직 모른다.', [
+        O('report', '학교폭력으로 신고한다(117·담임)', '멈출 가능성 · 절차가 길고 보복이 있을 수 있다', ['self']),
+        O('bear', '졸업할 때까지 참는다', '일을 키우지 않음 · 마음이 계속 다친다', ['safe']),
+        O('transfer', '부모님께 말하고 전학한다', '환경이 바뀐다 · 친구·내신을 새로 쌓아야 한다', ['rebel', 'self']),
+      ]);
+      if (o.id === 'report') { if (r.chance(0.6)) { inc(s, 'mental', 12); inc(s, 'social', 6); L(s, '학폭위가 열렸고 가해 학생들은 분리 조치됐다. 처음으로 급식실에서 밥이 넘어갔다.', 'good'); } else { inc(s, 'mental', -8); L(s, '"신고했다"는 게 알려지면서 교묘해졌다. 증거가 부족하다는 말을 들었다.', 'bad'); } }
+      if (o.id === 'bear') { inc(s, 'mental', -8); inc(s, 'lazy', 4); s.zC -= 0.04; L(s, '참았다. 책이 눈에 들어오지 않는 날이 많았다.', 'bad'); }
+      if (o.id === 'transfer') { inc(s, 'mental', 8); inc(s, 'social', -6); s.zN -= 0.05; s.friendGroup = 'alone'; L(s, '전학 간 학교의 첫날, 아무도 나를 모른다는 게 이렇게 편할 줄 몰랐다.'); } } },
+  { id: 'recordMiss', w: s => (s.turnIdx <= 8 ? 0.9 : 0), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '담임 선생님이 생기부를 급하게 썼다. 내가 한 활동 절반이 빠지고, 다른 학생과 비슷한 문장이 들어갔다.'); s.record = Math.max(0, s.record - 8); } },
+  { id: 'recordLucky', w: s => (s.turnIdx <= 8 ? 0.7 : 0), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '담임 선생님이 생기부를 공들여 써 주셨다. 내가 지나가듯 한 말까지 세특에 들어갔다.'); s.record = Math.min(100, s.record + 8); } },
+  { id: 'examError', w: s => (s.turnIdx <= 8 ? 0.8 : 0), run: (ctx, key, r) => { const s = ctx.s; const d = (r.next() - 0.5) * 0.14; Lf(s, d < 0 ? '기말고사 수학에서 출제 오류가 나와 두 문항이 전원 정답 처리됐다. 내가 맞혔던 문제라 등급이 밀렸다.' : '기말고사 출제 오류로 두 문항이 전원 정답 처리됐다. 틀렸던 문제라 등급이 올랐다.'); s.zN += d; } },
+  { id: 'flu', w: s => 0.8, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '시험 전날 독감에 걸렸다. 39도에서 시험지를 받았다.'); s.zN -= 0.07; inc(s, 'health', -8); } },
+  { id: 'scholarship', w: s => (s.p.wealth === 'high' ? 0.1 : 0.5), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '지역 장학재단 장학생으로 뽑혔다. 학기마다 60만 원.'); s.money += 14; inc(s, 'mental', 4); } },
+  { id: 'teacherGood', w: s => 0.9, once: true, run: (ctx, key, r) => { const s = ctx.s, k = r.pick(SUB_KEYS); Lf(s, `${SUBJ_NAME[k]} 선생님이 바뀌었다. 수업이 재미있어서 처음으로 그 과목이 기다려진다.`); s.sub[k] += 0.08; s.interest[k === 'math' ? 'eng' : k === 'kor' ? 'hum' : k === 'eng' ? 'hum' : 'sci'] += 4; } },
+  { id: 'teacherBad', w: s => 0.6, once: true, run: (ctx, key, r) => { const s = ctx.s, k = r.pick(SUB_KEYS); Lf(s, `${SUBJ_NAME[k]} 선생님이 바뀌었다. 수업은 자습, 시험은 수업 안 한 데서 나온다. 반 전체 평균이 무너졌다.`); s.sub[k] -= 0.05; inc(s, 'stress', 4); } },
+  { id: 'move', w: s => (s.turnIdx <= 6 ? 0.5 : 0), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '부모님 직장 때문에 이사했다. 전학 첫날, 아는 얼굴이 하나도 없다.'); inc(s, 'social', -12); s.zN -= 0.04; s.bestFriend = false; s.friendGroup = 'alone'; inc(s, 'mental', -6); } },
+  { id: 'artsReform', w: s => (artsField(s) && s.turnIdx >= 4 && s.turnIdx <= 8 ? 1.2 : 0), once: true, run: (ctx, key, r) => { const s = ctx.s; Lf(s, '가려던 대학이 내년부터 실기 비중을 줄이고 수능·서류를 더 보기로 했다는 입시 요강이 떴다.'); s.flags.artsReform = true; inc(s, 'stress', 8); } },
+];
+function rollFate(ctx, turn, prob) {
+  const s = ctx.s, r = makeRng(s.seed, turn.id + ':fate');
+  if (!r.chance(prob)) return;
+  const pool = FATES.filter(e => !(e.once && s.seen['f:' + e.id]) && e.w(s) > 0);
+  const ws = pool.map(e => e.w(s)), tot = ws.reduce((a, b) => a + b, 0);
+  if (tot <= 0) return;
+  let x = r.next() * tot, ev = pool[0];
+  for (let i = 0; i < pool.length; i++) { x -= ws[i]; if (x <= 0) { ev = pool[i]; break; } }
+  s.seen['f:' + ev.id] = true;
+  ev.run(ctx, turn.id + ':fate:' + ev.id, makeRng(s.seed, turn.id + ':f:' + ev.id));
+}
 function randomEvents(ctx, turn, n) {
   const s = ctx.s, r = makeRng(s.seed, turn.id + ':ev');
-  const count = n != null ? n : 2 + (r.chance(0.4) ? 1 : 0);
+  const count = n != null ? n : 3 + (r.chance(0.5) ? 1 : 0);
   for (let k = 0; k < count; k++) {
     const pool = HS_EVENTS.filter(e => !(e.once && s.seen[e.id]) && !s.seen[turn.id + e.id]);
     const ws = pool.map(e => Math.max(0, e.w(s)));
@@ -2120,6 +2613,7 @@ function semesterTurn(ctx, turn) {
   ['study', 'academy', 'activity', 'hobby', 'friends', 'rest', 'date', 'work'].forEach(k => { if (a[k] == null) a[k] = 0; });
   s.lastAlloc = a;
   semesterEffects(ctx, turn, a);
+  rollFate(ctx, turn, 0.16);
   randomEvents(ctx, turn);
 }
 
@@ -2136,23 +2630,33 @@ function studentZ(s, type, field) {
   const cs = s.csatSub || s.sub;
   const zcs = compositeZ(cs, field);
   switch (type) {
-    case 'gyogwa': return zNavg - trackPen * 0.5 - (s.flags.applyMathWeak || 0) * 0.04;
+    case 'gyogwa': return zNavg - trackPen * 0.5 - (s.flags.applyMathWeak || 0) * 0.04 - (s.flags.lateHabit ? 0.06 : 0) - (s.flags.violence >= 2 ? 0.08 : 0);
     case 'jonghap': {
       const sb = p.school === 'special' ? 0.45 : p.school === 'jasa' ? 0.25 : p.region === 'gangnam' ? 0.05 : 0;
-      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0) - (s.flags.applyMathWeak || 0) * 0.08 - (s.flags.korWeakInterview ? 0.06 : 0);
+      return zNavg + 0.3 * zRec + sb + fitRec * 0.22 + ((s.flags.interviewPrep || 0) - 1) * 0.06 + (s.flags.splitPath ? -0.08 : 0) + subjFit - trackPen + (s.flags.award ? 0.06 : 0) + (s.flags.caught ? -0.2 : 0) + (s.flags.council ? 0.05 : 0) - (s.flags.applyMathWeak || 0) * 0.08 - (s.flags.korWeakInterview ? 0.06 : 0) - (s.flags.lateHabit ? 0.1 : 0) - (s.flags.discipline ? 0.08 : 0) - (s.flags.teacherBad ? 0.05 : 0);
     }
     case 'nonsul': return 0.45 * (cs.kor + s.korOff.read) + 0.25 * zcs + (p.comprehension - 3) * 0.22 + (s.talent.verbal - 40) / 110;   // 논술은 국어 독해력이 핵심
     case 'silgi': {
       const tk = FIELDS[field].talent;
-      const tal = (s.talent[tk] - 50) / 18 + ((field === 'art' && s.flags.artPath) || (field === 'sport' && s.flags.sportPath) ? 0.5 : 0) + (field === 'perf' && s.flags.trainee ? 0.4 : 0);
-      return 0.65 * tal + 0.35 * zcs;
+      // 실기 점수(z) + 실기 당일 운. 미술은 손, 음악은 목·컨디션, 체육은 날씨·부상. 심사 주관성도 있다
+      const day = s.silgiDay != null ? s.silgiDay : 0;
+      const tal = (s.talent[tk] - 50) / 16 + (s.flags.artsSince != null ? 0.15 : 0) + (field === 'perf' && s.flags.trainee ? 0.4 : 0) + (field === 'sport' && s.flags.reinjury ? -0.5 : 0) + day;
+      return 0.65 * tal + 0.35 * (zcs + zNavg) / 2;
     }
     // 계열별 반영 비율로 합친 과목 점수. 다들 반영 비율 높은 과목에 몰아 공부하므로, 평균과의 차이는 절반만 이득으로 친다
     case 'jungsi': return (zcs + meanSub(cs)) / 2;
   }
   return zcs;
 }
-function cutZ(tier, field) { return zFromTop(tier.pct) + (tier.fo ? 0 : FIELD_DIFF[field] || 0) + (SILGI[field] ? -0.35 : 0); }
+function cutZ(tier, field) { if (tier.arts) return zFromTop(tier.pct); return zFromTop(tier.pct) + (tier.fo ? 0 : FIELD_DIFF[field] || 0) + (SILGI[field] ? -0.35 : 0); }
+// 예체능 대학: 실기 비중(silgiW)만큼 실기 z, 나머지는 수능·내신 z
+function artsZ(s, tier, field, type) {
+  const zs = studentZ(s, 'silgi', field);
+  const cs = s.csatSub || s.sub, zc = (compositeZ(cs, field) + meanSub(cs)) / 2, zN = zFromTop(avgNaesin(s));
+  const acad = type === 'jungsi' ? zc : (zc + zN) / 2;
+  const w = clamp(tier.silgiW - (s.flags.artsReform ? 0.15 : 0), 0.1, 0.95);
+  return w * zs + (1 - w) * acad;
+}
 function estimateIdx(s, list, z, field, r, bias) {
   const pz = z + bias + r.normal() * 0.07;
   for (let i = 0; i < list.length; i++) if (pz >= cutZ(list[i], field)) return i;
@@ -2165,17 +2669,30 @@ function cardP(s, c, field) {
     c.cut = cut; c.score = sc;
     return sigmoid(0.85 * (sc - cut + 0.9));
   }
+  if (c.tier.arts) {
+    const z = artsZ(s, c.tier, field, c.type);
+    let P = sigmoid(4.5 * (z - cutZ(c.tier, field)));
+    if (c.tier.key === 'm3') P *= 0.6;   // 실용음악 명문은 경쟁률이 100대 1을 넘는다
+    if (s.flags.violence >= 2 && c.type !== 'jungsi') P *= 0.5;
+    return P;
+  }
   const z = studentZ(s, c.type, field);
   const k = { gyogwa: 8, jonghap: 5.5, nonsul: 3, silgi: 5, jungsi: 11 }[c.type];
   let P = sigmoid(k * (z - cutZ(c.tier, field)));
   if (c.type === 'nonsul') P = P * 0.32 + 0.02;
   if (c.type === 'jonghap') P = P * 0.92;
+  if (hasDirector(s) && (c.type === 'jonghap' || c.type === 'gyogwa')) P *= 1.06;   // 자소서·면접을 원장이 봐 줬다
+  // 학폭 조치 기록·징계는 서류에서 바로 걸린다
+  const vio = s.flags.violence || 0;
+  if (vio && c.type === 'jonghap') P *= vio >= 2 ? 0.25 : 0.6;
+  if (vio >= 2 && c.type === 'gyogwa') P *= 0.75;
+  if (vio >= 2 && c.type === 'jungsi') P *= 0.85;
   return P;
 }
 function makeCards(s, field, type, strategy, count, r, estZ) {
   const list = tierList(field, s);
-  const z = studentZ(s, type, field);
-  const bias = (s.p.confidence - 3) * 0.08 + (s.pressure > 30 ? 0.05 : 0);
+  const z = list[0].arts ? artsZ(s, list[Math.floor(list.length / 2)], field, type) : studentZ(s, type, field);
+  const bias = (s.p.confidence - 3) * 0.08 + (s.pressure > 30 ? 0.05 : 0) - (s.consultQ || 0);
   let est = estimateIdx(s, list, estZ != null ? estZ : z, field, r, bias);
   if (type === 'jungsi' && usesPct(field, list)) {
     // 정시 모의지원: 내 백분위 점수와 대학별 70%컷을 놓고 고른다
@@ -2243,8 +2760,14 @@ function applyTurn(ctx, turn) {
     const easy = s.track === '자연' ? 'sci' : 'hum';
     if (fOpts.every(o => o.id !== easy)) fOpts.push({ id: easy, label: `${FIELDS[easy].name} — 학과보다 대학 간판(합격선 낮은 과)`, hint: '한 단계 높은 대학 · ' + ej(easy), tags: ['safe', 'obey'] });
   }
-  if (s.flags.artPath && fOpts.every(o => o.id !== 'art')) fOpts.push({ id: 'art', label: '디자인·미술 — 준비해 온 미대 실기', tags: ['self', 'risk'] });
-  if (s.flags.sportPath && fOpts.every(o => o.id !== 'sport')) fOpts.push({ id: 'sport', label: '체육 — 준비해 온 체대 실기', tags: ['self', 'risk'] });
+  const af0 = artsField(s);
+  if (af0) {
+    const tk = FIELDS[af0].talent, tl = Math.round(s.talent[tk]);
+    const lbl = { art: `디자인·미술 — 준비해 온 미대 실기 (실기 ${tl}점)`, perf: `음악 — 준비해 온 음대·실용음악 실기 (실기 ${tl}점)`, sport: `체육 — 준비해 온 체대 실기 (실기 ${tl}점)` }[af0];
+    for (let i = fOpts.length - 1; i >= 0; i--) if (fOpts[i].id === af0) fOpts.splice(i, 1);
+    fOpts.unshift({ id: af0, label: lbl, hint: tl >= 75 ? '실기가 강하다 · 수능·내신도 같이 본다' : tl >= 55 ? '실기는 중간 · 수능·내신으로 보태야 한다' : '실기가 아직 약하다 · 안전한 곳만 노려야 한다', tags: ['self'], w: 3 });
+    if (tl < 55) fOpts.push({ id: s.track === '자연' ? 'eng' : 'biz', label: `${FIELDS[s.track === '자연' ? 'eng' : 'biz'].name} — 실기를 접고 일반 전형으로`, hint: '몇 년 연습이 아깝다 · 실기가 약하면 현실적인 선택', tags: ['safe'] });
+  }
   const pw = parentWord(s);
   const fo = choose(ctx, 'g3v1:field', '원서에 쓸 학과', `6월 모평 성적표가 나왔다. ${gradesText(mockGrades(s.sub))} (평균 상위 ${topFromZ(s.zC).toFixed(1)}%). 학과마다 취업률과 취업의 질도 다르다. 내신 평균은 상위 ${avgNaesin(s).toFixed(1)}%, 생기부 활동 점수는 ${Math.round(s.record)}점. 담임 선생님과의 원서 상담에서 선생님이 묻는다. "학과부터 정하자. 대학 이름을 볼 거니, 학과를 볼 거니?" ${d && d !== my ? `${pw}${jo(pw, '은/는')} 어젯밤에도 "${FIELDS[d].name} 아니면 안 된다"고 했다.` : ''}`, fOpts);
   s.applyField = fo.id;
@@ -2258,14 +2781,22 @@ function applyTurn(ctx, turn) {
   else if (field === 'biz' && gA.math >= 5) { s.flags.applyMathWeak = 1; L(s, `경영·경제인데 수학 ${gA.math}등급이다. 상경 계열은 수학 등급을 꽤 본다.`, 'warn'); }
   if (gA.kor >= 5) { s.flags.korWeakInterview = true; L(s, `국어 ${gA.kor}등급. 학종 면접에서 질문 요지를 놓치거나 논술 답안의 논지가 흔들릴 수 있다.`, 'warn'); }
   if (gA.eng >= 4) L(s, `영어 ${gA.eng}등급. 최저가 있는 전형은 영어 때문에 등급 합을 맞추기 어렵다.`, 'warn');
+  if (s.flags.violence) L(s, s.flags.violence >= 2 ? '생기부에 학교폭력 조치(출석정지)가 기재돼 있다. 학종은 서류에서 거의 걸러지고, 교과·정시에서도 감점을 받는다.' : '생기부에 학교폭력 서면사과 조치가 있다. 학종 서류에서 불리하다.', 'bad');
+  if (s.flags.lateHabit) L(s, '미인정 지각·결석이 출결에 남아 있다. 교과 전형 출결 감점, 학종에서는 성실성 문제로 읽힌다.', 'warn');
+  if (s.flags.discipline && !s.flags.violence) L(s, '교내 징계 이력이 있다. 생기부에 직접 남지는 않았지만 담임 추천서와 행동특성란 어조가 달라졌다.', 'warn');
   if (s.flags.ged) { s.applyField = field; s.applyType = 'none'; s.susiCards = []; L(s, '검정고시 출신이라 수시는 쓰지 않고 정시에 모든 걸 건다.'); return; }
-  const tOpts = [
+  const tOpts = SILGI[field] ? [
+    { id: 'silgi', label: '실기 위주 전형 (수시 실기 + 내신·최저)', hint: `실기 ${Math.round(s.talent[FIELDS[field].talent])}점으로 승부 · 실기 당일 컨디션이 크다`, tags: ['self'], w: 1 },
+    { id: 'jonghap', label: field === 'art' ? '비실기 전형 (홍익대식 서류·면접 + 수능)' : '학생부종합 (서류·면접)', hint: '실기가 약해도 서류로 · 내신·수능·최저가 더 중요해진다', tags: ['record'] },
+    { id: 'none', label: '정시 (수능 + 실기)', hint: '수능 비중이 큰 대학 · 수능 하루와 실기 하루에 다 건다', tags: ['risk', 'study'] },
+  ] : [
     { id: 'jonghap', label: `학생부종합 위주 (생기부 ${Math.round(s.record)}점)`, hint: '내신이 조금 낮아도 생기부로 역전 · 면접 준비와 결과 예측이 어렵다', tags: ['record'] },
     { id: 'gyogwa', label: `학생부교과 위주 (내신 상위 ${avgNaesin(s).toFixed(1)}%)`, hint: '가장 예측 가능 · 수능 최저를 못 맞추면 끝', tags: ['safe'] },
     { id: 'nonsul', label: '논술 위주', hint: '내신과 무관한 한 방 · 경쟁률 수십 대 일', tags: ['risk'] },
     SILGI[field] ? { id: 'silgi', label: '실기 위주', hint: '준비한 실력으로 승부 · 실기 당일 컨디션이 전부', tags: ['self'] } : null,
     { id: 'none', label: '수시는 최소한만. 정시 올인', hint: '수능만 잘 보면 됨 · 수능 하루에 모든 걸 건다', tags: ['risk', 'study'] },
   ];
+  if (SILGI[field]) L(s, `${FIELDS[field].name} 입시: 대학마다 실기 비중이 다르다. ${field === 'art' ? '홍익대는 실기 없이 서류·수능으로, 국민대·건국대는 실기 60%, 지방 미대는 실기 70%쯤.' : field === 'perf' ? '음대는 실기 70~90%. 실용음악과는 경쟁률이 100대 1을 넘는 곳도 있다.' : '체대는 실기 40~65%, 나머지가 수능·내신. 체교과는 수능 비중이 더 크다.'}`, 'info');
   const to = choose(ctx, 'g3v1:type', '전형 고르기', `수시 원서는 6장. 담임 선생님이 상담 기록을 넘기며 말한다. "기억해. 수시에 하나라도 붙으면 정시에는 지원할 수 없어. 수능을 잘 봐도." 지금 내신은 상위 ${avgNaesin(s).toFixed(1)}%, 모의고사는 상위 ${topFromZ(s.zC).toFixed(1)}%. ${avgNaesin(s) < topFromZ(s.zC) - 3 ? '내신이 모의고사보다 좋은 편이다.' : avgNaesin(s) > topFromZ(s.zC) + 3 ? '모의고사가 내신보다 좋은 편이다.' : '내신과 모의고사가 비슷하다.'}`, tOpts);
   s.applyType = to.id;
   if (to.id !== 'none') {
@@ -2277,10 +2808,12 @@ function applyTurn(ctx, turn) {
     ]);
     s.applyStrategy = so.id;
   }
+  // 원장 직강 학원이 있으면 원장이 모의지원을 같이 봐 준다 → 상향·적정·안정을 현실적으로 짠다
+  if (hasDirector(s)) { s.consultQ = 0.07; L(s, '학원 원장님이 모의지원 결과를 같이 봤다. "여긴 네 내신으로 안 돼. 대신 여기는 작년 추합이 많이 돌았어." 6장을 현실적으로 다시 짰다.', 'good'); }
   // 원서 접수: 여름에 쓰고, 결과는 수능 뒤에 나온다
   const rc = makeRng(s.seed, 'susi');
   if (to.id !== 'none') s.susiCards = makeCards(s, field, to.id, s.flags.matchUni ? 'safe' : s.applyStrategy || 'mid', 6, rc);
-  else s.susiCards = makeCards(s, field, 'nonsul', 'up', 3, rc, studentZ(s, 'jungsi', field) + 0.25);
+  else s.susiCards = makeCards(s, field, SILGI[field] ? 'silgi' : 'nonsul', 'up', 3, rc, SILGI[field] ? undefined : studentZ(s, 'jungsi', field) + 0.25);
   const st6 = minStatus(s, mockGrades(s.sub));
   L(s, `원서 접수 완료 — ${s.susiCards.map(cardText).join(' / ')}.${st6.total ? ` 지금 모의고사 기준 최저 충족 ${st6.ok}/${st6.total}곳.` : ''}`, 'info');
 }
@@ -2352,7 +2885,10 @@ function finalTurn(ctx, turn) {
   if (s.health < 30) common -= 0.08;
   if (s.stress > 80) common -= 0.06;
   if (hardKey === 'eng' || hardKey === 'kor') common += 0;
+  let fateKey = null;
+  if (r.chance(0.05)) { fateKey = r.pick(SUB_KEYS); Lf(s, { kor: '1교시 국어 도중 앞자리 수험생이 쓰러져 시험이 10분 중단됐다. 다시 시작했을 때 지문이 눈에 안 들어왔다.', math: '수학 시간, 배가 뒤틀리기 시작했다. 화장실에 다녀오느라 15분을 잃었다.', eng: '영어 듣기 방송이 중간에 끊겼다가 다시 나왔다. 3번부터 7번까지 놓쳤다.', inq: '탐구 시간, 시계가 멈춰 있었다. 종료 5분 전 안내에 서른 문제 중 여덟 개가 비어 있었다.' }[fateKey]); }
   const day = sitExam(s, r, 0.11, common, hardKey, choiceD);
+  if (fateKey) { s.csatSub[fateKey] -= 0.45; s.csatG = mockGrades(s.csatSub); s.zCsat = meanSub(s.csatSub); s.csatPct = topFromZ(s.zCsat); }
   const pct = s.csatPct;
   const diffWord = day > 0.12 ? '평소보다 훨씬 잘 봤다.' : day < -0.12 ? '평소 실력이 나오지 않았다.' : '평소 실력만큼 나왔다.';
   L(s, `수능 가채점 — ${gradesText(s.csatG)} (평균 상위 ${pct.toFixed(1)}%). ${diffWord}`, day < -0.12 ? 'bad' : day > 0.12 ? 'good' : 'info');
@@ -2366,8 +2902,12 @@ function finalTurn(ctx, turn) {
 function admissions(ctx) {
   const s = ctx.s, p = s.p;
   const field = s.applyField || topInterest(s);
+  if (SILGI[field]) silgiDay(s, field, makeRng(s.seed, 'silgiDay'));
   const susi = rollCards(s, s.susiCards || [], makeRng(s.seed, 'susiRoll'));
   s.susi = susi;
+  // 면접 당일의 운
+  { const rf = makeRng(s.seed, 'susiFate'); const pi = susi.findIndex(c => c.pass && c.type === 'jonghap'); if (pi >= 0 && rf.chance(0.06)) { susi[pi].pass = false; Lf(s, `${susi[pi].uni} 면접 날 지하철이 멈췄다. 20분 지각, 면접은 3분 만에 끝났다.`); }
+    else if (!susi.some(c => c.pass) && susi.length && rf.chance(0.07)) { const ci = susi.reduce((b, c, i) => (c.minOk && c.label !== '상향' && (b < 0 || c.P > susi[b].P) ? i : b), -1); if (ci >= 0) { susi[ci].pass = true; Lf(s, `${susi[ci].uni} ${susi[ci].major} 예비 번호가 돌았다. 추가합격.`); } } }
   const passed = susi.filter(c => c.pass);
   L(s, '수시 결과 — ' + (susi.length ? susi.map(c => `${c.uni} ${c.major}(${TYPE_NAMES[c.type]}) ${c.pass ? '합격' : c.minOk ? (c.req ? `불합격(최저 ${reqText(c.req)} 충족, 합 ${c.minSum})` : '불합격') : `최저 미충족(${reqText(c.req)} 필요, 내 합 ${c.minSum})`}`).join(' / ') : '지원 안 함'), passed.length ? 'good' : 'bad');
   const minFail = susi.filter(c => !c.minOk).length;
@@ -2383,6 +2923,19 @@ function admissions(ctx) {
   }
   return jungsiRound(ctx, field, 'jungsi1');
 }
+// 실기 당일: 몇 달 연습이 하루에 걸린다. 운이 꽤 크다
+function silgiDay(s, field, r) {
+  const d = r.normal() * 0.28;
+  let note = '';
+  if (field === 'sport' && r.chance(0.08)) { s.silgiDay = d - 0.6; L(s, '실기 당일, 첫 종목 제자리멀리뛰기에서 착지하며 발목을 접질렸다. 남은 종목을 절뚝이며 뛰었다. (운)', 'fate'); return; }
+  if (field === 'perf' && r.chance(0.08)) { s.silgiDay = d - 0.5; L(s, '실기 전날 밤 목이 잠겼다. 당일 아침 고음이 갈라졌다. (운)', 'fate'); return; }
+  if (field === 'art' && r.chance(0.06)) { s.silgiDay = d - 0.5; L(s, '실기 시험장에 들어가니 출제 주제가 올해 처음 보는 유형이었다. 손이 굳었다. (운)', 'fate'); return; }
+  s.silgiDay = d;
+  if (d > 0.3) note = '실기 당일 컨디션이 최고였다. 평소보다 잘 나왔다.';
+  else if (d < -0.3) note = '실기 당일 유난히 손이 안 풀렸다. 평소 실력이 안 나왔다.';
+  else note = '실기는 평소 실력만큼 나왔다.';
+  L(s, note + (Math.abs(d) > 0.3 ? ' (운)' : ''), d > 0.3 ? 'good' : d < -0.3 ? 'bad' : 'info');
+}
 function jungsiRound(ctx, field, key) {
   const s = ctx.s;
   const w = subjWeights(field);
@@ -2394,7 +2947,9 @@ function jungsiRound(ctx, field, key) {
   const r = makeRng(s.seed, key);
   const cards = rollCards(s, makeCards(s, field, 'jungsi', o.id, 3, r), r);
   // 다군 '펑크'(합격선 붕괴)나 '폭발'은 해마다 있다
-  if (r.chance(0.04)) { cards[2].pass = true; cards[2].punk = true; }
+  if (r.chance(0.04)) { cards[2].pass = true; cards[2].punk = true; Lf(s, `${cards[2].uni} ${cards[2].major}에 '펑크'가 났다. 작년보다 합격선이 크게 내려갔다.`); }
+  else if (r.chance(0.05)) { const si = cards.findIndex(c => c.label === '안정' && c.pass); if (si >= 0) { cards[si].pass = false; cards[si].boom = true; Lf(s, `${cards[si].uni} ${cards[si].major}에 '폭발'이 났다. 안정이라던 곳에 지원자가 몰려 합격선이 치솟았다.`); } }
+  else if (!cards.some(c => c.pass) && r.chance(0.07)) { const si = cards.length - 1; cards[si].pass = true; cards[si].waitlist = true; Lf(s, `${cards[si].uni} ${cards[si].major} 예비 23번. 2월 마지막 날 추가합격 전화가 왔다.`); }
   s.jungsi = cards;
   L(s, '정시 결과 — ' + cards.map((c, i) => `${'가나다'[i]}군 ${c.uni} ${c.major}${c.cut != null ? `(70%컷 ${c.cut.toFixed(1)} · 내 점수 ${c.score.toFixed(1)})` : ''} ${c.pass ? '합격' + (c.punk ? '(펑크 덕분!)' : '') : '불합격'}`).join(' / '), cards.some(c => c.pass) ? 'good' : 'bad');
   return pickUniversity(ctx, cards.filter(c => c.pass), key);
@@ -2707,6 +3262,26 @@ function careerPhase(ctx) {
     opts.push({ id: 'med_lic', label: '면허를 따고 개원을 목표로', tags: ['safe', 'study'] });
     opts.push({ id: 'med_hosp', label: '병원·기업에 소속되어 일한다', tags: ['safe'] });
     opts.push({ id: 'med_bio', label: '제약·바이오 회사나 연구로 간다', tags: ['self'] });
+  } else if (SILGI[f]) {
+    const tl = Math.round(s.talent[FIELDS[f].talent]);
+    if (f === 'art') {
+      opts.push({ id: 'artist', label: `전업 작가·웹툰 연재에 도전 (실기 ${tl})`, hint: '되면 내 이름으로 산다 · 대부분 3년 안에 통장이 빈다', tags: ['risk', 'self'], w: (tl - 78) / 8 + (p.confidence - 3) * 0.3 });
+      opts.push({ id: 'job', label: '디자인 회사·기업 디자이너로 취업', hint: '월급은 나온다 · 야근이 많고 초봉이 낮다', tags: ['safe'], w: 1 });
+      opts.push({ id: 'acadT', label: '입시미술 학원 강사', hint: '수요가 꾸준하다 · 저녁·주말 근무', tags: ['safe', 'work'], w: 0.3 });
+      opts.push({ id: 'grad', label: '유학·대학원 (순수미술·디자인)', tags: ['study', 'self'], w: p.wealth === 'high' ? 0.3 : -1 });
+    } else if (f === 'perf') {
+      opts.push({ id: 'musician', label: `전업 뮤지션 — 오디션·음원·공연 (실기 ${tl})`, hint: '무대에 산다 · 수입은 몇 년간 교통비 수준', tags: ['risk', 'self'], w: (tl - 78) / 8 + (p.confidence - 3) * 0.3 });
+      if (/성악|기악|관현악|피아노|작곡/.test(u.major)) opts.push({ id: 'orchestra', label: '교향악단·합창단 단원 공채', hint: '안정적 · 자리가 한 해 몇 개 안 난다', tags: ['safe', 'study'], w: 0.5 });
+      opts.push({ id: 'acadT', label: '실용음악 학원 강사·보컬 트레이너', hint: '음악으로 먹고산다 · 저녁·주말 근무', tags: ['safe', 'work'], w: 0.6 });
+      opts.push({ id: 'job', label: '공연기획사·음반사·음악 외 일반 취업', hint: '월급은 나온다 · 전공은 반쯤 접는다', tags: ['safe'], w: 0.4 });
+    } else {
+      if (u.teacher) opts.push({ id: 'teacher', label: '체육 임용고시 (경쟁률 높음)', tags: ['safe', 'study', 'obey'], w: 1 });
+      opts.push({ id: 'police', label: '경찰·소방 공채 (체력 + 필기)', hint: '체대 출신의 정석 · 필기(국어·영어·형사법)가 관건', tags: ['safe', 'study'], w: 0.9 + (p.pDesire === 'stable' ? 0.5 : 0) });
+      opts.push({ id: 'trainer', label: '트레이너·필라테스·재활 (창업 포함)', hint: '몸으로 번다 · 소득 편차가 크다', tags: ['self', 'work'], w: 0.5 + (p.social - 3) * 0.3 });
+      opts.push({ id: 'job', label: '스포츠 브랜드·구단·협회 취업', hint: '안정적인 쪽 · 자리가 많지 않다', tags: ['safe'], w: 0.3 });
+    }
+    opts.push({ id: 'civil', label: '공무원 시험 (7·9급)', tags: ['safe', 'obey', 'study'], w: (p.pDesire === 'stable' ? 0.5 : -0.6) });
+    if (s.flags.creator) opts.push({ id: 'creator', label: '크리에이터·프리랜서', tags: ['risk', 'fun', 'self'], w: 0 });
   } else {
     opts.push({ id: 'job', label: `${FIELDS[f].name} 전공을 살려 취업`, tags: ['safe'], w: 1.2 + (s.fit - 0.6) });
     if (u.double) opts.push({ id: 'double', label: `복수전공 ${FIELDS[u.double].name} 쪽으로 취업`, tags: ['self'] });
@@ -2777,6 +3352,45 @@ function resolveCareer(s, path, r, attempt) {
   const mk = (id, title, base, field, level) => ({ ok: true, career: { id, title, base, field, level } });
   switch (path) {
     case 'job': return { ok: true, career: jobAt(f === 'med' ? 'sci' : f, levelFrom(C), r, s) };
+    // ── 예체능 ──  재능이 바탕이지만 운이 꽤 크다. 바르게 살아도 안 풀리는 사람이 많은 동네다
+    case 'artist': {
+      const sc = s.talent.art * 0.5 + clamp(s.col.spec, 0, 100) * 0.15 + eff * 8 + p.confidence * 2 + p.diligence * 2 - s.lazy * 0.2 + r.normal() * 10 + (attempt - 1) * 4;
+      if (sc > 92) return mk('art-webtoon', '네이버 웹툰 정식 연재 작가', 7500, 'art', 0);
+      if (sc > 80) return mk('art-solo', '개인전을 여는 작가 겸 강사', 3900, 'art', 1);
+      if (sc > 64) return mk('art-illust', '외주로 버티는 일러스트레이터', 2700, 'art', 2);
+      return { ok: false, failText: '3년 동안 공모전과 연재 심사에서 떨어졌다. 통장 잔고가 바닥났다.' };
+    }
+    case 'musician': {
+      const sc = s.talent.perf * 0.5 + eff * 8 + p.social * 2 + p.grit * 2 - s.lazy * 0.2 + r.normal() * 11 + (attempt - 1) * 4;
+      if (sc > 93) return mk('mus-chart', '음원 차트에 오른 싱어송라이터', 9000, 'perf', 0);
+      if (sc > 80) return mk('mus-session', '세션·공연으로 먹고사는 뮤지션', 4200, 'perf', 1);
+      if (sc > 64) return mk('mus-indie', '홍대 공연 + 레슨으로 버티는 뮤지션', 2600, 'perf', 2);
+      return { ok: false, failText: '오디션에서 번번이 떨어졌다. 공연 수입은 교통비도 안 됐다.' };
+    }
+    case 'orchestra': {
+      const P = sigmoid((s.talent.perf - 80) / 6 + eff * 0.5 + (u.prestige - 80) / 15 + (attempt - 1) * 0.5);
+      if (r.next() < P) return mk('mus-orch', r.pick(['시립교향악단 단원', '국립합창단 단원', '시립국악관현악단 단원']), 4800, 'perf', 1);
+      return { ok: false, failText: '단원 공채 실기에서 세 번 떨어졌다. 한 자리에 80명이 왔다.' };
+    }
+    case 'acadT': {
+      const tk = FIELDS[f].talent;
+      const sc = s.talent[tk] * 0.3 + u.prestige * 0.3 + eff * 8 + p.social * 3 + p.diligence * 2 - s.lazy * 0.15 + r.normal() * 5;
+      if (sc > 72) return mk('acad-owner-' + f, f === 'art' ? '입시미술 학원 원장' : '실용음악 학원 원장', 6500, f, 1);
+      if (sc > 52) return mk('acad-t-' + f, f === 'art' ? '입시미술 학원 강사' : '보컬·악기 전문 강사', 3600, f, 2);
+      return mk('acad-pt-' + f, '동네 학원 시간강사', 2500, f, 3);
+    }
+    case 'police': {
+      const G = endG(s);
+      const sc = s.talent.sport * 0.15 + p.diligence * 6 + p.memory * 5 + eff * 10 + (5 - G.kor) * 2 + (5 - G.eng) * 1.5 - s.lazy * 0.2 + r.normal() * 6 + (attempt - 1) * 6;
+      if (sc > 66) return r.chance(0.5) ? mk('police', '경찰관 (순경 공채)', 4500, 'law', 1) : mk('fire', '소방관', 4600, 'law', 1);
+      return { ok: false, failText: '경찰 공채 필기(형사법·헌법)에서 떨어졌다. 체력은 만점이었는데.' };
+    }
+    case 'trainer': {
+      const sc = s.talent.sport * 0.35 + p.social * 4 + p.confidence * 3 + eff * 8 - s.lazy * 0.15 + r.normal() * 7;
+      if (sc > 76) return mk('tr-owner', '필라테스·PT 스튜디오 대표', 6000, 'sport', 1);
+      if (sc > 56) return mk('tr-head', '대형 헬스장 수석 트레이너', 3800, 'sport', 2);
+      return mk('tr-free', '프리랜서 PT 트레이너', 2600, 'sport', 3);
+    }
     case 'double': return { ok: true, career: jobAt(u.double, levelFrom(C - 3), r, s) };
     case 'family': {
       const ok = r.chance(0.55 + p.diligence * 0.05);
@@ -2949,6 +3563,14 @@ function finalize(ctx) {
   s.turnLabel = '서른 살';
   s.age = 30;
   const car = s.career;
+  // 서른이 되기 전, 직장에서의 운. 바르게 살았어도 회사가 망하고, 대충 살았어도 운이 트이기도 한다
+  const rf = makeRng(s.seed, 'careerFate'), x = rf.next();
+  const pub = /^(police|fire|civil|teach|soe|nco|hs-civil|hs-soe|md-core|grad-prof|grad-inst)/.test(car.id);   // 공무원·교사·공기업·교수는 잘리지 않는다
+  if (x < 0.03 && !pub) { car.level = Math.min(3, car.level + 2); car.base = Math.round(car.base * 0.5); car.title += ' → 회사 부도, 빚을 안고 재출발'; car.id += '-ruin'; Lf(s, '다니던 회사가 임금을 석 달 밀리다 부도났다. 지인 소개로 넣은 투자금 2천만 원도 사기였다. 바르게 살았는데 서른을 빚으로 시작한다.'); inc(s, 'mental', -18); }
+  else if (x < 0.1 && car.level <= 2 && !pub) { car.level += 1; car.base = Math.round(car.base * 0.72); car.title += ' → 구조조정 뒤 재취업 준비'; car.id += '-lay'; Lf(s, '입사 3년 차에 회사가 사업부를 접었다. 구조조정 명단에 내 이름이 있었다.'); inc(s, 'mental', -10); }
+  else if (x < 0.13 && car.level <= 1 && !pub) { car.base = Math.round(car.base * 0.8); car.title += ' (업계 침체)'; car.id += '-down'; Lf(s, '잘 나가던 업계가 2년 만에 얼어붙었다. 연봉은 동결, 팀은 절반이 나갔다.'); inc(s, 'mental', -6); }
+  else if (x < 0.17) { Lf(s, '번아웃이 왔다. 공황 증상으로 반년을 쉬었다.'); inc(s, 'mental', -14); car.base = Math.round(car.base * 0.9); }
+  else if (x < 0.22 && car.level >= 1 && !pub) { car.level -= 1; car.base = Math.round(car.base * 1.28); car.title += ' → 스카우트'; car.id += '-up'; Lf(s, '우연히 맡은 프로젝트가 윗선 눈에 들었다. 경쟁사에서 연봉을 올려 데려갔다.'); inc(s, 'mental', 6); }
   const salary = Math.round(car.base * (0.86 + r.next() * 0.28) / 100) * 100;
   // 연애·결혼
   let marital;
@@ -2987,6 +3609,7 @@ function finalize(ctx) {
     mental: Math.round(s.mental), sat, satTag, life, income: Math.round(income),
     csatPct: s.csatPct, naesinAvg: s.naesinRec.length ? avgNaesin(s) : null,
     csatG: s.csatG, employ: s.uni ? employOf(s.uni.field, s.uni.prestige, s.uni.teacher) : null,
+    fates: (s.fates || []).slice(),
   };
   s.ending.story = epilogue(s, s.ending);
 }
@@ -2995,6 +3618,9 @@ function archetype(s, car, sat, salary, marital) {
   if (car.id.indexOf('esp-1') === 0) return '게임으로 세계 무대에 선 사람';
   if (car.id === 'idol-hit') return '무대 위의 별';
   if (car.id === 'st-big') return '판을 뒤집은 사람';
+  if (car.id === 'art-webtoon' || car.id === 'mus-chart') return '좋아하는 걸로 이름을 얻은 사람';
+  if (/^acad-owner/.test(car.id)) return '가르치는 일에서 자리를 잡은 사람';
+  if (s.arts && car.field !== FIELDS[ARTS_FIELD[s.arts]].talent && ['art', 'perf', 'sport'].indexOf(car.field) < 0 && sat < 55) return '실기를 접은 뒤의 서른';
   if (marital === 'firstlove' && sat >= 60) return '첫사랑과 끝까지 간 사람';
   if (p.pDesire === 'med' && car.field === 'med' && sat < 55) return '부모님의 꿈을 대신 사는 의사';
   if (car.field === 'med' && sat >= 65) return '사람을 살리는 일에서 의미를 찾은 사람';
@@ -3045,7 +3671,7 @@ function simulate(profile, seed, resolve) {
       if (i >= 8) settleExamSense(s);
       if (i === start && t.type !== 'sem') studyMethod(ctx, t);
       if (t.type === 'sem') semesterTurn(ctx, t);
-      else if (t.type === 'vac') { if (t.id === 'g1v2' || t.id === 'g2v2' || t.id === 'g1v1' && p.startTurn <= 1) acadPlan(ctx, t); vacationTurn(ctx, t); randomEvents(ctx, t, 1 + (makeRng(s.seed, t.id + ':n').chance(0.45) ? 1 : 0)); }
+      else if (t.type === 'vac') { if (t.id === 'g1v2' || t.id === 'g2v2' || t.id === 'g1v1' && p.startTurn <= 1) acadPlan(ctx, t); vacationTurn(ctx, t); rollFate(ctx, t, 0.07); randomEvents(ctx, t, 2); }
       else if (t.type === 'apply') applyTurn(ctx, t);
       else if (t.type === 'final') finalTurn(ctx, t);
     }
@@ -3114,7 +3740,7 @@ function analyze(profile, seed, history, base) {
     let alts = [];
     if (h.prompt.type === 'alloc') alts = allocAlternatives(h);
     else if (h.prompt.type === 'methods') alts = methodAlternatives(h);
-    else alts = h.prompt.options.filter(o => o.id !== h.choice).slice(0, 4).map(o => ({ choice: o.id, label: o.label }));
+    else alts = h.prompt.options.filter(o => o.id !== h.choice).slice(0, 3).map(o => ({ choice: o.id, label: o.label }));
     alts.forEach(alt => {
       const res = autoplay(profile, seed, decisions, { key: h.key, choice: alt.choice });
       if (!res.done) return;
@@ -3160,6 +3786,7 @@ function view(s) {
     acad: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], type: s.acad[k], label: ACAD[s.acad[k]].name })),
     korFocus: (KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock).name,
     methods: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], label: methodInfo(s, k).name })),
+    arts: artsField(s) ? { field: artsField(s), name: { art: '미술', perf: '음악', sport: '체육' }[artsField(s)], talent: Math.round(s.talent[FIELDS[artsField(s)].talent]), acad: ARTS_ACAD[s.artsAcad || 'none'].name } : null,
     pct: pctOf(s.csatSub || s.lastMock || s.sub),
     jfit: jungsiFit(s, s.csatSub || s.lastMock || s.sub),
     sense: s.examSense != null ? (s.examSense >= 0.08 ? '실전 감각 좋음' : s.examSense <= -0.06 ? '실전 감각 부족' : '실전 감각 보통') : (s.mockSem ? (s.mockPrep / s.mockSem >= 0.7 ? '학평 준비 꾸준함' : s.mockPrep / s.mockSem <= 0.35 ? '학평 준비 부족' : '학평 준비 보통') : null),
@@ -3183,7 +3810,7 @@ function view(s) {
 const API = {
   play, autoplay, analyze, view, normalizeProfile, decisionsOf,
   fitFromGrades: (g, track) => { const sub = {}; SUB_KEYS.forEach(k => { sub[k] = subjFromGrade(k, +g[k] || 5); }); return jungsiFit({ track: track === '자연' ? '자연' : '인문' }, sub); },
-  ACAD, KOR_FOCUS, SUBJ_METHODS, PAST_MOCK, PCT70, FIELDS, GOALS, PARENT_STYLES, PARENT_DESIRES, STYLES, HOBBIES, FRIEND_GROUPS, TIERS,
+  ACAD, KOR_FOCUS, SUBJ_METHODS, PAST_MOCK, PCT70, ARTS_ACAD, ARTS_NAME, FIELDS, GOALS, PARENT_STYLES, PARENT_DESIRES, STYLES, HOBBIES, FRIEND_GROUPS, TIERS,
   _internal: { persona, simulate, makeRng, topFromZ, zFromTop, grade9, grade5 },
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

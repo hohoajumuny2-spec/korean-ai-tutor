@@ -193,8 +193,12 @@ const EVENT_SCENE = {
   phone: 'phone', mockShock: 'night_study', burnout: 'night_study', sleep: 'night_study', seteuk: 'classroom', groupWork: 'classroom', senior: 'campus',
   contest: 'lab', council: 'stage', careerDay: 'consult', rank: 'game', esports: 'game', casting: 'stage', youtube: 'phone', coding: 'code', artAcademy: 'art', sportsTeam: 'sport',
   injury: 'hospital', concert: 'stage', transfer: 'classroom', partTime: 'shop', teacher: 'classroom', interview: 'consult', cold: 'hospital',
+  gamble: 'phone', gambleDebt: 'phone', gambleSpiral: 'street', theft: 'shop', pcAddict: 'pc', gameSpend: 'family', smoke: 'street', runaway: 'street', brawl: 'street',
+  bullyWitness: 'classroom', snsBully: 'phone', teacherClash: 'classroom', lateHabit: 'classroom', motorbike: 'street', drinkParty: 'friends', depression: 'night_study', fakeGrade: 'family',
+  lostDirection: 'night_study', directorCare: 'academy', acadFriend: 'academy', artsContest: 'stage', artsSlump: 'art', artsInjury: 'hospital', artsCost: 'family', artsParent: 'family',
   cc: 'campus', distance: 'phone', startupFriend: 'office', compareSNS: 'phone', drink: 'friends', retire: 'family', coin: 'phone', prof: 'lab', friendReunion: 'street',
 };
+const FATE_SCENE = { accident: 'hospital', parentIll: 'hospital', bankrupt: 'family', divorce: 'family', victim: 'classroom', recordMiss: 'classroom', recordLucky: 'classroom', examError: 'classroom', flu: 'hospital', scholarship: 'family', teacherGood: 'classroom', teacherBad: 'classroom', move: 'street', artsReform: 'phone' };
 const SEASON = { g1s1: 'spring', g1v1: 'summer', g1s2: 'autumn', g1v2: 'winter', g2s1: 'spring', g2v1: 'summer', g2s2: 'autumn', g2v2: 'winter', g3s1: 'spring', g3v1: 'summer', g3s2: 'autumn' };
 function sceneFor(prompt) {
   const k = prompt.key || '';
@@ -202,6 +206,8 @@ function sceneFor(prompt) {
   const season = SEASON[turn] || null;
   const m = k.match(/:ev:(\w+)/);
   if (m && EVENT_SCENE[m[1]]) return { name: EVENT_SCENE[m[1]], season };
+  const fm = k.match(/:fate:(\w+)/);
+  if (fm) return { name: FATE_SCENE[fm[1]] || 'street', season, fate: true };
   if (/:methods$/.test(k)) return { name: turn === 'g3s1' ? 'night_study' : 'academy', season };
   if (/:hp$/.test(k)) return { name: 'exam', season };
   if (/:alloc$/.test(k)) return { name: turn === 'g3s2' ? 'night_study' : 'classroom', season };

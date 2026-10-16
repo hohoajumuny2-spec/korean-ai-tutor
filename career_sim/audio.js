@@ -130,6 +130,7 @@ const SFX = {
   good: t => [72, 76, 79, 84].forEach((m, i) => tone(sfxBus, t + i * 0.07, m, 0.22, 0.17, 'triangle')),
   normal: t => { tone(sfxBus, t, 74, 0.14, 0.13, 'sine'); tone(sfxBus, t + 0.12, 76, 0.2, 0.12, 'sine'); },
   bad: t => { tone(sfxBus, t, 67, 0.22, 0.15, 'square', { slide: -2, lp: 1400 }); tone(sfxBus, t + 0.2, 63, 0.4, 0.15, 'square', { slide: -3, lp: 1200 }); },
+  fate: t => { tone(sfxBus, t, 55, 0.9, 0.12, 'sine', { attack: 0.05, release: 0.6 }); tone(sfxBus, t + 0.25, 61, 0.9, 0.09, 'sine', { attack: 0.05, release: 0.6 }); noise(sfxBus, t, 0.5, 0.05, null, 600); },   // 운: 낮게 울리는 두 음
   bell: t => [76, 72, 74, 67].forEach((m, i) => tone(sfxBus, t + i * 0.32, m, 0.6, 0.11, 'sine', { release: 0.5 })),   // 학교 종
   page: t => noise(sfxBus, t, 0.18, 0.12, 900),
   exam: t => { [0, 0.18, 0.36].forEach(d => tone(sfxBus, t + d, 88, 0.1, 0.1, 'square', { lp: 3000 })); },
