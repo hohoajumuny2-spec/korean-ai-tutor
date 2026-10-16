@@ -1,4 +1,4 @@
-<title>그때 그 선택</title>
+<title>어땠을까</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8">
@@ -9,13 +9,15 @@
 /* 레이아웃: 시험지 카드 구조는 그대로. 학년마다 색이 바뀌고(고1 연두 → 고2 하늘 → 고3 보라 → 입시 주황 → 대학 코랄 → 서른 금색),
    방금 한 선택이 좋았는지·아쉬웠는지·보통이었는지에 따라 화면 분위기 색(mood)이 바뀐다. 상황마다 짧은 그림 영상이 붙는다. */
 :root {
-  --base: #f5f6fb; --sheet: #ffffff; --ink: #1c2130; --muted: #687085; --rule: #e2e5ee;
-  --accent: #19b37a; --accent2: #ffb020;
+  --base: #f8faff; --sheet: #ffffff; --ink: #1c2130; --muted: #687085; --rule: #e4e8f2;
+  --accent: #2fd39a; --accent2: #ffc93c;
+  --on: #16203a;   /* 밝은 메인 색 위의 글자 */
+  --accent-ink: color-mix(in srgb, var(--accent) 58%, #0f1630);   /* 밝은 바탕 위에 메인 색으로 쓰는 글자 */
   --good: #12a564; --bad: #e5483d; --normal: #7d879b;
   --mood: var(--accent);
   --omr: var(--accent);
   --omr-soft: color-mix(in srgb, var(--accent) 13%, var(--sheet));
-  --paper: color-mix(in srgb, var(--accent) 8%, var(--base));
+  --paper: color-mix(in srgb, var(--accent) 10%, var(--base));
   --hl: color-mix(in srgb, var(--accent2) 45%, transparent);
   --red: #e5483d; --red-soft: color-mix(in srgb, #e5483d 14%, var(--sheet));
   --good-soft: color-mix(in srgb, var(--good) 13%, var(--sheet));
@@ -28,14 +30,14 @@
   --f-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --r: 12px;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; color-scheme: dark; } }
-:root[data-theme="dark"] { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; color-scheme: dark; }
-:root[data-phase="g1"]  { --accent: #19b37a; --accent2: #ffb020; }
-:root[data-phase="g2"]  { --accent: #2d7ff9; --accent2: #23c4d9; }
-:root[data-phase="g3"]  { --accent: #7b5cf5; --accent2: #ff6bb0; }
-:root[data-phase="adm"] { --accent: #f2711c; --accent2: #ffc53d; }
-:root[data-phase="col"] { --accent: #ef4b7c; --accent2: #8f6bff; }
-:root[data-phase="end"] { --accent: #d39a00; --accent2: #ef4b7c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; --accent-ink: var(--accent); color-scheme: dark; } }
+:root[data-theme="dark"] { --base: #0f1118; --sheet: #181b25; --ink: #eceef4; --muted: #a0a7b8; --rule: #2a2f3d; --good: #3ad48b; --bad: #ff6a5f; --normal: #9aa3b6; --warn: #f0b04a; --accent-ink: var(--accent); color-scheme: dark; }
+:root[data-phase="g1"]  { --accent: #2fd39a; --accent2: #ffc93c; }
+:root[data-phase="g2"]  { --accent: #4aa8ff; --accent2: #3fe0e8; }
+:root[data-phase="g3"]  { --accent: #a68bff; --accent2: #ff8cc6; }
+:root[data-phase="adm"] { --accent: #ff9d52; --accent2: #ffd84d; }
+:root[data-phase="col"] { --accent: #ff7fa6; --accent2: #b49bff; }
+:root[data-phase="end"] { --accent: #f7c52b; --accent2: #ff7fa6; }
 :root[data-mood="good"]   { --mood: var(--good); }
 :root[data-mood="bad"]    { --mood: var(--bad); }
 :root[data-mood="normal"] { --mood: var(--normal); }
@@ -79,7 +81,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .ticket .k { background: var(--paper); color: var(--muted); font-weight: 700; padding: 9px 10px; border-right: 1px solid var(--rule); }
 .ticket .v { padding: 9px 12px; min-width: 0; }
 .ticket .head { background: var(--ink); color: var(--sheet); padding: 10px 12px; font: 400 17px/1.2 var(--f-display); letter-spacing: .04em; display: flex; justify-content: space-between; }
-.cta { display: inline-flex; align-items: center; gap: 8px; background: var(--omr); color: var(--sheet); border: 0; border-radius: 8px; padding: 13px 22px; font-weight: 700; font-size: 16px; }
+.cta { display: inline-flex; align-items: center; gap: 8px; background: var(--omr); color: var(--on); border: 0; border-radius: 8px; padding: 13px 22px; font-weight: 700; font-size: 16px; }
 .cta:hover { filter: brightness(1.06); }
 .cta.secondary { background: var(--ink); color: var(--sheet); }
 .cta:disabled { opacity: .45; cursor: not-allowed; }
@@ -102,18 +104,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 input[type=text], input[type=number], select { width: 100%; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font: inherit; }
 .seg { display: flex; flex-wrap: wrap; gap: 6px; }
 .seg button { border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
-.seg button.on { border-color: var(--omr); background: var(--omr-soft); color: var(--omr); font-weight: 700; }
+.seg button.on { border-color: var(--omr); background: var(--omr-soft); color: var(--accent-ink); font-weight: 700; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
 .cards button { text-align: left; border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
 .cards button b { display: block; color: var(--ink); font-size: 14px; }
 .cards button.on { border-color: var(--omr); background: var(--omr-soft); }
-.cards button.on b { color: var(--omr); }
+.cards button.on b { color: var(--accent-ink); }
 .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 @media (max-width: 480px) { .grid4 { grid-template-columns: repeat(2, 1fr); } }
 .sub { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .slider { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: center; }
 .bubbles { display: flex; gap: 6px; flex-wrap: wrap; }
-.bubbles button { width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--omr); background: transparent; color: var(--omr); font: 600 13px var(--f-num); }
+.bubbles button { width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--omr); background: transparent; color: var(--accent-ink); font: 600 13px var(--f-num); }
 .bubbles button.on { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
 .bubbles .ends { font-size: 12px; color: var(--muted); align-self: center; }
 .formnav { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
@@ -122,7 +124,7 @@ input[type=text], input[type=number], select { width: 100%; background: var(--pa
 .ruler { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 16px; }
 .ruler div { font-size: 12px; color: var(--muted); padding-top: 6px; border-top: 4px solid var(--rule); text-align: center; }
 .ruler div.done { border-color: var(--ink); color: var(--ink); }
-.ruler div.now { border-color: var(--omr); color: var(--omr); font-weight: 700; }
+.ruler div.now { border-color: var(--omr); color: var(--accent-ink); font-weight: 700; }
 .game { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
 @media (max-width: 860px) { .game { grid-template-columns: 1fr; } }
 .status { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
@@ -164,7 +166,7 @@ input[type=text], input[type=number], select { width: 100%; background: var(--pa
 .opts { display: grid; gap: 8px; }
 .opt { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: center; text-align: left; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 11px 14px; font-size: 15px; }
 .opt:hover { border-color: var(--omr); }
-.opt .bub { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--omr); display: grid; place-items: center; color: var(--omr); font: 600 12px var(--f-num); }
+.opt .bub { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--omr); display: grid; place-items: center; color: var(--accent-ink); font: 600 12px var(--f-num); }
 .opt:hover .bub { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
 .alloc { display: grid; gap: 8px; }
 .arow { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; border-bottom: 1px dashed var(--rule); padding-bottom: 8px; }
@@ -237,7 +239,7 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
   --sc-door: #8a5a3a; --sc-army: #5d7a3a; --sc-labcoat: #f4f6fa; }
 .clip svg, .clip video { display: block; width: 100%; height: 100%; object-fit: cover; }
 .clip .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 14px 12px; background: linear-gradient(transparent, rgba(10,12,24,.72)); color: #fff; font-size: 14px; line-height: 1.5; }
-.clip .cap b { display: inline-block; font-size: 11px; letter-spacing: .08em; background: var(--accent); color: #fff; border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
+.clip .cap b { display: inline-block; font-size: 11px; letter-spacing: .08em; background: var(--accent); color: var(--on); border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
 .clip .bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: rgba(255,255,255,.2); }
 .clip .bar i { display: block; height: 100%; width: 100%; background: var(--accent2); transform-origin: left; animation: prog 6s linear infinite; }
 .clip .pp { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; border-radius: 50%; border: 0; background: rgba(10,12,24,.55); color: #fff; font-size: 13px; display: grid; place-items: center; }
@@ -292,7 +294,7 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
 .dotlegend { font-size: 11.5px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
 .dotlegend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; background: var(--c); }
 .opt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--paper)); }
-.ruler div.now { border-color: var(--accent); color: var(--accent); }
+.ruler div.now { border-color: var(--accent); color: var(--accent-ink); }
 .status { border-top: 4px solid var(--mood); transition: border-color .5s; }
 .vsum { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .vsum span { font-size: 12.5px; border-radius: 999px; padding: 3px 10px; color: #fff; background: var(--c); }
@@ -347,12 +349,30 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
 .gradebook td.g { font: 700 30px/1 var(--f-hand); }
 .wcard .mark { font-family: var(--f-hand); font-weight: 700; }
 .brand b { letter-spacing: .02em; }
+/* 과목별 공부법 고르기 */
+.mrows { display: grid; gap: 12px; }
+.mrow { border: 1px solid color-mix(in srgb, var(--c) 30%, var(--rule)); border-left: 4px solid var(--c); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--c) 4%, var(--sheet)); }
+.mrow .mh { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.mrow .mh b { font: 400 18px/1.2 var(--f-display); color: var(--c); }
+.mrow .mh span { font-size: 12.5px; color: var(--muted); }
+.mchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mchips button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 999px; padding: 7px 12px; font-size: 13.5px; line-height: 1.3; text-align: left; }
+.mchips button.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--sheet)); color: var(--ink); font-weight: 700; box-shadow: inset 0 0 0 1px var(--c); }
+.mrow .mhint { font-size: 12.5px; color: var(--muted); margin-top: 7px; }
+@media (max-width: 860px) { .mchips button { padding: 10px 13px; min-height: 44px; } }
+.methbox { border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 8px 10px; margin: -4px 0 12px; display: grid; gap: 3px; font-size: 12px; }
+.methbox .mt { font-size: 12px; font-weight: 700; display: flex; justify-content: space-between; gap: 6px; }
+.methbox .mt span { font-weight: 500; color: var(--muted); }
+.methbox div.ml { display: flex; justify-content: space-between; gap: 8px; }
+.methbox .an { font-weight: 700; flex: none; }
+.fitline { font-size: 12px; color: var(--muted); margin: -6px 0 12px; line-height: 1.5; }
+.fitline b { color: var(--ink); }
 footer.fine { margin-top: 36px; font-size: 12px; color: var(--muted); max-width: 60em; }
 </style>
 
 <div class="wrap">
   <div class="top">
-    <div class="brand"><b>그때 그 선택</b><span>입시·진로 인생 시뮬레이션</span></div>
+    <div class="brand"><b>어땠을까</b><span>그때 다른 선택을 했다면 — 입시·진로 인생 시뮬레이션</span></div>
     <button class="ghost" id="homeBtn" type="button" hidden>처음 화면</button>
   </div>
   <main id="app"></main>
@@ -448,7 +468,7 @@ const SAMPLE = {
   gpaG: 2.3, mockG: 3, recordLv: 3, style: 'cram', startTurn: 6, subject: 'soc',
   subj: { kor: 2, math: 4, eng: 2, inq: 3 }, acad: { kor: 'director', math: 'big', eng: 'online', inq: 'none' }, pJob: 'office', pBond: 'cold', romanceNow: 'crush', screen: 3, academies: 2, clarity: 2,
   diligence: 3, grit: 2, social: 4, curiosity: 4, confidence: 3, impulse: 4, focus: 3, comprehension: 4, memory: 3,
-  hobbies: ['video', 'idol', 'read'], interest: 'media', goal: 'jkos',
+  hobbies: ['video', 'idol', 'read'], interest: 'media', goal: 'jkos', pastMock: 'casual',
   pStyle: 'anxious', pDesire: 'stable', wealth: 'mid', sibling: 'better', friendGroup: 'party', bestFriend: true,
 };
 SAMPLE.grade = 2;
@@ -456,7 +476,7 @@ function gradeOfTurn(t) { return t < 4 ? 1 : t < 8 ? 2 : 3; }
 function startLabel(f) { const g = gradeOfTurn(+f.startTurn || 0); const w = OPT.when[g].find(x => x[0] === +f.startTurn); return `고${g} ${w ? w[1] : ''}`; }
 function fillDefaults(f) {
   if (!f.acad) { const n = +f.academies || 0; f.acad = {}; ['kor', 'math', 'eng', 'inq'].forEach((k, i) => { f.acad[k] = i < n ? 'big' : 'none'; }); }
-  const d = { startTurn: (+f.grade - 1 || 0) * 4, subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
+  const d = { startTurn: (+f.grade - 1 || 0) * 4, pastMock: 'casual', subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
   Object.keys(d).forEach(k => { if (f[k] == null) f[k] = d[k]; });
   f.grade = gradeOfTurn(+f.startTurn);
   return f;
@@ -495,14 +515,14 @@ function renderIntro() {
   <section class="hero">
     <div class="sheet omr pad">
       <div class="eyebrow">지금 내 학년·학기부터 서른 살까지</div>
-      <h1>오늘의 작은 선택이<br><em>어느 대학, 어떤 서른</em>이 될까</h1>
-      <p class="lead">내 성적, 성향, 취미, 부모님과 친구까지 넣고 고등학교 3년을 직접 살아 봅니다. 학원 한 칸, 고백 하나, 원서 한 장이 결과를 바꿉니다. 끝나면 같은 운으로 다른 답을 골랐을 때의 인생을 보여 줍니다.</p>
+      <h1>그때 다른 걸 골랐다면<br><em>어땠을까</em></h1>
+      <p class="lead">내 성적, 성향, 취미, 부모님과 친구까지 넣고 고등학교 3년을 직접 살아 봅니다. 과목별 공부법과 공부 시간, 1·2학년 학평을 어떻게 봤는지, 학원 한 칸, 고백 하나, 원서 한 장이 결과를 바꿉니다. 끝나면 같은 운으로 다른 답을 골랐을 때 <b>어땠을까</b>를 보여 줍니다.</p>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="cta" type="button" id="goSetup">내 정보 넣고 시작</button>
         <button class="cta secondary" type="button" id="goQuick">예시 학생(고2 2학기)으로 바로 해 보기</button>
       </div>
       <div class="feat">
-        <div><b>현실적인 입시</b>과목별 공부와 모의고사, 과목 사이의 연계, 수능 최저, 수시 6장·정시 3장, 학과별 취업률까지</div>
+        <div><b>현실적인 입시</b>과목별 공부법과 모의고사, 수능 최저, 수시 6장·정시 3장. 정시 합격선은 대학어디가 2023~2026 정시 70%컷 자료</div>
         <div><b>수천 가지 결말</b>대학 × 학과 × 직업 × 연애 × 관계로 갈라지는 서른 살</div>
         <div><b>인생 오답노트</b>"그때 다른 걸 골랐다면?"을 실제로 다시 돌려 본 결과</div>
       </div>
@@ -549,7 +569,8 @@ function renderSetup() {
     </div>
     <div class="field"><span class="lab">최근 모의고사 과목별 등급</span>
       <div class="grid4">${SUBJ.map(([k, n]) => `<label class="sub" for="f-sub-${k}"><span>${n}</span><input id="f-sub-${k}" type="number" min="1" max="9" step="1" value="${esc(f.subj[k])}" data-subj="${k}"></label>`).join('')}</div>
-      <div class="hint">평균 <span class="num">${mockAvg(f)}</span>등급, 상위 약 <span class="num">${gradeToPct(mockAvg(f), false).toFixed(1)}</span>%. 수학이 많이 약하거나 강하면 이과 정시에, 국어는 논술에, 영어는 해외 진로에 반영됩니다.</div></div>
+      <div class="hint">평균 <span class="num">${mockAvg(f)}</span>등급. ${(() => { const j = CS.fitFromGrades(f.subj, f.track); return `국수탐 백분위로 환산하면 <span class="num">${j.score.toFixed(1)}</span>점, 대학어디가 2023~2026 정시 70%컷으로는 <b>${esc(j.uni)}</b>${j.cut != null ? ` <span class="num">(${esc(j.track)} ${j.cut})</span>` : ''} 수준입니다.`; })()}</div></div>
+    ${+f.startTurn > 0 ? `<div class="field"><span class="lab">지금까지 학력평가(모의고사)는 어떻게 봤나요</span>${seg('pastMock', Object.keys(CS.PAST_MOCK).map(k => [k, CS.PAST_MOCK[k].name]), f.pastMock || 'casual')}<div class="hint">1·2학년 학평을 실전처럼 보고 오답을 정리해 온 만큼 고3 모의고사와 수능에서 시간 배분·실전 감각으로 돌아옵니다.</div></div>` : ''}
     <div class="field"><span class="lab">지금까지 동아리·탐구 활동(생기부)</span>${bubbles('recordLv', f.recordLv, '거의 없음', '꽤 많음')}</div>`;
   if (st === 1) body = `
     <div class="field"><span class="lab">공부 스타일</span><div class="cards">${Object.keys(CS.STYLES).map(k => `<button type="button" data-set="style" data-v="${k}" class="${f.style === k ? 'on' : ''}"><b>${CS.STYLES[k].name}</b>${STYLE_D[k]}</button>`).join('')}</div></div>
@@ -671,8 +692,10 @@ function statusPanel(v, hist) {
       <div class="score"><div class="k">모의고사 평균</div><div class="g">${v.mock.g}등급<small>상위 ${v.mock.pct.toFixed(0)}%</small></div></div>
     </div>
     <div class="subj" aria-label="과목별 모의고사 등급">${[['kor', '국어'], ['math', '수학'], ['eng', '영어'], ['inq', '탐구']].map(([k, n]) => `<div class="sg" style="--c:${CAT_COLOR[k]}"><span>${n}</span><b>${v.subj[k]}</b></div>`).join('')}</div>
-    <div class="korbox" aria-label="국어 영역별 등급"><div class="kh">국어 영역 <span>${esc(v.korFocus)}</span></div>
-      <div class="kp">${[['read', '독서'], ['lit', '문학'], ['lang', '화법·언어·매체']].map(([k, n]) => `<div><span>${n}</span><b>${v.kor[k]}</b></div>`).join('')}</div></div>
+    <div class="fitline">백분위 국 <b class="num">${Math.round(v.pct.kor)}</b> · 수 <b class="num">${Math.round(v.pct.math)}</b> · 탐 <b class="num">${Math.round(v.pct.inq)}</b><br>정시로 보면 <b>${esc(v.jfit.uni)}</b>${v.jfit.cut != null ? ` <span class="num">(${esc(v.jfit.track)} 70%컷 ${v.jfit.cut})</span>` : ''} 수준</div>
+    <div class="methbox" aria-label="과목별 공부법"><div class="mt">과목별 공부법 ${v.sense ? `<span>${esc(v.sense)}</span>` : ''}</div>
+      ${v.methods.map(m => `<div class="ml"><span class="an" style="color:${CAT_COLOR[m.k]}">${m.name}</span><span>${esc(m.label)}</span></div>`).join('')}
+      <div class="ml muted"><span>국어 영역</span><span>독서 ${v.kor.read} · 문학 ${v.kor.lit} · 언매 ${v.kor.lang}</span></div></div>
     <div class="acadlist">${v.acad.map(a => `<div><span class="an" style="color:${CAT_COLOR[a.k]}">${a.name}</span><span class="${a.type === 'none' ? 'muted' : ''}">${esc(a.label)}</span></div>`).join('')}</div>
     <div class="bars">${v.bars.map(b => `<div class="bar ${b.bad ? 'badv' : ''}"><span>${esc(b.label)}</span><div class="track"><div class="fill" style="width:${b.v}%"></div></div><span class="v">${b.v}</span></div>`).join('')}</div>
     <div class="chips">
@@ -699,6 +722,13 @@ function renderGame() {
   let qhtml = `<div id="clipSlot"></div><div class="qno"><span class="badge">${qno}번</span><span class="when">${esc(pr.turn)} · ${Math.floor(pr.age)}세</span></div><h2>${esc(pr.title)}</h2><p class="ctx">${esc(pr.text)}</p>`;
   if (pr.type === 'choice') {
     qhtml += `<div class="opts">${pr.options.map((o, i) => `<button type="button" class="opt" data-opt="${esc(o.id)}"><span class="bub">${i + 1}</span><span class="txt"><span>${esc(o.label)}</span>${o.hint ? `<span class="hint">${esc(o.hint)}</span>` : ''}</span></button>`).join('')}</div>`;
+  } else if (pr.type === 'methods') {
+    const cur = app.methDraft && app.methDraft.key === pr.key ? app.methDraft.v : Object.fromEntries(pr.rows.map(r => [r.k, r.def]));
+    app.methDraft = { key: pr.key, v: cur };
+    qhtml += `<div class="mrows">${pr.rows.map(r => { const sel = r.options.find(o => o.id === cur[r.k]) || r.options[0]; return `<div class="mrow" style="--c:${CAT_COLOR[r.k]}"><div class="mh"><b>${esc(r.name)}</b><span>${esc(r.status)}</span></div>
+      <div class="mchips" role="radiogroup" aria-label="${esc(r.name)} 공부법">${r.options.map(o => `<button type="button" role="radio" aria-checked="${o.id === sel.id}" class="${o.id === sel.id ? 'on' : ''}" data-meth="${r.k}" data-v="${esc(o.id)}">${esc(o.label)}</button>`).join('')}</div>
+      <div class="mhint">${esc(sel.hint || '')}</div></div>`; }).join('')}</div>
+      <div class="qactions"><button class="cta" type="button" id="methGo">이렇게 공부한다</button><button class="ghost" type="button" id="methReset">지금 하던 대로</button></div>`;
   } else {
     const cur = app.allocDraft && app.allocDraft.key === pr.key ? app.allocDraft.v : Object.assign({}, pr.def);
     app.allocDraft = { key: pr.key, v: cur };
@@ -708,7 +738,7 @@ function renderGame() {
     const T = pr.total || 12;
     for (let i = used; i < T; i++) cells += `<i class="empty"></i>`;
     const studyN = ['kor', 'math', 'eng', 'inq'].reduce((t, k) => t + (cur[k] || 0), 0);
-    qhtml += `<div class="cells" style="grid-template-columns:repeat(${T},1fr)" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${T - used}</b> / ${T} · 공부 ${studyN}칸 (국어가 영어·탐구 효율을, 이과 수학이 탐구 계산을 끌어올린다)</div>
+    qhtml += `<div class="cells" style="grid-template-columns:repeat(${T},1fr)" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${T - used}</b> / ${T} · 공부 ${studyN}칸 (과목끼리 이어진다: 국어 독해력 → 영어·탐구, 수학 → 물리·화학)</div>
       <div class="alloc" style="margin-top:12px">${pr.cats.map(c => `<div class="arow"><div class="nm"><b>${esc(c.label)}</b><span>${esc(c.desc)}</span></div>
         <div class="step"><button type="button" data-dec="${c.id}" ${!(cur[c.id] > 0) ? 'disabled' : ''} aria-label="${esc(c.label)} 줄이기">−</button><span class="val">${cur[c.id] || 0}</span><button type="button" data-inc="${c.id}" ${used >= T ? 'disabled' : ''} aria-label="${esc(c.label)} 늘리기">+</button></div></div>`).join('')}</div>
       <div class="qactions"><button class="cta" type="button" id="allocGo" ${used !== T ? 'disabled' : ''}>이렇게 보낸다</button><button class="ghost" type="button" id="allocReset">평소의 나대로</button>${used !== T ? `<span class="left">${T}칸을 모두 채워야 합니다</span>` : ''}</div>`;
@@ -730,6 +760,11 @@ function renderGame() {
   $app.querySelectorAll('[data-opt]').forEach(b => { b.onclick = () => { app.seenLog = logs.length; answer(pr.key, b.dataset.opt); }; });
   $app.querySelectorAll('[data-inc]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.inc] = (app.allocDraft.v[b.dataset.inc] || 0) + 1; render(); }; });
   $app.querySelectorAll('[data-dec]').forEach(b => { b.onclick = () => { app.allocDraft.v[b.dataset.dec] = Math.max(0, (app.allocDraft.v[b.dataset.dec] || 0) - 1); render(); }; });
+  $app.querySelectorAll('[data-meth]').forEach(b => { b.onclick = () => { app.methDraft.v[b.dataset.meth] = b.dataset.v; render(); }; });
+  const mg = document.getElementById('methGo');
+  if (mg) mg.onclick = () => { const v2 = Object.assign({}, app.methDraft.v); app.methDraft = null; app.seenLog = logs.length; answer(pr.key, v2); };
+  const mr = document.getElementById('methReset');
+  if (mr) mr.onclick = () => { app.methDraft = { key: pr.key, v: Object.fromEntries(pr.rows.map(r => [r.k, r.def])) }; render(); };
   const go = document.getElementById('allocGo');
   if (go) go.onclick = () => { const v2 = Object.assign({}, app.allocDraft.v); app.allocDraft = null; app.seenLog = logs.length; answer(pr.key, v2); };
   const rs = document.getElementById('allocReset');
@@ -809,7 +844,7 @@ function renderEnd() {
   document.getElementById('againSame').onclick = () => { startGame(); window.scrollTo(0, 0); };
   document.getElementById('editMe').onclick = () => { app.screen = 'setup'; app.step = 0; render(); };
   document.getElementById('copyRes').onclick = () => {
-    const txt = `[그때 그 선택] ${e.archetype}\n${e.uni} ${e.major}\n서른 살: ${e.career} (연 ${money(e.salary)})\n` + e.story.join('\n') +
+    const txt = `[어땠을까] ${e.archetype}\n${e.uni} ${e.major}\n서른 살: ${e.career} (연 ${money(e.salary)})\n` + e.story.join('\n') +
       (an && an.regrets[0] ? `\n가장 아쉬운 선택: ${an.regrets[0].turn} "${an.regrets[0].title}" — ${an.regrets[0].alt} → ${an.regrets[0].ending.career}` : '');
     const done = () => toast('결과를 복사했어요');
     try { navigator.clipboard.writeText(txt).then(done, () => fallbackCopy(txt)); } catch (err) { fallbackCopy(txt); }

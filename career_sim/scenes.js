@@ -202,6 +202,8 @@ function sceneFor(prompt) {
   const season = SEASON[turn] || null;
   const m = k.match(/:ev:(\w+)/);
   if (m && EVENT_SCENE[m[1]]) return { name: EVENT_SCENE[m[1]], season };
+  if (/:methods$/.test(k)) return { name: turn === 'g3s1' ? 'night_study' : 'academy', season };
+  if (/:hp$/.test(k)) return { name: 'exam', season };
   if (/:alloc$/.test(k)) return { name: turn === 'g3s2' ? 'night_study' : 'classroom', season };
   if (/:vac$/.test(k)) return { name: season === 'winter' ? 'winter' : 'summer', season };
   if (/:club$/.test(k)) return { name: 'stage', season };
