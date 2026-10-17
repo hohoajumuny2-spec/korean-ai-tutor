@@ -389,10 +389,19 @@ const KOR_FOCUS = {
   gichul: { name: '평가원 기출 분석', w: { read: 0.6, lit: 0.6, lang: 0.4 }, eff: 1.07 },
   mock:   { name: '사설 모의고사 반복 풀이', w: { read: 0.4, lit: 0.4, lang: 0.3 }, eff: 0.93 },
   hw:     { name: '학원 숙제만', w: { read: 0.4, lit: 0.4, lang: 0.4 }, eff: 0.97 },
+  drop:   { name: '접는다 — 수업만 듣고 최소한만', w: { read: 0.3, lit: 0.3, lang: 0.3 }, eff: 0.5, drop: true },
 };
 // 공부법마다 모의고사(실전) 쪽으로 쌓이는 정도(mock)와 학교 내신 쪽으로 쌓이는 정도(nae)
 Object.assign(KOR_FOCUS.read, { mock: 0.6, nae: 0.3 }); Object.assign(KOR_FOCUS.lit, { mock: 0.35, nae: 0.8 }); Object.assign(KOR_FOCUS.lang, { mock: 0.35, nae: 0.65 });
-Object.assign(KOR_FOCUS.gichul, { mock: 0.9, nae: 0.35 }); Object.assign(KOR_FOCUS.mock, { mock: 1, nae: 0.1 }); Object.assign(KOR_FOCUS.hw, { mock: 0.5, nae: 0.55 });
+Object.assign(KOR_FOCUS.gichul, { mock: 0.9, nae: 0.35 }); Object.assign(KOR_FOCUS.mock, { mock: 1, nae: 0.1 }); Object.assign(KOR_FOCUS.hw, { mock: 0.5, nae: 0.55 }); Object.assign(KOR_FOCUS.drop, { mock: 0.1, nae: 0.1 });
+// 과목을 접는 것(수포자·영포자)은 흔한 전략이다. 시간을 다른 과목에 몰아주는 대신 그 과목을 보는 대학·최저가 닫힌다
+const DROP_HINT = {
+  kor: '국어는 거의 모든 대학·모든 전형이 본다 · 접으면 갈 곳이 거의 없다',
+  math: '국어·영어·탐구에 시간을 몬다 · 상경·이공계와 중경외시 이상 정시는 사실상 닫힌다. 3과목 반영 대학(광명상가 이하)은 열려 있다',
+  eng: '절대평가라 3등급까지는 쉬운 편 · 완전히 접으면 최저(영어 포함)와 정시 감점이 크다',
+  inq: '시간을 국·수·영에 몬다 · 3합 최저가 어려워지고 이과 정시 탐구 30%를 잃는다',
+};
+const DROP_METHOD = k => ({ name: '접는다 — 수업만 듣고 최소한만', eff: 0.5, mock: 0.1, nae: 0.1, drop: true, hint: DROP_HINT[k] });
 
 // ── 과목별 공부법 ──────────────────────────────────────────
 //  같은 시간을 써도 방법이 실력에 맞아야 오른다. eff: 수능·모의고사 실력 효율, fit: 지금 실력(z)에 따른 보정,
@@ -407,6 +416,7 @@ const SUBJ_METHODS = {
     mock:    { name: '실전 모의고사 시간 재고 풀기', eff: 0.92, fit: z => (z > 0.8 ? 0.06 : -0.04), mock: 1, nae: 0.1, hint: '시간 감각 · 구멍 난 개념은 그대로' },
     wrong:   { name: '틀린 문제만 오답노트로 다시', eff: 0.98, fit: (z, s) => (s.p.diligence - 3) * 0.035, mock: 0.55, nae: 0.6, hint: '같은 실수를 줄인다 · 꾸준하지 않으면 노트만 남는다' },
     hw:      { name: '학원 숙제만', eff: 0.97, mock: 0.45, nae: 0.6, hint: '방향 고민이 없다 · 학원 수준만큼 오른다' },
+    drop:    DROP_METHOD('math'),
   },
   eng: {
     voca:    { name: '단어 매일 + 구문 독해', eff: 1.0, fit: z => (z < 0.8 ? 0.08 : -0.05), mock: 0.4, nae: 0.5, hint: '기초 체력 · 상위권엔 효과가 작다' },
@@ -414,6 +424,7 @@ const SUBJ_METHODS = {
     mock:    { name: '모의고사 풀이 위주', eff: 0.93, fit: z => (z > 1 ? 0.04 : 0), mock: 1, nae: 0.1, hint: '시간 관리 · 실력 자체는 천천히 오른다' },
     naesin:  { name: '교과서·부교재 본문 암기', eff: 0.88, mock: 0.1, nae: 1, hint: '내신 영어에 강하다 · 처음 보는 지문엔 약하다' },
     hw:      { name: '학원 숙제만', eff: 0.97, mock: 0.45, nae: 0.6, hint: '방향 고민이 없다 · 학원 수준만큼 오른다' },
+    drop:    DROP_METHOD('eng'),
   },
   inq: {
     concept: { name: '개념 정리 + 백지 복습', eff: 1.05, mock: 0.3, nae: 0.75, hint: '오래 남는다 · 시간이 많이 든다' },
@@ -421,9 +432,20 @@ const SUBJ_METHODS = {
     mock:    { name: '실전 모의고사 위주', eff: 0.9, fit: z => (z > 0.6 ? 0.06 : -0.05), mock: 1, nae: 0.1, hint: '시간 감각 · 개념이 약하면 같은 데서 계속 틀린다' },
     cram:    { name: '시험 직전에 몰아서 암기', eff: 0.78, mock: 0.1, nae: 0.6, hint: '내신은 버틴다 · 수능 땐 다 잊어버린다' },
     hw:      { name: '학원 숙제만', eff: 0.97, mock: 0.45, nae: 0.6, hint: '방향 고민이 없다 · 학원 수준만큼 오른다' },
+    drop:    DROP_METHOD('inq'),
   },
 };
-const METHOD_TAGS = { concept: ['study', 'safe'], drill: ['study', 'safe'], gichul: ['study', 'self'], mock: ['study', 'risk'], wrong: ['study', 'self'], hw: ['obey', 'safe'],
+SUBJ_METHODS.kor.drop.hint = DROP_HINT.kor;
+const isDropped = (s, k) => methodOf(s, k) === 'drop';
+const droppedList = s => SUB_KEYS.filter(k => isDropped(s, k));
+// 접은 과목이 전략으로 말이 되는가: 문과 수포자가 광명상가 이하를 노리면 그럴 수 있다. 나머지는 손해다
+function dropPrior(k, track, goalGi, z) {
+  if (k === 'kor') return -3.5;
+  if (k === 'math') return track === '자연' ? -3.5 : goalGi >= 6 && z < -0.3 ? -0.2 : goalGi >= 4 ? -1.2 : -2.5;
+  if (k === 'eng') return -1.8;
+  return track === '자연' ? -3 : goalGi >= 6 && z < -0.5 ? -0.8 : -2.2;
+}
+const METHOD_TAGS = { drop: ['risk', 'self'], concept: ['study', 'safe'], drill: ['study', 'safe'], gichul: ['study', 'self'], mock: ['study', 'risk'], wrong: ['study', 'self'], hw: ['obey', 'safe'],
   voca: ['study', 'safe'], naesin: ['study', 'safe'], cram: ['fun', 'risk'], read: ['study'], lit: ['study', 'safe'], lang: ['study', 'safe'] };
 function methodOf(s, k) { return k === 'kor' ? s.korFocus : (s.method && s.method[k]) || 'hw'; }
 function methodInfo(s, k) { const M = SUBJ_METHODS[k]; return M[methodOf(s, k)] || M.hw; }
@@ -449,8 +471,15 @@ const ENG_PEN = [0, 0.6, 1.8, 3.4, 5.2, 7, 9, 11, 13];   // 영어 등급에 따
 const pctile = z => clamp(100 * phi(z), 0, 100);
 function pctOf(sub) { const o = {}; SUB_KEYS.forEach(k => { o[k] = Math.round(pctile(sub[k]) * 10) / 10; }); return o; }
 // 정시 점수: 국·수·탐 백분위를 계열 반영 비율로 평균(절반은 단순 평균), 영어는 등급 감점
-function jungsiScore(sub, field) {
+const ENG_AS_PCT = [97, 92, 85, 75, 62, 50, 38, 25, 12];   // 3과목 반영 대학에서 영어를 백분위처럼 칠 때
+function jungsiScore(sub, field, gi) {
   const w = subjWeights(field), P = pctOf(sub), d = w.kor + w.math + w.inq;
+  // 중하위권 인문(광명상가 이하)은 국·수·영·탐 중 잘 본 3과목만 보는 대학이 많다 — 수포자가 가는 길
+  if (gi != null && gi >= 6 && trackIdx(field) === 0) {
+    const e = ENG_AS_PCT[subjGrade('eng', sub.eng) - 1];
+    const top3 = [P.kor, P.math, P.inq, e].sort((a, b) => b - a).slice(0, 3);
+    return (top3[0] + top3[1] + top3[2]) / 3 - 1.5;
+  }
   const weighted = (w.kor * P.kor + w.math * P.math + w.inq * P.inq) / d, plain = (P.kor + P.math + P.inq) / 3;
   return (weighted + plain) / 2 - ENG_PEN[subjGrade('eng', sub.eng) - 1];
 }
@@ -463,7 +492,7 @@ function jungsiFit(s, sub) {
   const field = s.applyField || (s.track === '자연' ? 'eng' : 'biz'), sc = jungsiScore(sub, field);
   const list = TIERS.slice(0, 10), ti = trackIdx(field);
   let best = null;
-  list.forEach(t => t.unis.forEach(u => { const c = uniCut(u, field); if (c != null && c <= sc + 0.3 && (!best || c > best.cut)) best = { uni: u, cut: c }; }));
+  list.forEach(t => t.unis.forEach(u => { const c = uniCut(u, field), sc2 = jungsiScore(sub, field, t.gi); if (c != null && c <= sc2 + 0.3 && (!best || c > best.cut)) best = { uni: u, cut: c }; }));
   return { score: Math.round(sc * 10) / 10, uni: best ? best.uni : '전문대학', cut: best ? best.cut : null, track: ti ? '자연' : '인문' };
 }
 function jungsiFitText(s, sub) { const f = jungsiFit(s, sub); return `국수탐 백분위 환산 ${f.score.toFixed(1)}점 — ${PCT70_SRC}로 보면 ${f.uni}${f.cut != null ? `(${f.track} ${f.cut})` : ''} 수준`; }
@@ -483,7 +512,7 @@ function normalizeProfile(p) {
     friendGroup: 'club', bestFriend: true,
     startTurn: null, subject: null, subj: null,
     pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2, acad: null, korFocus: null, pastMock: 'casual',
-    artKind: null, artLv: 3, artAcad: 'local',
+    artKind: null, artLv: 3, artAcad: 'local', dropped: [],
   };
   const out = Object.assign({}, d, p || {});
   out.hobbies = (out.hobbies || []).filter(h => HOBBIES[h]).slice(0, 3);
@@ -507,6 +536,7 @@ function normalizeProfile(p) {
   else out.artKind = null;
   out.artLv = clamp(parseInt(out.artLv, 10) || 3, 1, 5);
   if (!ARTS_ACAD[out.artAcad]) out.artAcad = 'local';
+  out.dropped = Array.isArray(out.dropped) ? out.dropped.filter(k => SUB_KEYS.indexOf(k) >= 0) : [];
   out.clarity = clamp(parseInt(out.clarity, 10) || 2, 1, 3);
   if (out.subj) ['kor', 'math', 'eng', 'inq'].forEach(k => { out.subj[k] = clamp(+out.subj[k] || 5, 1, 9); });
   ['diligence', 'grit', 'social', 'curiosity', 'confidence', 'impulse', 'focus', 'comprehension', 'memory', 'recordLv']
@@ -564,6 +594,7 @@ function initState(p, seed) {
   s.korOff = { read: r.normal() * 0.12, lit: r.normal() * 0.12, lang: r.normal() * 0.12 };
   s.korFocus = p.korFocus || (p.academies && s.acad.kor !== 'none' ? 'hw' : 'mock');
   s.method = {}; ['math', 'eng', 'inq'].forEach(k => { s.method[k] = defaultMethod(s, k); });
+  (p.dropped || []).forEach(k => { if (k === 'kor') s.korFocus = 'drop'; else s.method[k] = 'drop'; s.flags['dropped_' + k] = true; });
   // 1·2학년 학력평가(모의고사)를 어떻게 봐 왔나 — 지나온 학기는 입력값으로 채운다
   s.mockPrep = 0; s.mockSem = 0; s.examSense = null;
   const pastSem = HS_TURNS.slice(0, Math.min(p.startTurn, 8)).filter(t => t.type === 'sem').length;
@@ -667,7 +698,7 @@ function choicePrior(h, b) {
     const a = h.choice || {};
     const study = SUB_KEYS.reduce((t, k) => t + (a[k] || 0), 0);
     let v = (study - 6) * 0.8;
-    SUB_KEYS.forEach(k => { if (pr.cats.some(c => c.id === k) && !(a[k] > 0)) v -= k === 'kor' || k === 'math' ? 2.5 : 1.5; });
+    SUB_KEYS.forEach(k => { if (pr.cats.some(c => c.id === k && !c.dropped) && !(a[k] > 0)) v -= k === 'kor' || k === 'math' ? 2.5 : 1.5; });
     if (!(a.rest > 0)) v -= 1.5; if ((a.rest || 0) >= 5) v -= 1;
     if (pr.cats.some(c => c.id === 'silgi')) { if (!(a.silgi > 0)) v -= 2.5; else if (a.silgi >= 2) v += 0.8; }
     if ((a.hobby || 0) + (a.friends || 0) + (a.date || 0) >= 7) v -= 1.5;
@@ -676,7 +707,7 @@ function choicePrior(h, b) {
   if (pr.type === 'methods') {
     // 몰아서 암기·실력과 안 맞는 방법은 나쁘고, 실력에 맞는 방법은 좋다
     const c = h.choice || {};
-    return SUB_KEYS.reduce((v, k) => { const id = c[k], M = SUBJ_METHODS[k][id]; if (!M) return v; const e = M.eff + (M.fit ? M.fit(h.before.sub ? h.before.sub[k] : 0, { p: h.pp || { diligence: 3 } }) : 0); return v + (e - 0.99) * 12 + (id === 'cram' ? -1.2 : 0); }, 0);
+    return SUB_KEYS.reduce((v, k) => { const id = c[k], M = SUBJ_METHODS[k][id]; if (!M) return v; const z = h.before.sub ? h.before.sub[k] : 0; if (id === 'drop') return v + dropPrior(k, (h.pp || {}).track, (h.pp || {}).goalGi != null ? h.pp.goalGi : 6, z); const e = M.eff + (M.fit ? M.fit(z, { p: h.pp || { diligence: 3 } }) : 0); return v + (e - 0.99) * 12 + (id === 'cram' ? -1.2 : 0); }, 0);
   }
   const tv = o => { const t = o.tags && o.tags.length ? o.tags : ['safe']; return t.reduce((x, k) => x + (k === 'rest' && b.stress >= 60 ? 1 : (TAG_PRIOR[k] || 0)), 0) / t.length; };
   const chosen = pr.options.find(o => o.id === h.choice);
@@ -694,11 +725,13 @@ function settle(s) {
   if (s.fateSinceLast) { h.fate = s.fateSinceLast; s.fateSinceLast = null; score = prior * 1.2; if (!h.note) h.note = `이 구간엔 운이 끼었다 — ${h.fate} 결과가 나빠졌어도 선택 탓이 아니다.`; }
   // 핵심 과목을 통째로 비우거나, 놀기를 고른 선택은 결과가 잠깐 좋아 보여도 '좋은 선택'이 될 수 없다
   if (h.prompt.type === 'alloc') {
-    const a = h.choice || {}, miss = SUB_KEYS.filter(k => h.prompt.cats.some(c => c.id === k) && !(a[k] > 0));
+    const a = h.choice || {}, miss = SUB_KEYS.filter(k => h.prompt.cats.some(c => c.id === k && !c.dropped) && !(a[k] > 0));
     if (miss.length) { score = Math.min(score, miss.some(k => k === 'kor' || k === 'math') ? -2 : 1.5); h.note = `${miss.map(k => SUBJ_NAME[k]).join('·')}에 한 칸도 쓰지 않았다. 지금은 티가 안 나도 그 과목은 계속 떨어진다.`; }
   } else if (h.prompt.type === 'methods') {
     const bad = SUB_KEYS.filter(k => (h.choice || {})[k] === 'cram');
     if (bad.length) { score = Math.min(score, -1); h.note = '탐구를 시험 직전에 몰아서 외우면 내신은 버텨도 수능 날엔 대부분 잊어버린다.'; }
+    const dr = SUB_KEYS.filter(k => (h.choice || {})[k] === 'drop');
+    if (dr.length) { const pp = h.pp || {}; const ok = dr.every(k => dropPrior(k, pp.track, pp.goalGi != null ? pp.goalGi : 6, h.before.sub ? h.before.sub[k] : 0) > -1); h.note = ok ? `${dr.map(k => SUBJ_NAME[k]).join('·')}을(를) 접었다. 목표 대학 수준에서는 말이 되는 전략이다 — 대신 그 과목을 보는 대학과 최저는 포기한 셈이다.` : `${dr.map(k => SUBJ_NAME[k]).join('·')}을(를) 접었다. 지금 계열·목표에서는 그 과목 때문에 닫히는 문이 너무 많다.`; if (!ok) score = Math.min(score, -2); }
   } else {
     const ch = h.prompt.options.find(o => o.id === h.choice);
     if (ch && (ch.tags || []).indexOf('fun') >= 0 && score > 1.5) { score = 1.5; }
@@ -714,13 +747,13 @@ function ask(ctx, prompt) {
   prompt.age = s.age;
   const v = ctx.resolve(prompt, s);
   if (v === undefined) throw new Pending(prompt);
-  s.history.push({ key: prompt.key, turn: s.turnLabel, title: prompt.title, prompt: stripPrompt(prompt), choice: v, idx: s.history.length, before: snap(s), pp: { diligence: s.p.diligence } });
+  s.history.push({ key: prompt.key, turn: s.turnLabel, title: prompt.title, prompt: stripPrompt(prompt), choice: v, idx: s.history.length, before: snap(s), pp: { diligence: s.p.diligence, track: s.track, goalGi: (GOALS[s.p.goal] || GOALS.inseoul).gi } });
   return v;
 }
 function stripPrompt(pr) {
   return { key: pr.key, type: pr.type, title: pr.title, text: pr.text, turn: pr.turn,
     options: pr.options ? pr.options.map(o => ({ id: o.id, label: o.label, tags: o.tags, w: o.w })) : undefined,
-    cats: pr.cats, def: pr.def, total: pr.total,
+    cats: pr.cats ? pr.cats.map(c => ({ id: c.id, label: c.label, desc: c.desc, dropped: c.dropped })) : undefined, def: pr.def, total: pr.total,
     rows: pr.rows ? pr.rows.map(r => ({ k: r.k, name: r.name, def: r.def, options: r.options.map(o => ({ id: o.id, label: o.label, tags: o.tags })) })) : undefined };
 }
 function choose(ctx, key, title, text, options) {
@@ -756,7 +789,8 @@ function persona(s, prompt) {
       const sc = id => (id === 'gichul' ? p.diligence * 0.5 + (s.sub[r.k] > 0.3 ? 0.8 : -0.4) : 0) + (id === 'hw' ? 1.6 + (p.pStyle === 'strict' ? 0.4 : 0) : 0)
         + (id === 'concept' ? (s.sub[r.k] < -0.2 ? 1.4 : 0.3) : 0) + (id === 'drill' || id === 'voca' ? 1.2 : 0) + (id === 'wrong' ? (p.diligence - 3) * 0.6 + 0.5 : 0)
         + (id === 'mock' ? p.impulse * 0.25 + 0.3 : 0) + (id === 'cram' ? p.impulse * 0.35 - p.diligence * 0.3 + 0.4 : 0) + (id === 'naesin' ? 0.6 : 0)
-        + (id === r.def ? 0.5 : 0) + ((id === 'read' || id === 'lit' || id === 'lang') ? 0.4 : 0);
+        + (id === r.def ? 0.5 : 0) + ((id === 'read' || id === 'lit' || id === 'lang') ? 0.4 : 0)
+        + (id === 'drop' ? (r.def === 'drop' ? 3 : (r.k === 'math' && s.track !== '자연' && s.sub.math < -0.7 && p.diligence <= 3 && (GOALS[p.goal] || GOALS.inseoul).gi >= 6 ? 1.6 : -6)) : 0);
       out[r.k] = r.options.reduce((b, o) => (sc(o.id) > sc(b) ? o.id : b), r.options[0].id);
     });
     return out;
@@ -775,7 +809,7 @@ function defaultAlloc(s, cats) {
   const studyW = 2.6 + p.diligence * 0.95 - p.impulse * 0.25 + (s.acad ? SUB_KEYS.filter(k => s.acad[k] !== 'none').length : p.academies) * 0.35 + (p.pStyle === 'strict' || p.pStyle === 'anxious' ? 0.5 : 0);
   const avg = meanSub(s.sub), wt = subjWeights(s.track === '자연' ? 'eng' : 'biz');
   const need = {}; let nt = 0;
-  SUB_KEYS.forEach(k => { need[k] = Math.max(0.4, 1 + 0.35 * (avg - s.sub[k]) + (wt[k] - 0.25) * 2); nt += need[k]; });
+  SUB_KEYS.forEach(k => { need[k] = isDropped(s, k) ? 0.001 : Math.max(0.4, 1 + 0.35 * (avg - s.sub[k]) + (wt[k] - 0.25) * 2); nt += need[k]; });
   const w = {
     kor: studyW * need.kor / nt, math: studyW * need.math / nt, eng: studyW * need.eng / nt, inq: studyW * need.inq / nt,
     activity: 0.4 + p.curiosity * 0.3,
@@ -831,12 +865,14 @@ const HS_TURNS = [
 
 function subjectCats(s) {
   const g = mockGrades(s.sub), sci = s.track === '자연';
-  return [
+  const base = [
     { id: 'kor', label: '국어', desc: `지금 ${g.kor}등급. 독해력·문해력은 영어 장문과 탐구 지문 이해에도 그대로 쓰인다.` },
     { id: 'math', label: '수학', desc: `지금 ${g.math}등급. ${sci ? '이과 정시 반영 비율이 가장 높고, 물리·화학 계산에도 도움이 된다.' : '정시 문과에서도 등급 차이를 크게 가른다.'}` },
     { id: 'eng', label: '영어', desc: `지금 ${g.eng}등급(절대평가). 수능 최저에 자주 들어간다. 국어 독해력이 약하면 장문에서 막힌다.` },
     { id: 'inq', label: '탐구', desc: `지금 ${g.inq}등급. 암기가 중요하고, 지문을 빨리 읽을수록 유리하다.` },
   ];
+  base.forEach(c => { if (isDropped(s, c.id)) { c.desc = `접은 과목 (지금 ${g[c.id]}등급). 0칸이어도 평가에서 깎지 않는다. 수업만 듣는다.`; c.dropped = true; } });
+  return base;
 }
 function allocCats(s, turn) {
   const cats = [
@@ -932,9 +968,10 @@ function studySubjects(s, a, coef, r, quiet) {
   if (!quiet) {
     const after = mockGrades(s.sub);
     SUB_KEYS.forEach(k => {
-      if (after[k] > before[k]) L(s, SUBJ_DOWN[k](before[k], after[k], s), (a[k] || 0) <= 1 ? 'bad' : 'warn');
+      if (after[k] > before[k] && isDropped(s, k)) L(s, `${SUBJ_NAME[k]} ${before[k]}→${after[k]}등급. 접은 과목이라 예상한 대로다. 그 시간은 다른 과목에 갔다.`, 'info');
+      else if (after[k] > before[k]) L(s, SUBJ_DOWN[k](before[k], after[k], s), (a[k] || 0) <= 1 ? 'bad' : 'warn');
       else if (after[k] < before[k] && (a[k] || 0) >= 3) L(s, SUBJ_UP[k](before[k], after[k], s), 'good');
-      else if ((a[k] || 0) === 0 && s.neglect[k] >= 2) L(s, `${SUBJ_NAME[k]}${jo(SUBJ_NAME[k], '을/를')} ${s.neglect[k]}학기째 거의 안 했다. 등급은 아직 버티지만 실력은 계속 빠지고 있다.`, 'warn');
+      else if ((a[k] || 0) === 0 && s.neglect[k] >= 2 && !isDropped(s, k)) L(s, `${SUBJ_NAME[k]}${jo(SUBJ_NAME[k], '을/를')} ${s.neglect[k]}학기째 거의 안 했다. 등급은 아직 버티지만 실력은 계속 빠지고 있다.`, 'warn');
     });
     if (wasted.length) L(s, `${wasted.map(k => SUBJ_NAME[k]).join('·')} 학원은 다니는데 복습·숙제 시간을 거의 안 뒀다. 수업만 듣고 오니 남는 게 적다.`, 'warn');
     const kg = korGrades(s), weakP = KOR_PARTS.reduce((w, x) => (kg[x.k] > kg[w.k] ? x : w), KOR_PARTS[0]);
@@ -1019,7 +1056,8 @@ function semesterEffects(ctx, turn, a) {
   const korN = ((s.korOff.lit + s.korOff.lang) / 2) * 0.05;   // 국어 내신은 문학·문법 서술형 비중이 크다
   // 공부법이 내신 시험에 맞는가(교과서·유형 반복은 내신에, 기출·모의고사 위주는 수능에)
   const methN = SUB_KEYS.reduce((t, k) => t + (methodInfo(s, k).nae - 0.5) * Math.min(1, (a[k] || 0) / 3), 0) * 0.012;
-  const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends + acadN + korN + methN;
+  const dropN = droppedList(s).reduce((t, k) => t + (k === 'kor' || k === 'math' ? 0.07 : 0.045), 0);   // 접은 과목의 내신(수학 6~7등급)이 평균을 끌어내린다
+  const dN = (effSum * st.naesin * memF - baseN - Math.max(0, s.zN) * 0.5) * 0.046 + fg.study * a.friends + acadN + korN + methN - dropN;
   s.zN += dN * damp(s.zN);
 
   // 실기: 연습한 만큼 늘고, 안 하면 바로 무뎌진다. 입시 전문 학원이면 같은 시간에 더 는다
@@ -1203,7 +1241,17 @@ function studyMethod(ctx, turn) {
     text: `${turn.label}. ${lead} 지금 모의고사는 ${gradesText(g)}. 같은 시간을 써도 방법이 지금 실력에 맞아야 오른다. 교과서·유형 반복은 내신에, 기출·실전 모의고사는 수능에 더 잘 쌓인다. 1·2학년 때 모의고사 쪽으로 쌓아 둔 만큼 고3 모의고사와 수능에서 실전 감각으로 돌아온다.`,
     rows });
   const out = normMethods(v, rows);
+  const wasDropped = droppedList(s);
   s.korFocus = out.kor; ['math', 'eng', 'inq'].forEach(k => { s.method[k] = out[k]; });
+  const nowDropped = droppedList(s);
+  nowDropped.filter(k => wasDropped.indexOf(k) < 0).forEach(k => {
+    s.flags['dropped_' + k] = true;
+    L(s, { kor: '국어를 접기로 했다. 국어는 거의 모든 대학이 본다. 갈 수 있는 대학이 크게 줄어든다.',
+      math: s.track === '자연' ? '수학을 접기로 했다. 이과에서 수학을 접으면 공대·자연대·의약은 사실상 닫힌다. 계열을 바꾸거나 3과목 반영 대학을 찾아야 한다.' : '수학을 접기로 했다(문과 수포자). 하루 2~3칸이 국어·영어·탐구로 간다. 대신 상경 계열과 중경외시 이상 정시는 사실상 닫히고, 수학이 들어가는 3합 최저도 어려워진다. 국·영·탐 3과목만 보는 대학(광명상가 이하)이 목표가 된다.',
+      eng: '영어를 접기로 했다. 영어는 절대평가라 3등급까지는 비교적 쉬운데, 완전히 놓으면 5~6등급이 되고 최저 대부분에서 걸린다. 정시 감점도 크다.',
+      inq: '탐구를 접기로 했다. 3합 최저는 사실상 2과목으로 맞춰야 하고, 정시 탐구 반영(20~35%)을 잃는다.' }[k], 'warn');
+  });
+  wasDropped.filter(k => nowDropped.indexOf(k) < 0).forEach(k => { L(s, `${SUBJ_NAME[k]}${jo(SUBJ_NAME[k], '을/를')} 다시 잡기로 했다. 놓았던 기간만큼 구멍이 있다. 처음엔 더디다.`, 'info'); });
   L(s, '공부법 — ' + SUB_KEYS.map(k => `${SUBJ_NAME[k]}: ${methodInfo(s, k).name}`).join(' / ') + '.');
 }
 function normMethods(v, rows) { const o = {}; rows.forEach(r => { const c = v && v[r.k]; o[r.k] = r.options.some(x => x.id === c) ? c : r.def; }); return o; }
@@ -1249,8 +1297,8 @@ function fixedEvents(ctx, turn) {
   }
   if (turn.id === 'g1s2' && !s.subject) {
     const o = choose(ctx, 'g1s2:subject', '고2 선택과목 신청', `고교학점제. 다음 주까지 고2 선택과목을 내야 한다. 대학은 '권장 과목'을 들었는지로 "전공을 준비한 학생인지"를 본다. 그런데 물리는 이과 최상위권이 몰려서 수강생이 30명뿐이다. 30명 중 1등급은 3명. ${FIELDS[topInterest(s)].name}에 끌리는 지금, 무엇을 고를까?`, [
-      { id: 'phys', label: '미적분·물리·화학 (공대·자연대 권장)', hint: '이공계 지원에 유리 · 내신 경쟁이 가장 치열하다', tags: ['study', 'risk'] },
-      { id: 'bio', label: '생명과학·화학 (의약·생명 권장)', hint: '의대·간호·생명 지원에 유리 · 의대 지망생들과 경쟁', tags: ['study'] },
+      { id: 'phys', label: '미적분·물리·화학 (공대·자연대 권장)', hint: (isDropped(s, 'math') ? '수학을 접은 채 미적분·물리를 고르는 건 모순이다 · ' : '') + '이공계 지원에 유리 · 내신 경쟁이 가장 치열하다', tags: ['study', 'risk'], w: isDropped(s, 'math') ? -6 : 0 },
+      { id: 'bio', label: '생명과학·화학 (의약·생명 권장)', hint: (isDropped(s, 'math') ? '수학 없이 의약·생명은 어렵다 · ' : '') + '의대·간호·생명 지원에 유리 · 의대 지망생들과 경쟁', tags: ['study'], w: isDropped(s, 'math') ? -5 : 0 },
       { id: 'soc', label: '경제·정치와 법·사회문화 (상경·사회 권장)', hint: '경영·행정에 유리 · 이과 학과는 사실상 어렵다', tags: ['safe'] },
       { id: 'lang', label: '언어와 매체·윤리·제2외국어 (인문·교육 권장)', hint: '인문·교대에 유리 · 이과 학과는 사실상 어렵다', tags: ['safe'] },
       { id: 'easy', label: '수강생 많고 1등급 따기 쉬운 과목 위주', hint: '내신 등급이 오름 · 학종에서 "왜 이 과목?" 질문을 받는다', tags: ['fun', 'safe'] },
@@ -2665,7 +2713,7 @@ function estimateIdx(s, list, z, field, r, bias) {
 function cardP(s, c, field) {
   // 정시(일반 학과): 대학어디가 70%컷과 국수탐 백분위 점수를 바로 비교한다. 70%컷이면 붙는 쪽이 많다
   if (c.type === 'jungsi' && !SILGI[field] && c.tier.fo !== 'med' && uniCut(c.uni, field) != null) {
-    const sc = jungsiScore(s.csatSub || s.sub, field), cut = uniCut(c.uni, field) + (FIELD_DIFF[field] || 0) * 8;
+    const sc = jungsiScore(s.csatSub || s.sub, field, c.tier.gi), cut = uniCut(c.uni, field) + (FIELD_DIFF[field] || 0) * 8;
     c.cut = cut; c.score = sc;
     return sigmoid(0.85 * (sc - cut + 0.9));
   }
@@ -2682,6 +2730,8 @@ function cardP(s, c, field) {
   if (c.type === 'nonsul') P = P * 0.32 + 0.02;
   if (c.type === 'jonghap') P = P * 0.92;
   if (hasDirector(s) && (c.type === 'jonghap' || c.type === 'gyogwa')) P *= 1.06;   // 자소서·면접을 원장이 봐 줬다
+  // 접은 과목: 상위권 서류·교과에서는 수학 7등급이 바로 보인다. 중하위권은 덜 본다
+  if (c.type === 'jonghap' || c.type === 'gyogwa') droppedList(s).forEach(k => { const core = k === 'kor' || k === 'math'; P *= c.tier.gi <= 3 ? (core ? 0.35 : 0.6) : c.tier.gi <= 5 ? (core ? 0.7 : 0.85) : (k === 'kor' ? 0.7 : 1); });
   // 학폭 조치 기록·징계는 서류에서 바로 걸린다
   const vio = s.flags.violence || 0;
   if (vio && c.type === 'jonghap') P *= vio >= 2 ? 0.25 : 0.6;
@@ -2696,9 +2746,8 @@ function makeCards(s, field, type, strategy, count, r, estZ) {
   let est = estimateIdx(s, list, estZ != null ? estZ : z, field, r, bias);
   if (type === 'jungsi' && usesPct(field, list)) {
     // 정시 모의지원: 내 백분위 점수와 대학별 70%컷을 놓고 고른다
-    const sc = jungsiScore(s.csatSub || s.sub, field) + bias * 8 + r.normal() * 0.6;
     est = list.length - 1;
-    for (let i = 0; i < list.length; i++) if (sc >= tierCut(list[i], field) + (FIELD_DIFF[field] || 0) * 8 - 0.9) { est = i; break; }
+    for (let i = 0; i < list.length; i++) { const sc = jungsiScore(s.csatSub || s.sub, field, list[i].gi) + bias * 8 + r.normal() * 0.6; if (sc >= tierCut(list[i], field) + (FIELD_DIFF[field] || 0) * 8 - 0.9) { est = i; break; } }
   }
   const offs = count === 6
     ? { up: [-3, -2, -2, -1, -1, 0], mid: [-2, -1, -1, 0, 0, 1], safe: [-1, 0, 0, 1, 1, 2] }[strategy]
@@ -2779,6 +2828,8 @@ function applyTurn(ctx, turn) {
   const gA = mockGrades(s.sub);
   if (STEM.indexOf(field) >= 0 && gA.math >= 4) { s.flags.applyMathWeak = 2; L(s, `수학 ${gA.math}등급으로 ${FIELDS[field].name}에 지원한다. 학종 서류에서는 '수학 역량 부족'으로 읽히고, 교과에서도 수학 등급을 따로 보는 대학이 많다.`, 'bad'); }
   else if (field === 'biz' && gA.math >= 5) { s.flags.applyMathWeak = 1; L(s, `경영·경제인데 수학 ${gA.math}등급이다. 상경 계열은 수학 등급을 꽤 본다.`, 'warn'); }
+  const drs = droppedList(s);
+  if (drs.length) L(s, `접은 과목: ${drs.map(k => SUBJ_NAME[k]).join('·')}. ${drs.indexOf('math') >= 0 && s.track !== '자연' ? '국·영·탐 3과목만 보는 대학(광명상가 이하)이 현실적인 목표다. 그 위는 수학 반영 때문에 어렵다. ' : ''}${drs.some(k => k !== 'eng') ? '3합 최저는 남은 과목으로 맞춰야 한다.' : '영어가 들어가는 최저는 피해야 한다.'}`, 'warn');
   if (gA.kor >= 5) { s.flags.korWeakInterview = true; L(s, `국어 ${gA.kor}등급. 학종 면접에서 질문 요지를 놓치거나 논술 답안의 논지가 흔들릴 수 있다.`, 'warn'); }
   if (gA.eng >= 4) L(s, `영어 ${gA.eng}등급. 최저가 있는 전형은 영어 때문에 등급 합을 맞추기 어렵다.`, 'warn');
   if (s.flags.violence) L(s, s.flags.violence >= 2 ? '생기부에 학교폭력 조치(출석정지)가 기재돼 있다. 학종은 서류에서 거의 걸러지고, 교과·정시에서도 감점을 받는다.' : '생기부에 학교폭력 서면사과 조치가 있다. 학종 서류에서 불리하다.', 'bad');
@@ -3722,10 +3773,12 @@ function methodAlternatives(h) {
   h.prompt.rows.forEach(r => {
     const z = h.before.sub ? h.before.sub[r.k] : 0;
     const want = z < -0.3 && r.options.some(o => o.id === 'concept') ? 'concept' : r.k === 'eng' && z < 0.3 ? 'voca' : 'gichul';
-    const alt = r.options.find(o => o.id === want && o.id !== c[r.k]) || r.options.find(o => o.id !== c[r.k] && o.id !== 'cram' && o.id !== 'hw');
+    const alt = r.options.find(o => o.id === want && o.id !== c[r.k]) || r.options.find(o => o.id !== c[r.k] && o.id !== 'cram' && o.id !== 'hw' && o.id !== 'drop');
     if (!alt) return;
     const b = Object.assign({}, c); b[r.k] = alt.id;
-    alts.push({ choice: b, label: `${r.name} 공부법을 '${alt.label}'(으)로 했다면` });
+    alts.push({ choice: b, label: c[r.k] === 'drop' ? `${r.name}을(를) 접지 않고 '${alt.label}'(으)로 붙잡았다면` : `${r.name} 공부법을 '${alt.label}'(으)로 했다면` });
+    // 많이 약한 과목은 '접었다면'도 하나 본다
+    if (c[r.k] !== 'drop' && z < -0.6 && r.k !== 'kor' && r.options.some(o => o.id === 'drop')) { const d = Object.assign({}, c); d[r.k] = 'drop'; alts.push({ choice: d, label: `${r.name}을(를) 접고 그 시간을 다른 과목에 몰았다면` }); }
   });
   return alts;
 }
@@ -3785,7 +3838,8 @@ function view(s) {
     kor: korGrades(s, (s.csatSub || s.sub).kor),
     acad: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], type: s.acad[k], label: ACAD[s.acad[k]].name })),
     korFocus: (KOR_FOCUS[s.korFocus] || KOR_FOCUS.mock).name,
-    methods: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], label: methodInfo(s, k).name })),
+    methods: SUB_KEYS.map(k => ({ k, name: SUBJ_NAME[k], label: isDropped(s, k) ? '접음(최소한만)' : methodInfo(s, k).name, dropped: isDropped(s, k) })),
+    dropped: droppedList(s),
     arts: artsField(s) ? { field: artsField(s), name: { art: '미술', perf: '음악', sport: '체육' }[artsField(s)], talent: Math.round(s.talent[FIELDS[artsField(s)].talent]), acad: ARTS_ACAD[s.artsAcad || 'none'].name } : null,
     pct: pctOf(s.csatSub || s.lastMock || s.sub),
     jfit: jungsiFit(s, s.csatSub || s.lastMock || s.sub),

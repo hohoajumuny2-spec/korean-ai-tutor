@@ -367,6 +367,10 @@ details.past .feed { margin-top: 8px; max-height: 360px; overflow: auto; }
 .mchips button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 999px; padding: 7px 12px; font-size: 13.5px; line-height: 1.3; text-align: left; }
 .mchips button.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--sheet)); color: var(--ink); font-weight: 700; box-shadow: inset 0 0 0 1px var(--c); }
 .mrow .mhint { font-size: 12.5px; color: var(--muted); margin-top: 7px; }
+.mchips button.dropchip { border-style: dashed; color: var(--bad); }
+.mchips button.dropchip.on { background: var(--bad-soft); box-shadow: inset 0 0 0 1px var(--bad); border-color: var(--bad); }
+.subj .sg.dropped { opacity: .6; } .subj .sg.dropped span::after { content: " · 접음"; color: var(--bad); }
+.arow.dropped .nm b::after { content: " 접음"; font-size: 12px; color: var(--bad); margin-left: 4px; }
 @media (max-width: 860px) { .mchips button { padding: 10px 13px; min-height: 44px; } }
 .methbox { border: 1px solid var(--rule); background: var(--paper); border-radius: 8px; padding: 8px 10px; margin: -4px 0 12px; display: grid; gap: 3px; font-size: 12px; }
 .methbox .mt { font-size: 12px; font-weight: 700; display: flex; justify-content: space-between; gap: 6px; }
@@ -496,7 +500,7 @@ function gradeOfTurn(t) { return t < 4 ? 1 : t < 8 ? 2 : 3; }
 function startLabel(f) { const g = gradeOfTurn(+f.startTurn || 0); const w = OPT.when[g].find(x => x[0] === +f.startTurn); return `고${g} ${w ? w[1] : ''}`; }
 function fillDefaults(f) {
   if (!f.acad) { const n = +f.academies || 0; f.acad = {}; ['kor', 'math', 'eng', 'inq'].forEach((k, i) => { f.acad[k] = i < n ? 'big' : 'none'; }); }
-  const d = { startTurn: (+f.grade - 1 || 0) * 4, pastMock: 'casual', artKind: 'art', artLv: 3, artAcad: 'local', subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
+  const d = { startTurn: (+f.grade - 1 || 0) * 4, pastMock: 'casual', artKind: 'art', artLv: 3, artAcad: 'local', dropped: [], subject: 'soc', subj: { kor: f.mockG || 3, math: f.mockG || 3, eng: f.mockG || 3, inq: f.mockG || 3 }, pJob: 'office', pBond: 'good', romanceNow: 'none', screen: 2, academies: 1, clarity: 2 };
   Object.keys(d).forEach(k => { if (f[k] == null) f[k] = d[k]; });
   f.grade = gradeOfTurn(+f.startTurn);
   return f;
@@ -593,6 +597,7 @@ function renderSetup() {
     <div class="field"><span class="lab">최근 모의고사 과목별 등급</span>
       <div class="grid4">${SUBJ.map(([k, n]) => `<label class="sub" for="f-sub-${k}"><span>${n}</span><input id="f-sub-${k}" type="number" min="1" max="9" step="1" value="${esc(f.subj[k])}" data-subj="${k}"></label>`).join('')}</div>
       <div class="hint">평균 <span class="num">${mockAvg(f)}</span>등급. ${(() => { const j = CS.fitFromGrades(f.subj, f.track); return `국수탐 백분위로 환산하면 <span class="num">${j.score.toFixed(1)}</span>점, 대학어디가 2023~2026 정시 70%컷으로는 <b>${esc(j.uni)}</b>${j.cut != null ? ` <span class="num">(${esc(j.track)} ${j.cut})</span>` : ''} 수준입니다.`; })()}</div></div>
+    <div class="field"><span class="lab">이미 손을 놓은 과목이 있나요 (수포자·영포자처럼)</span><div class="seg">${SUBJ.map(([k, n]) => `<button type="button" data-drop="${k}" class="${(f.dropped || []).indexOf(k) >= 0 ? 'on' : ''}">${n}</button>`).join('')}</div><div class="hint">고른 과목은 '접는다'로 시작합니다. 그 시간은 다른 과목에 가지만, 그 과목을 보는 대학과 수능 최저는 닫힙니다. 학년이 바뀔 때 다시 잡을 수도 있습니다.</div></div>
     ${+f.startTurn > 0 ? `<div class="field"><span class="lab">지금까지 학력평가(모의고사)는 어떻게 봤나요</span>${seg('pastMock', Object.keys(CS.PAST_MOCK).map(k => [k, CS.PAST_MOCK[k].name]), f.pastMock || 'casual')}<div class="hint">1·2학년 학평을 실전처럼 보고 오답을 정리해 온 만큼 고3 모의고사와 수능에서 시간 배분·실전 감각으로 돌아옵니다.</div></div>` : ''}
     <div class="field"><span class="lab">지금까지 동아리·탐구 활동(생기부)</span>${bubbles('recordLv', f.recordLv, '거의 없음', '꽤 많음')}</div>`;
   if (st === 1) body = `
@@ -654,6 +659,9 @@ function bindSetup() {
       store.set('form', f); render();
     };
   });
+  $app.querySelectorAll('[data-drop]').forEach(b => {
+    b.onclick = () => { f.dropped = f.dropped || []; const k = b.dataset.drop, i = f.dropped.indexOf(k); if (i >= 0) f.dropped.splice(i, 1); else f.dropped.push(k); app.formIsSample = false; store.set('form', f); render(); };
+  });
   $app.querySelectorAll('[data-hobby]').forEach(b => {
     b.onclick = () => {
       const k = b.dataset.hobby, i = f.hobbies.indexOf(k);
@@ -714,7 +722,7 @@ function statusPanel(v, hist) {
       <div class="score"><div class="k">${v.gpa ? '대학 학점' : '최근 내신'}</div><div class="g">${v.gpa ? esc(v.gpa) : esc(v.naesin.g.replace('(5등급제)', ''))}<small>${v.gpa ? '/ 4.5' : '상위 ' + v.naesin.pct.toFixed(0) + '%'}</small></div></div>
       <div class="score"><div class="k">모의고사 평균</div><div class="g">${v.mock.g}등급<small>상위 ${v.mock.pct.toFixed(0)}%</small></div></div>
     </div>
-    <div class="subj" aria-label="과목별 모의고사 등급">${[['kor', '국어'], ['math', '수학'], ['eng', '영어'], ['inq', '탐구']].map(([k, n]) => `<div class="sg" style="--c:${CAT_COLOR[k]}"><span>${n}</span><b>${v.subj[k]}</b></div>`).join('')}</div>
+    <div class="subj" aria-label="과목별 모의고사 등급">${[['kor', '국어'], ['math', '수학'], ['eng', '영어'], ['inq', '탐구']].map(([k, n]) => `<div class="sg${(v.dropped || []).indexOf(k) >= 0 ? ' dropped' : ''}" style="--c:${CAT_COLOR[k]}"><span>${n}</span><b>${v.subj[k]}</b></div>`).join('')}</div>
     <div class="fitline">백분위 국 <b class="num">${Math.round(v.pct.kor)}</b> · 수 <b class="num">${Math.round(v.pct.math)}</b> · 탐 <b class="num">${Math.round(v.pct.inq)}</b><br>정시로 보면 <b>${esc(v.jfit.uni)}</b>${v.jfit.cut != null ? ` <span class="num">(${esc(v.jfit.track)} 70%컷 ${v.jfit.cut})</span>` : ''} 수준</div>
     ${v.arts ? `<div class="artsbox" aria-label="실기"><span>${esc(v.arts.name)} 실기</span><b class="num">${v.arts.talent}</b><span class="muted">${esc(v.arts.acad)}</span></div>` : ''}
     <div class="methbox" aria-label="과목별 공부법"><div class="mt">과목별 공부법 ${v.sense ? `<span>${esc(v.sense)}</span>` : ''}</div>
@@ -764,7 +772,7 @@ function renderGame() {
     const cur = app.methDraft && app.methDraft.key === pr.key ? app.methDraft.v : Object.fromEntries(pr.rows.map(r => [r.k, r.def]));
     app.methDraft = { key: pr.key, v: cur };
     qhtml += `<div class="mrows">${pr.rows.map(r => { const sel = r.options.find(o => o.id === cur[r.k]) || r.options[0]; return `<div class="mrow" style="--c:${CAT_COLOR[r.k]}"><div class="mh"><b>${esc(r.name)}</b><span>${esc(r.status)}</span></div>
-      <div class="mchips" role="radiogroup" aria-label="${esc(r.name)} 공부법">${r.options.map(o => `<button type="button" role="radio" aria-checked="${o.id === sel.id}" class="${o.id === sel.id ? 'on' : ''}" data-meth="${r.k}" data-v="${esc(o.id)}">${esc(o.label)}</button>`).join('')}</div>
+      <div class="mchips" role="radiogroup" aria-label="${esc(r.name)} 공부법">${r.options.map(o => `<button type="button" role="radio" aria-checked="${o.id === sel.id}" class="${o.id === sel.id ? 'on' : ''}${o.id === 'drop' ? ' dropchip' : ''}" data-meth="${r.k}" data-v="${esc(o.id)}">${esc(o.label)}</button>`).join('')}</div>
       <div class="mhint">${esc(sel.hint || '')}</div></div>`; }).join('')}</div>
       <div class="qactions"><button class="cta" type="button" id="methGo">이렇게 공부한다</button><button class="ghost" type="button" id="methReset">지금 하던 대로</button></div>`;
   } else {
@@ -777,7 +785,7 @@ function renderGame() {
     for (let i = used; i < T; i++) cells += `<i class="empty"></i>`;
     const studyN = ['kor', 'math', 'eng', 'inq'].reduce((t, k) => t + (cur[k] || 0), 0);
     qhtml += `<div class="cells" style="grid-template-columns:repeat(${T},1fr)" aria-hidden="true">${cells}</div><div class="left">남은 칸 <b class="num">${T - used}</b> / ${T} · 공부 ${studyN}칸 (과목끼리 이어진다: 국어 독해력 → 영어·탐구, 수학 → 물리·화학)</div>
-      <div class="alloc" style="margin-top:12px">${pr.cats.map(c => `<div class="arow"><div class="nm"><b>${esc(c.label)}</b><span>${esc(c.desc)}</span></div>
+      <div class="alloc" style="margin-top:12px">${pr.cats.map(c => `<div class="arow${c.dropped ? ' dropped' : ''}"><div class="nm"><b>${esc(c.label)}</b><span>${esc(c.desc)}</span></div>
         <div class="step"><button type="button" data-dec="${c.id}" ${!(cur[c.id] > 0) ? 'disabled' : ''} aria-label="${esc(c.label)} 줄이기">−</button><span class="val">${cur[c.id] || 0}</span><button type="button" data-inc="${c.id}" ${used >= T ? 'disabled' : ''} aria-label="${esc(c.label)} 늘리기">+</button></div></div>`).join('')}</div>
       <div class="qactions"><button class="cta" type="button" id="allocGo" ${used !== T ? 'disabled' : ''}>이렇게 보낸다</button><button class="ghost" type="button" id="allocReset">평소의 나대로</button>${used !== T ? `<span class="left">${T}칸을 모두 채워야 합니다</span>` : ''}</div>`;
   }
