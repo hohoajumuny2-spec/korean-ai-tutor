@@ -6298,6 +6298,159 @@ def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_cl
     threading.Thread(target=run, daemon=True).start()
 
 
+# ── 관리자 화면에서 보내는 카톡(안내 · 상담 · 성적 · 미제출) ────────────────
+#   번호와 솔라피 키는 홈페이지 서버(logyedu.com)에만 있다. 여기서는 '누구에게 · 무엇을'만 넘긴다.
+#   종류마다 카카오 검수를 받은 템플릿이 홈페이지 서버에 등록되어 있어야 한다.
+KAKAO_TO = {"parents", "student", "both"}
+KAKAO_TASK_TYPES = {"모의고사": "exams", "타임어택 퀴즈": "quizzes", "과제 제출": "homeworks"}
+
+
+def kakao_message(kind: str, to: str, items: list) -> dict:
+    """홈페이지 서버에 카톡을 맡기고 결과(보낸 수 · 번호 없는 학생 등)를 돌려준다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret:
+        return {"success": False, "detail": "카톡 연결 설정(NOTIFY_SECRET)이 아직 없습니다. Render 두 서버에 같은 값을 넣어 주세요."}
+    if not items:
+        return {"success": False, "detail": "보낼 학생이 없습니다."}
+    base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
+    try:
+        r = requests.post(f"{base}/api/notify/message", json={"kind": kind, "to": to, "items": items},
+                          headers={"X-Notify-Secret": secret}, timeout=90)
+    except Exception as e:
+        return {"success": False, "detail": f"홈페이지 서버에 연결하지 못했습니다: {e}"}
+    if r.status_code == 403:
+        return {"success": False, "detail": "두 서버의 NOTIFY_SECRET 값이 서로 다릅니다."}
+    try:
+        data = r.json()
+    except Exception:
+        return {"success": False, "detail": f"홈페이지 서버 응답 오류 ({r.status_code})"}
+    if not data.get("ok"):
+        return {"success": False, "detail": data.get("error") or "보내지 못했습니다."}
+    if not data.get("enabled"):
+        return {"success": False, "detail": f"이 카톡의 템플릿이 아직 연결되지 않았습니다. 홈페이지 서버(Render)에 {data.get('missing') or '템플릿 ID'} 를 넣어 주세요."}
+    print(f"[카톡 {kind}] {len(items)}명 → {data.get('queued')}건")
+    return {"success": True, "queued": data.get("queued", 0),
+            "no_phone": data.get("noPhone") or [], "unknown": data.get("unknown") or []}
+
+
+def _kakao_to(v) -> str:
+    v = str(v or "parents").strip()
+    return v if v in KAKAO_TO else "parents"
+
+
+class KakaoNoticeReq(BaseModel):
+    names: list = []
+    to: str = "parents"
+    message: str = ""
+
+
+@app.post("/api/admin/kakao/notice", dependencies=[Depends(verify_admin)])
+async def kakao_notice(req: KakaoNoticeReq):
+    """고른 학생(또는 학부모)에게 학원 안내 카톡."""
+    msg = str(req.message or "").strip()
+    if not msg:
+        return {"success": False, "detail": "보낼 내용을 적어 주세요."}
+    if len(msg) > 600:
+        return {"success": False, "detail": "내용은 600자까지 보낼 수 있어요."}
+    names = [str(n).strip() for n in (req.names or []) if str(n).strip()][:500]
+    items = [{"name": n, "vars": {"내용": msg}} for n in dict.fromkeys(names)]
+    return await asyncio.to_thread(kakao_message, "안내", _kakao_to(req.to), items)
+
+
+class KakaoCounselReq(BaseModel):
+    student_name: str
+    title: str = "상담 결과"
+    to: str = "parents"
+
+
+@app.post("/api/admin/kakao/counsel", dependencies=[Depends(verify_admin)])
+async def kakao_counsel(req: KakaoCounselReq):
+    """상담 결과가 정리됐다고 학부모께 카톡 — 내용은 학생 앱 '나의 진학 상담'에서 본다."""
+    name = str(req.student_name or "").strip()
+    title = str(req.title or "상담 결과").strip()[:40]
+    if not name:
+        return {"success": False, "detail": "학생을 고르지 못했습니다."}
+    return await asyncio.to_thread(kakao_message, "상담", _kakao_to(req.to), [{"name": name, "vars": {"상담": title}}])
+
+
+class KakaoTaskReq(BaseModel):
+    title: str
+    kind: str = "모의고사"          # 모의고사 / 타임어택 퀴즈 / 과제 제출
+    to: str = "parents"
+    dry_run: bool = False           # True 면 보내지 않고 누구에게 갈지만 알려 준다
+
+
+def _latest_reports(title: str, kind: str) -> dict:
+    """그 시험 · 과제를 낸 학생 → 가장 나중에 낸 기록."""
+    latest = {}
+    for d in db.collection("reports").where("task_name", "==", title).where("type", "==", kind).stream():
+        r = d.to_dict() or {}
+        who = str(r.get("student_name", "")).strip()
+        when = str(r.get("submitted_at", ""))
+        if who and (who not in latest or when >= latest[who][0]):
+            latest[who] = (when, r)
+    return {k: v[1] for k, v in latest.items()}
+
+
+def _task_doc(title: str, kind: str) -> dict:
+    col = KAKAO_TASK_TYPES.get(kind)
+    if not col:
+        return {}
+    d = db.collection(col).document(sanitize_doc_id(title)).get()
+    return (d.to_dict() or {}) if d.exists else {}
+
+
+def _score_text(r: dict) -> str:
+    got, total = _num(r.get("score")), _num(r.get("total_score"))
+    fmt = lambda x: str(int(x)) if float(x).is_integer() else str(round(float(x), 1))
+    if got is None:
+        return str(r.get("score", "")).strip() or "-"
+    return f"{fmt(got)}점 / {fmt(total)}점" if total else f"{fmt(got)}점"
+
+
+@app.post("/api/admin/kakao/scores", dependencies=[Depends(verify_admin)])
+async def kakao_scores(req: KakaoTaskReq):
+    """시험 · 퀴즈 · 과제를 낸 학생마다 자기 점수를 카톡으로."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    title = urllib.parse.unquote(req.title or "").strip()
+    if req.kind not in KAKAO_TASK_TYPES or not title:
+        return {"success": False, "detail": "시험을 고르지 못했습니다."}
+    rows = await asyncio.to_thread(_latest_reports, title, req.kind)
+    items = [{"name": n, "vars": {"시험": title[:40], "점수": _score_text(r)}} for n, r in sorted(rows.items())]
+    if req.dry_run:
+        return {"success": True, "names": [i["name"] for i in items], "count": len(items)}
+    return await asyncio.to_thread(kakao_message, "성적", _kakao_to(req.to), items)
+
+
+@app.post("/api/admin/kakao/missing", dependencies=[Depends(verify_admin)])
+async def kakao_missing(req: KakaoTaskReq):
+    """대상 학생 중 아직 안 낸 학생에게 미제출 카톡."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    title = urllib.parse.unquote(req.title or "").strip()
+    if req.kind not in KAKAO_TASK_TYPES or not title:
+        return {"success": False, "detail": "과제를 고르지 못했습니다."}
+
+    def work():
+        doc = _task_doc(title, req.kind)
+        if not doc:
+            return None, None
+        subject = "" if req.kind == "과제 제출" else str(doc.get("subject", "") or "")
+        audience = audience_names(subject, task_target_classes(doc))
+        done = set(_latest_reports(title, req.kind).keys())
+        return [n for n in audience if n not in done], doc
+
+    missing, doc = await asyncio.to_thread(work)
+    if missing is None:
+        return {"success": False, "detail": "그 과제 · 시험을 찾지 못했습니다."}
+    due = deadline_label(doc.get("deadline")) if doc.get("deadline") else "없음"
+    items = [{"name": n, "vars": {"과제": title[:40], "마감": due}} for n in sorted(missing)]
+    if req.dry_run:
+        return {"success": True, "names": [i["name"] for i in items], "count": len(items)}
+    return await asyncio.to_thread(kakao_message, "미제출", _kakao_to(req.to), items)
+
+
 class PushSubscribeReq(BaseModel):
     student_name: str
     endpoint: str
