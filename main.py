@@ -6334,13 +6334,14 @@ def kakao_message(kind: str, to: str, items: list) -> dict:
 
 
 def _kakao_to(v) -> str:
-    v = str(v or "parents").strip()
-    return v if v in KAKAO_TO else "parents"
+    """받는 사람. 학생 앱에서 보내는 카톡은 기본이 학생 본인이다."""
+    v = str(v or "student").strip()
+    return v if v in KAKAO_TO else "student"
 
 
 class KakaoNoticeReq(BaseModel):
     names: list = []
-    to: str = "parents"
+    to: str = "student"
     message: str = ""
 
 
@@ -6360,7 +6361,7 @@ async def kakao_notice(req: KakaoNoticeReq):
 class KakaoCounselReq(BaseModel):
     student_name: str
     title: str = "상담 결과"
-    to: str = "parents"
+    to: str = "student"
 
 
 @app.post("/api/admin/kakao/counsel", dependencies=[Depends(verify_admin)])
@@ -6376,7 +6377,7 @@ async def kakao_counsel(req: KakaoCounselReq):
 class KakaoTaskReq(BaseModel):
     title: str
     kind: str = "모의고사"          # 모의고사 / 타임어택 퀴즈 / 과제 제출
-    to: str = "parents"
+    to: str = "student"
     dry_run: bool = False           # True 면 보내지 않고 누구에게 갈지만 알려 준다
 
 
