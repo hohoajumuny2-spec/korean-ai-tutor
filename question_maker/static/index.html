@@ -330,7 +330,7 @@ async function fileToText(input, textarea) {
   [...input.files].forEach(f => fd.append("files", f));
   toast("파일에서 글을 꺼내는 중... (사진은 조금 걸립니다)");
   try {
-    const r = await api("POST", "/api/extract", fd);
+    const r = await api("POST", "api/extract", fd);
     textarea.value = (textarea.value.trim() ? textarea.value.trim() + "\n\n" : "") + r.text;
     toast("불러왔습니다. 틀린 글자가 없는지 확인해주세요.");
   } catch (e) { toast("⚠️ " + e.message, 5000); }
@@ -343,7 +343,7 @@ function initNew() {
   newRecipe = recipeEditor($("#new-recipe"), META.default_recipe);
   $("#new-file").onchange = () => fileToText($("#new-file"), $("#new-text"));
   $("#new-go").onclick = () => guard($("#new-go"), async () => {
-    const r = await api("POST", "/api/sets", {
+    const r = await api("POST", "api/sets", {
       title: $("#new-title").value, subject: $("#new-subject").value, text: $("#new-text").value,
       recipe: newRecipe.get(), save_passage: $("#new-save").checked });
     toast("출제를 시작했습니다. 다 되면 '만든 문제'에 나타납니다.");
@@ -355,7 +355,7 @@ function initNew() {
 // ── 지문 보관함 · 매일 출제 ─────────────────────────────
 let dailyRecipe, passageRecipe;
 async function loadQueue() {
-  const [d, p] = await Promise.all([api("GET", "/api/daily"), api("GET", "/api/passages")]);
+  const [d, p] = await Promise.all([api("GET", "api/daily"), api("GET", "api/passages")]);
   const s = d.settings;
   $("#d-enabled").value = s.enabled ? "1" : "0";
   $("#d-time").value = s.time;
@@ -381,27 +381,27 @@ function renderPassages(list) {
     const add = (txt, fn, cls = "") => { const b = document.createElement("button"); b.className = "btn small " + cls; b.textContent = txt;
       b.onclick = () => guard(b, fn); btns.appendChild(b); };
     if (p.status === "waiting") {
-      add("▲", async () => { await api("POST", `/api/passages/${p.id}/move`, {direction: -1}); loadQueue(); });
-      add("▼", async () => { await api("POST", `/api/passages/${p.id}/move`, {direction: 1}); loadQueue(); });
+      add("▲", async () => { await api("POST", `api/passages/${p.id}/move`, {direction: -1}); loadQueue(); });
+      add("▼", async () => { await api("POST", `api/passages/${p.id}/move`, {direction: 1}); loadQueue(); });
     }
     if (p.status !== "working") add("지금 출제", async () => {
-      const r = await api("POST", `/api/passages/${p.id}/generate`); currentSet = r.set_id; showTab("sets"); });
+      const r = await api("POST", `api/passages/${p.id}/generate`); currentSet = r.set_id; showTab("sets"); });
     if (p.set_id && p.status === "done") add("문제 보기", async () => { currentSet = p.set_id; showTab("sets"); });
     if (p.status === "done" || p.status === "error") add("다시 대기로", async () => {
-      await api("PUT", `/api/passages/${p.id}`, {status: "waiting"}); loadQueue(); });
-    add("삭제", async () => { if (confirm("이 지문을 지울까요? (만든 문제는 남습니다)")) { await api("DELETE", `/api/passages/${p.id}`); loadQueue(); } }, "danger");
+      await api("PUT", `api/passages/${p.id}`, {status: "waiting"}); loadQueue(); });
+    add("삭제", async () => { if (confirm("이 지문을 지울까요? (만든 문제는 남습니다)")) { await api("DELETE", `api/passages/${p.id}`); loadQueue(); } }, "danger");
     $("#p-list").appendChild(el);
   }
 }
 function initQueue() {
   $("#d-save").onclick = () => guard($("#d-save"), async () => {
-    await api("PUT", "/api/daily", { enabled: $("#d-enabled").value === "1", time: $("#d-time").value,
+    await api("PUT", "api/daily", { enabled: $("#d-enabled").value === "1", time: $("#d-time").value,
       per_day: parseInt($("#d-per").value) || 1, weekdays: $$("#d-days input").filter(c => c.checked).map(c => +c.value),
       recipe: dailyRecipe.get() });
     toast("매일 출제 설정을 저장했습니다."); loadQueue();
   });
   $("#d-now").onclick = () => guard($("#d-now"), async () => {
-    await api("POST", "/api/daily/run-now"); toast("다음 지문 출제를 시작했습니다."); loadQueue();
+    await api("POST", "api/daily/run-now"); toast("다음 지문 출제를 시작했습니다."); loadQueue();
   });
   $("#p-file").onchange = () => fileToText($("#p-file"), $("#p-text"));
   $("#p-own").onchange = () => {
@@ -409,7 +409,7 @@ function initQueue() {
     if ($("#p-own").checked && !passageRecipe) passageRecipe = recipeEditor($("#p-recipe"), dailyRecipe ? dailyRecipe.get() : META.default_recipe);
   };
   $("#p-add").onclick = () => guard($("#p-add"), async () => {
-    await api("POST", "/api/passages", { title: $("#p-title").value, subject: $("#p-subject").value,
+    await api("POST", "api/passages", { title: $("#p-title").value, subject: $("#p-subject").value,
       text: $("#p-text").value, recipe: $("#p-own").checked && passageRecipe ? passageRecipe.get() : null });
     $("#p-title").value = ""; $("#p-text").value = "";
     toast("보관함에 넣었습니다."); loadQueue();
@@ -419,7 +419,7 @@ function initQueue() {
 // ── 만든 문제 ───────────────────────────────────────
 let currentSet = null, pollTimer = null;
 async function loadSets() {
-  const r = await api("GET", "/api/sets");
+  const r = await api("GET", "api/sets");
   const label = {working: "출제 중", done: "완성", error: "실패"};
   $("#s-list").innerHTML = r.sets.length ? "" : `<div class="muted">아직 만든 문제가 없습니다.</div>`;
   for (const s of r.sets) {
@@ -439,12 +439,12 @@ async function loadSets() {
 $("#s-print-many").onclick = () => {
   const ids = $$("#s-list input:checked").map(c => c.value);
   if (!ids.length) return toast("인쇄할 세트를 체크하세요.");
-  window.open(`/print?ids=${ids.join(",")}&mode=both`, "_blank");
+  window.open(`print?ids=${ids.join(",")}&mode=both`, "_blank");
 };
 
 let editing = null;   // 편집 중인 문항 번호 ("passage" 이면 지문)
 async function loadDetail(id) {
-  const s = await api("GET", `/api/sets/${id}`);
+  const s = await api("GET", `api/sets/${id}`);
   const box = $("#s-detail");
   if (editing !== null && box.dataset.id == id && box.dataset.updated === s.updated_at) return; // 편집 중이면 그대로 둔다
   box.dataset.id = id; box.dataset.updated = s.updated_at;
@@ -482,20 +482,20 @@ async function loadDetail(id) {
   }
   box.innerHTML = html;
   $("#sd-rename").onclick = () => guard($("#sd-rename"), async () => {
-    await api("PUT", `/api/sets/${id}`, {title: $("#sd-title").value}); toast("저장했습니다."); loadSets(); });
+    await api("PUT", `api/sets/${id}`, {title: $("#sd-title").value}); toast("저장했습니다."); loadSets(); });
   $("#sd-style").onchange = () => guard(null, async () => {
-    await api("PUT", `/api/sets/${id}`, {style_id: parseInt($("#sd-style").value) || 0}); toast("스타일을 바꿨습니다."); });
+    await api("PUT", `api/sets/${id}`, {style_id: parseInt($("#sd-style").value) || 0}); toast("스타일을 바꿨습니다."); });
   $$("[data-print]", box).forEach(b => b.onclick = () => {
     const st = $("#sd-style").value;
-    window.open(`/print?ids=${id}&mode=${b.dataset.print}${st ? "&style_id=" + st : ""}`, "_blank"); });
+    window.open(`print?ids=${id}&mode=${b.dataset.print}${st ? "&style_id=" + st : ""}`, "_blank"); });
   $("#sd-regen").onclick = () => guard($("#sd-regen"), async () => {
     if (!confirm("같은 지문·설정으로 새로 출제할까요? 지금 문제는 '되돌리기'로 다시 볼 수 있습니다.")) return;
-    await api("POST", `/api/sets/${id}/regenerate`); editing = null; loadSets(); });
+    await api("POST", `api/sets/${id}/regenerate`); editing = null; loadSets(); });
   $("#sd-undo").onclick = () => guard($("#sd-undo"), async () => {
-    const r = await api("POST", `/api/sets/${id}/undo`); toast(`되돌렸습니다 (${r.note})`); editing = null; loadDetail(id); });
+    const r = await api("POST", `api/sets/${id}/undo`); toast(`되돌렸습니다 (${r.note})`); editing = null; loadDetail(id); });
   $("#sd-del").onclick = () => guard($("#sd-del"), async () => {
     if (!confirm("이 문제 세트를 지울까요?")) return;
-    await api("DELETE", `/api/sets/${id}`); currentSet = null; box.innerHTML = `<div class="card muted">지웠습니다.</div>`; loadSets(); });
+    await api("DELETE", `api/sets/${id}`); currentSet = null; box.innerHTML = `<div class="card muted">지웠습니다.</div>`; loadSets(); });
   if (s.status === "done" && s.data) bindDetail(s, id);
 }
 
@@ -516,11 +516,11 @@ function questionHtml(q) {
 
 function bindDetail(s, id) {
   const box = $("#s-detail"), d = s.data;
-  const save = async newData => { await api("PUT", `/api/sets/${id}`, {data: newData}); editing = null; toast("저장했습니다."); loadDetail(id); };
+  const save = async newData => { await api("PUT", `api/sets/${id}`, {data: newData}); editing = null; toast("저장했습니다."); loadDetail(id); };
   $("#sd-revise").onclick = () => guard($("#sd-revise"), async () => {
     const targets = $("#sd-targets").value.split(/[,\s]+/).map(x => parseInt(x)).filter(x => x > 0);
     toast("고치는 중입니다... (30초~1분)", 4000);
-    const r = await api("POST", `/api/sets/${id}/revise`, {instruction: $("#sd-ins").value, targets});
+    const r = await api("POST", `api/sets/${id}/revise`, {instruction: $("#sd-ins").value, targets});
     toast("✅ " + r.summary, 6000); editing = null; loadDetail(id);
   });
   $$("[data-edit]", box).forEach(b => b.onclick = () => {
@@ -573,7 +573,7 @@ function bindDetail(s, id) {
 
 // ── 스타일 ─────────────────────────────────────────
 let currentStyle = null;
-async function loadStyles() { STYLES = (await api("GET", "/api/styles")).styles; }
+async function loadStyles() { STYLES = (await api("GET", "api/styles")).styles; }
 async function loadStylesTab() {
   await loadStyles();
   $("#st-list").innerHTML = STYLES.length ? "" : `<div class="muted">아직 저장한 스타일이 없습니다. 오른쪽에서 만들어 보세요.</div>`;
@@ -609,14 +609,14 @@ $("#st-new").onclick = () => { currentStyle = null; fillStyleForm(META.default_s
 $("#st-save").onclick = () => guard($("#st-save"), async () => {
   const data = readStyleForm();
   if (!data.name.trim()) throw new Error("스타일 이름을 적어주세요.");
-  if (currentStyle) await api("PUT", `/api/styles/${currentStyle}`, {data});
-  else currentStyle = (await api("POST", "/api/styles", {data})).id;
+  if (currentStyle) await api("PUT", `api/styles/${currentStyle}`, {data});
+  else currentStyle = (await api("POST", "api/styles", {data})).id;
   toast("스타일을 저장했습니다. 출제할 때 '스타일'에서 고르세요.");
   await loadStylesTab(); refreshEditors();
 });
 $("#st-del").onclick = () => guard($("#st-del"), async () => {
   if (!confirm("이 스타일을 지울까요?")) return;
-  await api("DELETE", `/api/styles/${currentStyle}`); currentStyle = null; await loadStylesTab(); refreshEditors();
+  await api("DELETE", `api/styles/${currentStyle}`); currentStyle = null; await loadStylesTab(); refreshEditors();
 });
 function refreshEditors() {
   if (newRecipe) { const r = newRecipe.get(); newRecipe = recipeEditor($("#new-recipe"), r); }
@@ -624,7 +624,7 @@ function refreshEditors() {
 
 // ── 시작 ───────────────────────────────────────────
 (async () => {
-  META = await api("GET", "/api/meta");
+  META = await api("GET", "api/meta");
   if (!META.ai) $("#noai").classList.remove("hidden");
   else if (META.ai.startsWith("연습")) $("#demo").classList.remove("hidden");
   await loadStyles();

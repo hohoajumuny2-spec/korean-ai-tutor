@@ -3,7 +3,9 @@
 켜는 법:  python -m question_maker   (자세한 내용은 question_maker/README.md)
 """
 
+import asyncio
 import base64
+import hashlib
 import os
 import random
 import secrets
@@ -12,7 +14,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -106,12 +108,16 @@ class DailyReq(BaseModel):
     recipe: dict
 
 
-def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool = True) -> FastAPI:
-    db_path = db_path or os.environ.get("QM_DB", str(Path.cwd() / "question_maker.db"))
-    store = Store(db_path)
+def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool = True,
+               store=None, check_login: Optional[Callable[[str, str], bool]] = None) -> FastAPI:
+    """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
+    관리자 계정으로 들어오게 하는 함수. 없으면 QM_PASSWORD 환경 변수로 막는다."""
+    if store is None:
+        store = Store(db_path or os.environ.get("QM_DB", str(Path.cwd() / "question_maker.db")))
     if ai == "auto":
         ai = make_ai()
     password = os.environ.get("QM_PASSWORD", "").strip()
+    login_cache = {}   # 같은 사람이 요청마다 DB를 거치지 않게 10분간 기억
     jobs_sem = threading.Semaphore(2)   # AI에 동시에 너무 많이 보내지 않게
 
     app = FastAPI(title="문제 공장")
@@ -121,13 +127,25 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
     # 인터넷에 올려 쓸 때는 QM_PASSWORD를 꼭 정한다. 아무나 들어와 AI 사용료를 쓰지 못하게.
     @app.middleware("http")
     async def check_password(request: Request, call_next):
-        if password:
+        # 매일 출제 깨우기 주소는 비밀번호 없이 연다 (하루 한 번 정해진 일만 하므로 안전)
+        if request.url.path.endswith("/api/daily/tick"):
+            return await call_next(request)
+        if password or check_login:
             ok = False
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("basic "):
                 try:
-                    _, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
-                    ok = secrets.compare_digest(given, password)
+                    user, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+                    if check_login:
+                        key = hashlib.sha256(f"{user}\0{given}".encode()).hexdigest()
+                        if login_cache.get(key, 0) > time.time():
+                            ok = True
+                        else:
+                            ok = bool(await asyncio.to_thread(check_login, user.strip(), given))
+                            if ok:
+                                login_cache[key] = time.time() + 600
+                    else:
+                        ok = secrets.compare_digest(given, password)
                 except Exception:
                     ok = False
             if not ok:
@@ -183,7 +201,8 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
         settings = store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT
         if not app.state.ai:
             return []   # 키가 없으면 지문을 꺼내지 않는다 (실패로 소모되지 않게)
-        store.set_setting("daily_last_run", now.strftime("%Y-%m-%d"))
+        if not store.claim_daily(now.strftime("%Y-%m-%d")):
+            return []   # 오늘 몫은 이미 (다른 서버가) 맡았다
         made = []
         for p in store.next_waiting(max(1, int(settings.get("per_day", 1)))):
             try:
@@ -194,13 +213,18 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
 
     app.state.run_daily = run_daily
 
+    def daily_check() -> bool:
+        """매일 출제할 때가 됐으면 돌린다. 돌렸으면 True."""
+        now = datetime.now(KST)
+        settings = store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT
+        if daily_due(settings, now, store.get_setting("daily_last_run", "")):
+            return bool(run_daily(now))
+        return False
+
     def scheduler_loop():
         while True:
             try:
-                now = datetime.now(KST)
-                settings = store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT
-                if daily_due(settings, now, store.get_setting("daily_last_run", "")):
-                    run_daily(now)
+                daily_check()
             except Exception:
                 traceback.print_exc()
             time.sleep(30)
@@ -492,6 +516,13 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
         }
         store.set_setting("daily", settings)
         return {"ok": True, "settings": settings}
+
+    @app.api_route("/api/daily/tick", methods=["GET", "POST"])
+    def daily_tick():
+        """서버가 잠들어 있다 깨어나도 매일 출제를 놓치지 않게, 바깥에서 아침마다 이 주소를
+        한 번 불러 준다(cron-job.org 등). 할 때가 아니면 아무 일도 하지 않는다."""
+        threading.Thread(target=lambda: daily_check(), daemon=True).start()
+        return {"ok": True, "now": datetime.now(KST).strftime("%Y-%m-%d %H:%M")}
 
     @app.post("/api/daily/run-now")
     def daily_run_now():
