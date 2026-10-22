@@ -13597,7 +13597,12 @@ if db is not None:
         def question_maker_redirect():
             return RedirectResponse("/qm/")
 
+        # 텔레그램 봇이 받은 말을 보낼 주소. Render가 RENDER_EXTERNAL_URL에 이 서버 주소를 넣어 준다.
+        _qm_public = (os.environ.get("QM_PUBLIC_URL") or
+                      (os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/") + "/qm"
+                       if os.environ.get("RENDER_EXTERNAL_URL") else ""))
         app.mount("/qm", _create_question_maker(store=_QMFirestoreStore(db),
-                                                check_login=_question_maker_login))
+                                                check_login=_question_maker_login,
+                                                public_url=_qm_public))
     except Exception as e:
         print("문제 공장 연결 실패:", e)
