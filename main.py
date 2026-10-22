@@ -13574,3 +13574,30 @@ def get_counsel_admin(student_name: str):
     s_doc = db.collection("students").document(sanitize_doc_id(name)).get()
     view["tendency_allowed"] = bool(s_doc.to_dict().get("tendency_allowed")) if s_doc.exists else False
     return {"success": True, "counsel": view}
+
+
+# ─────────────────────────────────────────────────────────
+# 📝 문제 공장 (question_maker) — 이 서버의 /qm/ 주소에 붙인다
+#   지문 보관함에 쌓아 둔 지문으로 매일 정한 시각에 문제를 만들어 둔다.
+#   자료는 Firestore의 qm_ 컬렉션에 저장한다(Render는 배포 때마다 파일이 지워지므로).
+#   들어갈 때는 관리자 이름과 비밀번호로 로그인한다(이름을 비우면 원장님).
+# ─────────────────────────────────────────────────────────
+def _question_maker_login(name: str, password: str) -> bool:
+    adoc = get_admin_doc(name or "원장님")
+    return bool(adoc) and bool(password) and \
+        _hash_password(password, adoc.get("salt", "")) == adoc.get("password_hash")
+
+
+if db is not None:
+    try:
+        from question_maker.app import create_app as _create_question_maker
+        from question_maker.storage import FirestoreStore as _QMFirestoreStore
+
+        @app.get("/qm", include_in_schema=False)
+        def question_maker_redirect():
+            return RedirectResponse("/qm/")
+
+        app.mount("/qm", _create_question_maker(store=_QMFirestoreStore(db),
+                                                check_login=_question_maker_login))
+    except Exception as e:
+        print("문제 공장 연결 실패:", e)

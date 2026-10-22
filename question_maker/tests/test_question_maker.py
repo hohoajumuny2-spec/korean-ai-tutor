@@ -11,7 +11,8 @@ from question_maker.generator import (GenerationError, balance_answers, generate
                                       normalize_question, normalize_recipe, passage_is_faithful,
                                       revise_set)
 from question_maker.render import render_paper
-from question_maker.storage import KST
+from question_maker.storage import KST, FirestoreStore, Store
+from question_maker.tests.fake_firestore import FakeFirestore
 
 PASSAGE = ("잃어버렸습니다.\n무얼 어디다 잃었는지 몰라\n두 손이 주머니를 더듬어\n길에 나아갑니다.\n\n"
            "돌과 돌과 돌이 끝없이 연달아\n길은 돌담을 끼고 갑니다.")
@@ -127,8 +128,15 @@ def wait_done(client, set_id):
     raise AssertionError("출제가 끝나지 않음")
 
 
-def test_api_end_to_end(tmp_path):
-    app = create_app(str(tmp_path / "t.db"), ai=FakeAI(), start_scheduler=False)
+@pytest.fixture(params=["sqlite", "firestore"])
+def store(request, tmp_path):
+    if request.param == "sqlite":
+        return Store(str(tmp_path / "t.db"))
+    return FirestoreStore(FakeFirestore())
+
+
+def test_api_end_to_end(store):
+    app = create_app(store=store, ai=FakeAI(), start_scheduler=False)
     c = TestClient(app)
     assert c.get("/").status_code == 200
     assert c.get("/api/meta").json()["ai"]
@@ -182,3 +190,35 @@ def test_password(tmp_path, monkeypatch):
     c = TestClient(create_app(str(tmp_path / "t.db"), ai=FakeAI(), start_scheduler=False))
     assert c.get("/api/meta").status_code == 401
     assert c.get("/api/meta", auth=("x", "abc")).status_code == 200
+
+
+def test_claim_daily_only_once(store):
+    assert store.claim_daily("2026-10-22")
+    assert not store.claim_daily("2026-10-22")
+    assert store.claim_daily("2026-10-23")
+
+
+def test_firestore_resets_unfinished_work_on_restart():
+    fake = FakeFirestore()
+    s = FirestoreStore(fake)
+    pid = s.add_passage("t", PASSAGE)
+    s.update_passage(pid, status="working")
+    sid = s.create_set("t", "국어", PASSAGE, {}, passage_id=pid)
+    s2 = FirestoreStore(fake)
+    assert s2.get_set(sid)["status"] == "error"
+    assert s2.get_passage(pid)["status"] == "waiting"
+
+
+def test_mounted_with_admin_login_and_tick(tmp_path):
+    from fastapi import FastAPI
+    parent = FastAPI()
+    qm = create_app(store=FirestoreStore(FakeFirestore()), ai=FakeAI(), start_scheduler=False,
+                    check_login=lambda name, pw: (name or "원장님") == "원장님" and pw == "pw")
+    parent.mount("/qm", qm)
+    c = TestClient(parent)
+    assert c.get("/qm/api/meta").status_code == 401
+    assert c.get("/qm/api/meta", auth=("", "wrong")).status_code == 401
+    assert c.get("/qm/api/meta", auth=("", "pw")).status_code == 200
+    assert c.get("/qm/", auth=("원장님", "pw")).status_code == 200
+    # 깨우기 주소는 로그인 없이 열린다
+    assert c.get("/qm/api/daily/tick").json()["ok"]
