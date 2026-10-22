@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 import traceback
+import types
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -26,6 +27,7 @@ from .generator import (GenerationError, generate_set, merge_style, normalize_qu
                         normalize_recipe, renumber, revise_set)
 from .render import render_paper
 from .storage import KST, Store
+from .telegram_bot import TelegramBot
 
 STATIC = Path(__file__).parent / "static"
 
@@ -109,7 +111,8 @@ class DailyReq(BaseModel):
 
 
 def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool = True,
-               store=None, check_login: Optional[Callable[[str, str], bool]] = None) -> FastAPI:
+               store=None, check_login: Optional[Callable[[str, str], bool]] = None,
+               telegram="auto", public_url: Optional[str] = None) -> FastAPI:
     """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
     관리자 계정으로 들어오게 하는 함수. 없으면 QM_PASSWORD 환경 변수로 막는다."""
     if store is None:
@@ -128,7 +131,8 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
     @app.middleware("http")
     async def check_password(request: Request, call_next):
         # 매일 출제 깨우기 주소는 비밀번호 없이 연다 (하루 한 번 정해진 일만 하므로 안전)
-        if request.url.path.endswith("/api/daily/tick"):
+        # 텔레그램이 보내는 주소도 연다 (주소 속 비밀값과 머리글 비밀값으로 따로 확인한다)
+        if request.url.path.endswith("/api/daily/tick") or "/telegram/" in request.url.path:
             return await call_next(request)
         if password or check_login:
             ok = False
@@ -197,6 +201,48 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
             threading.Thread(target=run_set, args=(set_id,), daemon=True).start()
         return set_id
 
+    def extract_from_bytes(name: str, ctype: str, data: bytes) -> str:
+        """txt·pdf·사진에서 글을 꺼낸다. 못 읽는 파일이면 ValueError."""
+        name = (name or "").lower()
+        ctype = ctype or ""
+        if name.endswith(".txt") or ctype.startswith("text/"):
+            for enc in ("utf-8", "cp949"):
+                try:
+                    return data.decode(enc)
+                except UnicodeDecodeError:
+                    continue
+            raise ValueError(f"{name}: 글자를 읽지 못했습니다.")
+        if name.endswith(".pdf") or ctype == "application/pdf":
+            text = ""
+            try:
+                import fitz
+                doc = fitz.open(stream=data, filetype="pdf")
+                text = "\n".join(page.get_text() for page in doc)
+                doc.close()
+            except ImportError:
+                pass
+            if len(text.strip()) < 50 and app.state.ai:
+                text = app.state.ai.transcribe(data, "application/pdf")
+            return text
+        if ctype.startswith("image/") or name.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
+            if not app.state.ai:
+                raise ValueError("사진에서 글을 읽으려면 AI 키가 필요합니다.")
+            return app.state.ai.transcribe(data, ctype if ctype.startswith("image/") else "image/jpeg")
+        raise ValueError(f"{name or '파일'}: txt, pdf, 사진 파일만 읽을 수 있습니다.")
+
+    def do_revise(set_id: int, instruction: str, targets: list) -> str:
+        row = store.get_set(set_id)
+        if not row:
+            raise GenerationError("없는 문제 세트입니다.")
+        if row["status"] != "done" or not row["data"]:
+            raise GenerationError("출제가 끝난 뒤에 고칠 수 있습니다.")
+        new, summary = revise_set(app.state.ai, source_text=row["source_text"], data=row["data"],
+                                  instruction=instruction, targets=targets,
+                                  style=style_for(row["style_id"]))
+        store.push_revision(set_id, row["data"], f"'{instruction.strip()[:40]}' 고치기 전")
+        store.update_set(set_id, data=new)
+        return summary
+
     def run_daily(now: datetime) -> list:
         settings = store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT
         if not app.state.ai:
@@ -209,6 +255,15 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
                 made.append(start_from_passage(p, "daily", wait=True))
             except GenerationError as e:
                 store.update_passage(p["id"], status="error", error=str(e))
+        bot = app.state.telegram
+        if bot:
+            try:
+                if not made:
+                    bot.send("⏰ 오늘 매일 출제할 지문이 보관함에 없어요. 지문을 보내고 [보관함에 넣기]를 눌러 주세요.")
+                for i, sid in enumerate(made):
+                    bot.send_set(sid, header=f"⏰ 오늘의 문제 ({i + 1}/{len(made)})")
+            except Exception:
+                traceback.print_exc()
         return made
 
     app.state.run_daily = run_daily
@@ -232,6 +287,58 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
     if start_scheduler:
         threading.Thread(target=scheduler_loop, daemon=True).start()
 
+    # ── 텔레그램 봇 ──────────────────────────────────
+    def bot_create_set(title, text, recipe):
+        recipe = normalize_recipe(recipe or (store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT)["recipe"])
+        set_id = store.create_set(title, "국어", text, recipe, recipe.get("style_id"), None, "telegram")
+        run_set(set_id)
+        return set_id
+
+    def bot_regenerate(set_id):
+        row = store.get_set(set_id)
+        if row and row["status"] != "working":
+            if row["data"]:
+                store.push_revision(set_id, row["data"], "다시 출제하기 전")
+            store.update_set(set_id, status="working", progress="다시 출제합니다...", error="")
+            run_set(set_id)
+
+    def bot_render(set_id):
+        row = store.get_set(set_id)
+        if not row or not row["data"]:
+            return ""
+        return render_paper([row], style_for(row["style_id"]), "both")
+
+    app.state.telegram = None
+    if telegram == "auto":
+        token = (os.environ.get("QM_TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
+                 or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+        chat = (os.environ.get("QM_TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+        telegram = TelegramBot(token, chat, None) if token and chat else None
+    if telegram:
+        telegram.h = types.SimpleNamespace(
+            store=store, extract=extract_from_bytes, create_set=bot_create_set, revise=do_revise,
+            regenerate=bot_regenerate, render=bot_render,
+            default_recipe=lambda: normalize_recipe(
+                (store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT)["recipe"]),
+            daily_settings=lambda: store.get_setting("daily", DAILY_DEFAULT) or DAILY_DEFAULT)
+        app.state.telegram = telegram
+        url = (public_url or os.environ.get("QM_PUBLIC_URL", "")).strip().rstrip("/")
+        if url.startswith("https://"):
+            # 서버가 켜질 때마다 텔레그램에 '받은 말은 이 주소로 보내 달라'고 알려 둔다
+            threading.Thread(target=lambda: telegram.set_webhook(f"{url}/telegram/{telegram.secret}"),
+                             daemon=True).start()
+
+    @app.post("/telegram/{secret}")
+    async def telegram_webhook(secret: str, request: Request):
+        bot = app.state.telegram
+        if not bot or not secrets.compare_digest(secret, bot.secret) or not secrets.compare_digest(
+                request.headers.get("x-telegram-bot-api-secret-token", ""), bot.secret):
+            return Response(status_code=404)
+        update = await request.json()
+        # 출제는 1~2분 걸리므로 텔레그램에는 바로 '받았다'고 답하고 일은 따로 한다
+        threading.Thread(target=bot.handle, args=(update,), daemon=True).start()
+        return {"ok": True}
+
     # ── 화면 ──────────────────────────────────────────
     @app.get("/", response_class=HTMLResponse)
     def index():
@@ -248,6 +355,7 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
             "default_recipe": catalog.DEFAULT_RECIPE,
             "max_questions": catalog.MAX_QUESTIONS,
             "ai": app.state.ai.name if app.state.ai else None,
+            "telegram": bool(app.state.telegram),
             "now": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         }
 
@@ -316,33 +424,10 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
         texts = []
         for f in files:
             data = await f.read()
-            name = (f.filename or "").lower()
-            ctype = f.content_type or ""
-            if name.endswith(".txt"):
-                for enc in ("utf-8", "cp949"):
-                    try:
-                        texts.append(data.decode(enc))
-                        break
-                    except UnicodeDecodeError:
-                        continue
-            elif name.endswith(".pdf"):
-                text = ""
-                try:
-                    import fitz
-                    doc = fitz.open(stream=data, filetype="pdf")
-                    text = "\n".join(page.get_text() for page in doc)
-                    doc.close()
-                except ImportError:
-                    pass
-                if len(text.strip()) < 50 and app.state.ai:
-                    text = app.state.ai.transcribe(data, "application/pdf")
-                texts.append(text)
-            elif ctype.startswith("image/"):
-                if not app.state.ai:
-                    raise HTTPException(400, "사진에서 글을 읽으려면 AI 키가 필요합니다.")
-                texts.append(app.state.ai.transcribe(data, ctype))
-            else:
-                raise HTTPException(400, f"{f.filename}: txt, pdf, 사진 파일만 읽을 수 있습니다.")
+            try:
+                texts.append(await asyncio.to_thread(extract_from_bytes, f.filename or "", f.content_type or "", data))
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         return {"text": "\n\n".join(t.strip() for t in texts if t and t.strip())}
 
     # ── 문제 세트 ─────────────────────────────────────
@@ -419,13 +504,9 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
         if row["status"] != "done" or not row["data"]:
             raise HTTPException(409, "출제가 끝난 뒤에 고칠 수 있습니다.")
         try:
-            new, summary = revise_set(app.state.ai, source_text=row["source_text"], data=row["data"],
-                                      instruction=req.instruction, targets=req.targets,
-                                      style=style_for(row["style_id"]))
+            summary = do_revise(set_id, req.instruction, req.targets)
         except (GenerationError, AIError) as e:
             raise HTTPException(400, str(e))
-        store.push_revision(set_id, row["data"], f"'{req.instruction.strip()[:40]}' 고치기 전")
-        store.update_set(set_id, data=new)
         return {"ok": True, "summary": summary}
 
     @app.post("/api/sets/{set_id}/undo")
