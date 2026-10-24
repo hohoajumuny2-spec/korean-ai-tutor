@@ -6275,6 +6275,39 @@ def audience_names(subject: str, target_class) -> list:
     return out
 
 
+@app.get("/api/notice/homework_status")
+def notice_homework_status(date: str = "", x_notify_secret: Optional[str] = Header(None)):
+    """홈페이지(logyedu.com) 알림장이 묻는다: 수업일 즈음 과제를 누가 냈고 누가 안 냈는지.
+
+    두 서버가 같이 아는 NOTIFY_SECRET 이 맞아야 답한다(학생 이름 · 제출 여부라서).
+    계산은 homework_status.py 에 있다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or not x_notify_secret or not secrets.compare_digest(secret, x_notify_secret.strip()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import homework_status as hs
+    day = hs.parse_day(date) or now_kst().date()
+    try:
+        homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+        roster = [(d.id, targeting_info_from(d.to_dict() or {})) for d in db.collection("students").stream()]
+
+        def audience(hw):
+            targets = task_target_classes(hw)
+            return [n for n, info in roster if task_visible_to_student("", targets, n, info=info)]
+
+        def reports(title):
+            rows = (db.collection("reports").where("task_name", "==", title)
+                    .where("type", "==", "과제 제출").stream())
+            return [r.to_dict() or {} for r in rows]
+
+        return {"success": True, "date": day.isoformat(),
+                "homeworks": hs.build(day, homeworks, reports, audience, deadline_passed)}
+    except Exception as e:
+        print("[알림장 과제 확인] 실패:", e)
+        return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
+
+
 def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_class) -> None:
     """새 공지 · 과제 · 퀴즈 · 모의고사를 학생 카톡으로 알린다. 게시는 기다리지 않게 따로 돌린다."""
     secret = os.environ.get("NOTIFY_SECRET", "").strip()
