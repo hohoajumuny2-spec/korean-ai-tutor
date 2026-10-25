@@ -1776,11 +1776,13 @@ class SingleStudentRequest(BaseModel):
 def add_single_student(req: SingleStudentRequest, _: bool = Depends(verify_admin)):
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
-    subjects = [normalize_subject(s) for s in req.subjects] if req.subjects else ["korean"]
-    payload = {"school": req.school, "grade": req.grade, "class_name": (req.class_name or "").strip(), "subjects": subjects}
-    if req.class_names is not None:
-        payload["class_names"] = {normalize_subject(k): str(v or "").strip() for k, v in req.class_names.items()}
-    db.collection("students").document(sanitize_doc_id(req.name)).set(payload, merge=True)
+    # 💡 이미 있는 학생을 다른 과목 반으로 다시 추가해도 있던 과목 · 반을 지우지 않는다(student_classes.py)
+    from student_classes import merge_added_student
+    ref = db.collection("students").document(sanitize_doc_id(req.name))
+    doc = ref.get()
+    payload = merge_added_student(doc.to_dict() if doc.exists else {}, req.school, req.grade,
+                                  req.class_name, req.class_names, req.subjects)
+    ref.set(payload, merge=True)
     return {"success": True}
 
 class BulkDeleteReq(BaseModel):
@@ -1953,6 +1955,13 @@ def delete_class(req: ClassDeleteReq, _: bool = Depends(verify_admin)):
 class AssignClassReq(BaseModel):
     ids: list = None
     class_name: str = ""
+    # 💡 어느 과목의 반으로 넣는지(korean · math · english). 비우면 반 이름으로 짐작한다
+    #    ('수학' → 수학, '영어' → 영어, 나머지 → 국어).
+    subject: str = ""
+
+
+# 반 이름 → 과목 짐작 · 한 과목 반만 바꾸기: student_classes.py (DB 없이 시험한다)
+from student_classes import guess_class_subject, class_assignment_fields
 
 
 @app.post("/api/admin/student/assign_class")
@@ -1960,11 +1969,15 @@ def assign_class(req: AssignClassReq, _: bool = Depends(verify_admin)):
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     target = (req.class_name or "").strip()
+    subject = normalize_subject(req.subject) if (req.subject or "").strip() else guess_class_subject(target)
+    subject = normalize_subject(subject)
     count = 0
     for sid in (req.ids or []):
-        db.collection("students").document(sid).set({"class_name": target}, merge=True)
+        ref = db.collection("students").document(sid)
+        doc = ref.get()
+        ref.set(class_assignment_fields(doc.to_dict() if doc.exists else {}, subject, target), merge=True)
         count += 1
-    return {"success": True, "updated": count}
+    return {"success": True, "updated": count, "subject": subject}
 
 
 class AssignSubjectsReq(BaseModel):
