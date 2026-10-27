@@ -8597,6 +8597,10 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
+            # 문항별 유형 · 요약 해설 · 해설 영상(마감 전이면 유형만)
+            "meta": {k: ({"tag": v["tag"]} if homework_expl_locked(data) else v)
+                     for k, v in study_extras.parse_meta_map(data.get("qmeta")).items()
+                     if not homework_expl_locked(data) or v.get("tag")},
             "expl_locked": homework_expl_locked(data), "expl_open_at": data.get("deadline", "") if homework_expl_locked(data) else ""}
 
 
