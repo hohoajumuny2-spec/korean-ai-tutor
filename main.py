@@ -42,6 +42,7 @@ if hasattr(time, "tzset"):      # 윈도우에는 없다 — 윈도우 PC는 원
 
 import fitz
 import omr_sheet
+import study_extras
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
 import imageio_ffmpeg
@@ -1229,6 +1230,43 @@ def explanations_for(kind: str, title: str, for_student: bool = False) -> dict:
     return {}
 
 
+def qmeta_for(kind: str, title: str, for_student: bool = False) -> dict:
+    """문항별 유형 · 요약 해설 · 해설 영상 {"1": {tag, summary, video}}.
+    퀴즈는 문항 안에, 과제 · 시험은 문서의 qmeta 칸에 들어 있다.
+    for_student 면 마감 전인 과제는 유형만 남긴다(요약 · 영상에 정답이 드러날 수 있어서)."""
+    if db is None or not title:
+        return {}
+    try:
+        if kind in ("타임어택 퀴즈", "quiz"):
+            d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+            if not d.exists:
+                return {}
+            out = {}
+            for i, q in enumerate((d.to_dict() or {}).get("questions") or []):
+                m = study_extras.quiz_question_meta(q or {})
+                if m:
+                    out[str(i + 1)] = m
+            return out
+        if kind in ("과제 제출", "homework"):
+            hw = homework_doc(title)
+            meta = study_extras.parse_meta_map(hw.get("qmeta"))
+            if for_student and homework_expl_locked(hw):
+                meta = {k: {"tag": v["tag"]} for k, v in meta.items() if v.get("tag")}
+            return meta
+        if kind in ("모의고사", "exam"):
+            d = db.collection("exams").document(sanitize_doc_id(title)).get()
+            return study_extras.parse_meta_map((d.to_dict() or {}).get("qmeta")) if d.exists else {}
+    except Exception as e:
+        print("문항 정보 불러오기 실패:", kind, title, e)
+    return {}
+
+
+def meta_fields(meta: dict, no: int) -> dict:
+    """화면에 실어 보낼 문항 정보 세 칸(없으면 빈 글자)."""
+    m = (meta or {}).get(str(no)) or {}
+    return {"tag": m.get("tag", ""), "summary": m.get("summary", ""), "video": m.get("video", "")}
+
+
 def grant_daily_attendance(student_name: str, data: dict) -> dict:
     """하루에 한 번 출석 점수를 준다. 이미 오늘 받았으면 아무것도 하지 않는다.
 
@@ -1416,6 +1454,8 @@ def view_result(student_name: str, title: str, kind: str,
     if hide:
         qs = [{**q, "answer": "", "answer_text": ""} for q in qs]
     expl = explanations_for(k, task, for_student=hide)
+    meta = qmeta_for(k, task, for_student=hide)
+    reasons = rep.get("reasons") or {}
     hw_for_lock = homework_doc(task) if (hide and k == "과제 제출") else {}
     expl_locked = bool(hw_for_lock) and homework_expl_locked(hw_for_lock)
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
@@ -1436,6 +1476,8 @@ def view_result(student_name: str, title: str, kind: str,
             "mine": str(mine[no - 1]) if no - 1 < len(mine) and mine[no - 1] not in (None, "") else "",
             "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
             "explanation": expl.get(str(no), ""),
+            **meta_fields(meta, no),
+            "reason": str(reasons.get(str(no), "") or ""),
             "is_wrong": no in wrongs, "is_unsure": no in unsure,
         })
 
@@ -1498,6 +1540,8 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         # 💡 번호만 알려주면 왜 틀렸는지 알 수 없다. 저장해둔 문항별 해설을 같이 붙여
         #    학생이 눌러서 바로 확인할 수 있게 한다.
         expl = explanations_for(kind, title, for_student=True)
+        meta = qmeta_for(kind, title, for_student=True)
+        reasons = r.get("reasons") or {}
         # 💡 전부 맞힌 시험도 해설이 있으면 남겨 둔다 — 찍어서 맞힌 걸 되짚어 보려면
         #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
         if not wrongs and not expl:
@@ -1511,6 +1555,8 @@ def get_wrong_questions(student_name: str, limit: int = 30):
                     "answer": q.get("answer", ""), "answer_text": q.get("answer_text", ""),
                     "options": q.get("options", []),
                     "explanation": expl.get(str(no), ""),
+                    **meta_fields(meta, no),
+                    "reason": str(reasons.get(str(no), "") or ""),
                     "is_wrong": no in wrongs,
                     "is_unsure": no in unsure}
 
@@ -2310,11 +2356,11 @@ SUBJECTS = {
         "role": "국어학원", "expertise": "국어 개념(문법, 표현법 등)",
     },
     "math": {
-        "label": "수학", "persona": "수박", "greeting_persona": "스마트 수박",
+        "label": "수학", "persona": "수학쌤", "greeting_persona": "스마트 수학쌤",
         "role": "수학학원", "expertise": "수학 개념(공식, 풀이 과정 등)",
     },
     "english": {
-        "label": "영어", "persona": "재우T", "greeting_persona": "스마트 재우T",
+        "label": "영어", "persona": "영어쌤", "greeting_persona": "스마트 영어쌤",
         "role": "영어학원", "expertise": "영어 개념(문법, 어휘, 독해 등)",
     },
 }
@@ -3422,6 +3468,8 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
     is_new = prev_existed is False and not old_title
     tclasses = normalize_target_classes(req.get("target_classes"), req.get("target_class", ""))
     questions = req.get("questions", [])
+    # 💡 '유형 연습 문제로만 쓰기': 퀴즈 목록에는 안 보이고, 매일 유형 문제에서만 나온다.
+    practice_only = bool(req.get("practice_only"))
     await asyncio.to_thread(
         lambda: db.collection("quizzes").document(safe_title).set(
             {
@@ -3434,12 +3482,14 @@ async def create_quiz(request: Request, _: bool = Depends(verify_admin)):
                 # 열리기 전에는 AI 자료실에도 문항을 싣지 않는다 (처음 열릴 때 싣는다)
                 "knowledge_pending": waiting,
                 "questions": questions,
+                "practice_only": practice_only,
                 "created_at": created_at,
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
     )
-    if is_new:
+    invalidate_practice_pool()
+    if is_new and not practice_only:
         await asyncio.to_thread(
             send_push_to_audience, subject, tclasses, "새 타임어택 퀴즈",
             f"'{title}' 퀴즈가 {deadline_label(open_at)}에 열려요. 그때 도전해보세요!" if waiting
@@ -3503,6 +3553,8 @@ def strip_quiz_answers(quiz: dict) -> dict:
         qc["pick"] = slot_pick_count(q.get("answer", ""))
         qc.pop("answer", None)
         qc.pop("explanation", None)   # 해설도 정답을 드러낼 수 있어 함께 지운다
+        qc.pop("summary", None)       # 요약 해설 · 해설 영상도 마찬가지
+        qc.pop("video", None)
         qs.append(qc)
     out["questions"] = qs
     return out
@@ -3517,7 +3569,8 @@ def get_quizzes(student_name: str = ""):
     # 지정된 퀴즈인데 그 반이 아니면 목록에서 아예 뺀다. 관리자 화면은 student_name 없이
     # 부르므로 전체가 그대로 보인다.
     if student_name:
-        rows = [q for q in rows if task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), student_name)]
+        rows = [q for q in rows if not q.get("practice_only")
+                and task_visible_to_student(q.get("subject", "korean"), task_target_classes(q), student_name)]
         # 💡 API 응답을 직접 열어봐도 정답이 보이면 안 된다 — 문항 유형만 남기고 지운다.
         rows = [strip_quiz_answers(q) for q in rows]
         # 💡 아직 열리지 않은 퀴즈는 목록에 '언제 열리는지'만 보여 주고 문항은 보내지 않는다.
@@ -3729,6 +3782,8 @@ async def start_quiz(req: QuizStartReq):
     if not quiz_doc.exists:
         return {"success": False, "detail": "존재하지 않는 퀴즈입니다."}
     quiz_data = quiz_doc.to_dict()
+    if quiz_data.get("practice_only") and not is_preview(req.student_name):
+        return {"success": False, "detail": "유형 연습용 문제 묶음이라 퀴즈로 풀 수 없습니다. '오늘의 유형 문제'에서 나와요."}
     # 원장님이 재응시를 허락했으면 마감도 '이미 완료'도 한 번은 넘어간다
     허락 = await asyncio.to_thread(retry_allowed, "타임어택 퀴즈", req.title, req.student_name)
     free_pass = 허락 or is_preview(req.student_name)
@@ -3969,6 +4024,8 @@ async def submit_quiz(req: QuizSubmitReq):
 
     doc = await asyncio.to_thread(lambda: db.collection("quizzes").document(req.title).get())
     doc_data = doc.to_dict() or {}
+    if doc_data.get("practice_only") and not is_preview(req.student_name):
+        return {"success": False, "detail": "유형 연습용 문제 묶음이라 퀴즈로 낼 수 없습니다."}
 
     if not await asyncio.to_thread(task_visible_to_student, doc_data.get("subject", "korean"), task_target_classes(doc_data), req.student_name):
         reason = await asyncio.to_thread(task_visibility_denied_reason, doc_data.get("subject", "korean"), task_target_classes(doc_data), req.student_name)
@@ -4045,6 +4102,7 @@ async def submit_quiz(req: QuizSubmitReq):
                 "ai_feedback": "",
                 # 문항에 적어둔 해설 — 학생이 결과에서 바로 읽을 수 있게 함께 보낸다
                 "explanation": str(q.get("explanation", "") or "").strip()[:EXPLANATION_MAX_CHARS],
+                **meta_fields({"1": study_extras.quiz_question_meta(q)}, 1),
                 "blank": not my_ans and not is_unsure,
             })
 
@@ -7058,6 +7116,10 @@ def get_explanations(title: str, kind: str = "모의고사"):
         "question_count": task_question_count(kind, task),
         "answers": answer_key_for(kind, task),
         "explanations": explanations_for(kind, task),
+        # 문항별 유형 · 요약 해설 · 해설 영상, 그리고 유형 칸에 띄울 보기
+        "meta": qmeta_for(kind, task),
+        "tag_suggestions": study_extras.TAG_SUGGESTIONS.get(task_subject(kind, task), []),
+        "known_tags": known_tags(task_subject(kind, task)),
     }
 
 
@@ -7066,6 +7128,9 @@ class SetExplanationsReq(BaseModel):
     kind: str = "모의고사"
     explanations: dict = {}
     replace: bool = False      # True 면 통째로 갈아끼운다 (기본은 있는 것에 얹기)
+    # 문항별 유형 · 요약 해설 · 해설 영상 {"1": {"tag": "...", "summary": "...", "video": "..."}}
+    # 보낸 칸만 바뀐다(빈 글자면 지움). 안 보내면(None) 그대로 둔다.
+    meta: Optional[dict] = None
 
 
 @app.post("/api/admin/explanations", dependencies=[Depends(verify_admin)])
@@ -7100,23 +7165,457 @@ async def set_explanations(req: SetExplanationsReq):
         if not snap.exists:
             return {"success": False, "detail": "퀴즈를 찾지 못했습니다."}
         qs = list((snap.to_dict() or {}).get("questions") or [])
+        old_meta = {str(i + 1): study_extras.quiz_question_meta(q or {}) for i, q in enumerate(qs)}
+        new_meta = study_extras.merge_meta({k: v for k, v in old_meta.items() if v}, req.meta, req.replace) \
+            if req.meta is not None else None
         for i, q in enumerate(qs):
             txt = merged.get(str(i + 1), "")
             if txt:
                 q["explanation"] = txt
             else:
                 q.pop("explanation", None)
+            if new_meta is not None:
+                m = new_meta.get(str(i + 1), {})
+                for f in ("tag", "summary", "video"):
+                    if m.get(f):
+                        q[f] = m[f]
+                    else:
+                        q.pop(f, None)
         await asyncio.to_thread(lambda: ref.set({"questions": qs}, merge=True))
+        if new_meta is not None:
+            invalidate_practice_pool()
     else:
         coll = EXPL_TARGETS[kind]
         ref = db.collection(coll).document(doc_id)
         snap = await asyncio.to_thread(ref.get)
         if not snap.exists:
             return {"success": False, "detail": "항목을 찾지 못했습니다."}
-        await asyncio.to_thread(lambda: ref.set({"explanations": merged}, merge=True))
+        update = {"explanations": merged}
+        if req.meta is not None:
+            update["qmeta"] = study_extras.merge_meta(
+                study_extras.parse_meta_map((snap.to_dict() or {}).get("qmeta")), req.meta, req.replace)
+        await asyncio.to_thread(lambda: ref.set(update, merge=True))
+        if req.meta is not None:
+            invalidate_practice_pool()
 
     return {"success": True, "title": task, "kind": kind,
-            "count": len(merged), "explanations": merged}
+            "count": len(merged), "explanations": merged,
+            "meta": await asyncio.to_thread(qmeta_for, kind, task)}
+
+
+# ─────────────────────────────────────────────────────────
+# 오답 원인 점검 · 매일 유형 문제 (계산은 study_extras.py)
+# ─────────────────────────────────────────────────────────
+XP_REWARD_PRACTICE = 30          # 오늘의 유형 문제를 다 풀면(하루 한 번)
+PRACTICE_REPORT_TYPE = "오늘의 유형 문제"
+REASON_KINDS = {"과제 제출", "타임어택 퀴즈", "모의고사", "출제 문제"}
+_PRACTICE_CACHE = {"at": 0.0, "pool": None, "tags": None}
+_PRACTICE_TTL = 300
+
+
+def invalidate_practice_pool():
+    _PRACTICE_CACHE.update({"at": 0.0, "pool": None, "tags": None})
+
+
+def task_subject(kind: str, title: str) -> str:
+    """그 퀴즈 · 과제의 과목(유형 보기를 고를 때). 과제는 과목 칸이 없어 제목으로 짐작한다."""
+    if db is None or not title:
+        return "korean"
+    try:
+        if kind in ("타임어택 퀴즈", "quiz"):
+            d = db.collection("quizzes").document(sanitize_doc_id(title)).get()
+            if d.exists:
+                return normalize_subject((d.to_dict() or {}).get("subject"))
+        if kind in ("모의고사", "exam"):
+            d = db.collection("exams").document(sanitize_doc_id(title)).get()
+            if d.exists:
+                return normalize_subject((d.to_dict() or {}).get("subject"))
+    except Exception:
+        pass
+    return guess_class_subject(title)
+
+
+def practice_pool() -> list:
+    """매일 유형 문제로 낼 수 있는 문항들(5분 기억).
+
+    유형이 붙은 퀴즈 문항 가운데
+      - '유형 연습 문제로만 쓰기' 묶음이거나
+      - 마감이 지난 퀴즈(아직 안 푼 학생에게 답이 새지 않게)
+    인 객관식 · 단답형만. 서술형은 바로 채점할 수 없어 뺀다."""
+    now = time.time()
+    if _PRACTICE_CACHE["pool"] is not None and now - _PRACTICE_CACHE["at"] < _PRACTICE_TTL:
+        return _PRACTICE_CACHE["pool"]
+    pool, tags = [], {}
+    if db is not None:
+        for d in db.collection("quizzes").stream():
+            qz = d.to_dict() or {}
+            subj = normalize_subject(qz.get("subject"))
+            usable = bool(qz.get("practice_only")) or (deadline_passed(qz.get("deadline")) and not quiz_not_open(qz.get("open_at")))
+            for i, q in enumerate(qz.get("questions") or []):
+                tag = study_extras.clean_tag((q or {}).get("tag"))
+                if not tag:
+                    continue
+                tags.setdefault(subj, set()).add(tag)
+                qt = str(q.get("qtype", "choice") or "choice")
+                if not usable or qt == "essay" or not str(q.get("answer", "")).strip():
+                    continue
+                pool.append({"qid": f"{d.id}#{i}", "doc": d.id, "idx": i, "tag": tag, "subject": subj,
+                             "title": qz.get("title", ""), "target_classes": task_target_classes(qz), "q": q})
+        for d in db.collection("homeworks").stream():
+            hw = d.to_dict() or {}
+            subj = guess_class_subject(hw.get("title", ""))
+            for m in study_extras.parse_meta_map(hw.get("qmeta")).values():
+                if m.get("tag"):
+                    tags.setdefault(subj, set()).add(m["tag"])
+    _PRACTICE_CACHE.update({"at": now, "pool": pool, "tags": {k: sorted(v) for k, v in tags.items()}})
+    return pool
+
+
+def known_tags(subject: str) -> list:
+    """원장님이 지금까지 붙인 유형 이름(같은 이름을 다시 고르기 쉽게)."""
+    practice_pool()
+    return (_PRACTICE_CACHE["tags"] or {}).get(subject or "korean", [])
+
+
+def practice_settings() -> dict:
+    out = {"on": True, "count": study_extras.DAILY_DEFAULT}
+    if db is not None:
+        try:
+            d = db.collection("settings").document("practice").get()
+            if d.exists:
+                v = d.to_dict() or {}
+                out["on"] = bool(v.get("on", True))
+                out["count"] = max(1, min(study_extras.DAILY_MAX, int(v.get("count", out["count"]) or out["count"])))
+        except Exception:
+            pass
+    return out
+
+
+def student_misses(name: str) -> tuple:
+    """학생의 틀린 문항 기록 → (유형 붙은 오답 목록, 원래 틀렸던 퀴즈 문항 id, 원인 집계, 유형 없는 오답 수)."""
+    misses, avoid, reasons_total, untagged = [], set(), {}, 0
+    if db is None:
+        return misses, avoid, reasons_total, untagged
+    try:
+        rows = [r.to_dict() for r in db.collection("reports").where("student_name", "==", name).limit(1200).stream()]
+    except Exception as e:
+        print("오답 기록 읽기 실패:", name, e)
+        return misses, avoid, reasons_total, untagged
+    rows = [r for r in rows if str(r.get("type", "")) in REASON_KINDS]
+    rows.sort(key=lambda r: str(r.get("submitted_at", "")), reverse=True)
+    meta_cache = {}
+    for r in rows[:300]:
+        kind, title = r.get("type", ""), r.get("task_name", "")
+        reasons = r.get("reasons") or {}
+        for v in reasons.values():
+            if v in study_extras.REASONS:
+                reasons_total[v] = reasons_total.get(v, 0) + 1
+        still = r.get("retry", {}).get("wrongs") if isinstance(r.get("retry"), dict) and r.get("retry", {}).get("count") else None
+        wrongs = [int(w) for w in (r.get("wrongs") or []) if _num(w) is not None]
+        if still is not None:      # 다시 풀어 고친 문항은 빼고(그래도 원인을 '찍음'으로 고른 건 남긴다)
+            keep = {int(w) for w in still if _num(w) is not None}
+            wrongs = [w for w in wrongs if w in keep or reasons.get(str(w)) == "guess"]
+        if not wrongs:
+            continue
+        unsure = {int(u) for u in (r.get("unsure") or []) if _num(u) is not None}
+        key = (kind, title)
+        if key not in meta_cache:
+            meta_cache[key] = qmeta_for(kind, title)
+        meta = meta_cache[key]
+        for no in wrongs:
+            tag = (meta.get(str(no)) or {}).get("tag", "")
+            if kind == "타임어택 퀴즈":
+                avoid.add(f"{sanitize_doc_id(title)}#{no - 1}")
+            if tag:
+                misses.append({"tag": tag, "reason": reasons.get(str(no), ""), "unsure": no in unsure,
+                               "at": str(r.get("submitted_at", ""))[:10]})
+            else:
+                untagged += 1
+    return misses, avoid, reasons_total, untagged
+
+
+def practice_choice_text(q: dict, ans: str) -> str:
+    opts = q.get("options") or []
+    if str(q.get("qtype", "choice") or "choice") != "choice":
+        return str(ans)
+    groups = []
+    for slot in answer_slots(ans):
+        texts = []
+        for n in answer_picks(slot):
+            ni = _num(n)
+            if ni and 1 <= int(ni) <= len(opts) and opts[int(ni) - 1]:
+                texts.append(f"{int(ni)}번 {opts[int(ni) - 1]}")
+        if texts:
+            groups.append(" 와 ".join(texts))
+    return " 또는 ".join(groups) if groups else str(ans)
+
+
+def practice_item_for_student(it: dict) -> dict:
+    q = it["q"]
+    return {"qid": it["qid"], "tag": it["tag"], "subject": it["subject"],
+            "subject_label": SUBJECTS[it["subject"]]["label"],
+            "qtype": str(q.get("qtype", "choice") or "choice"),
+            "q_text": str(q.get("q_text", "")), "bogi": str(q.get("bogi", "") or ""),
+            "image": str(q.get("image", "") or ""), "options": q.get("options") or [],
+            "pick": slot_pick_count(q.get("answer", ""))}
+
+
+def practice_day_id(name: str, day: str) -> str:
+    return sanitize_doc_id(f"{name}__{day}")
+
+
+class WrongReasonReq(BaseModel):
+    student_name: str
+    kind: str
+    title: str
+    no: int
+    reason: str = ""          # guess · two · misread (빈 글자면 지운다)
+
+
+@app.post("/api/student/wrong_reason")
+async def set_wrong_reason(req: WrongReasonReq):
+    """틀린 문항마다 '왜 틀렸는지' 학생이 고른다 → 원인에 맞는 피드백을 돌려준다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name, kind, title = (req.student_name or "").strip(), (req.kind or "").strip(), (req.title or "").strip()
+    reason = (req.reason or "").strip()
+    if kind not in REASON_KINDS or not name or not title or req.no < 1:
+        return {"success": False, "detail": "어느 문항인지 알 수 없습니다."}
+    if reason and reason not in study_extras.REASONS:
+        return {"success": False, "detail": "고를 수 없는 이유입니다."}
+    meta = await asyncio.to_thread(qmeta_for, kind, title, True)
+    tag = (meta.get(str(req.no)) or {}).get("tag", "")
+    subject = await asyncio.to_thread(task_subject, kind, title)
+    fb = study_extras.reason_feedback(reason, tag, subject) if reason else {}
+    if is_preview(name):           # 원장님 체험: 저장 없이 피드백만 보여 준다
+        return {"success": True, "reason": reason, "feedback": fb, "tag": tag}
+    rid, rep = await asyncio.to_thread(find_report, name, title, kind)
+    if not rid:
+        return {"success": False, "detail": "이 항목을 제출한 기록이 없습니다."}
+    wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
+    if req.no not in wrongs:
+        return {"success": False, "detail": "틀린 문항에만 이유를 고를 수 있어요."}
+    reasons = dict(rep.get("reasons") or {})
+    if reason:
+        reasons[str(req.no)] = reason
+    else:
+        reasons.pop(str(req.no), None)
+    await asyncio.to_thread(lambda: db.collection("reports").document(rid).update({"reasons": reasons}))
+    return {"success": True, "reason": reason, "feedback": fb, "tag": tag}
+
+
+@app.get("/api/student/reason_options")
+def reason_options():
+    return {"success": True, "reasons": study_extras.REASONS}
+
+
+def _grade_practice(day: dict, answers: dict) -> tuple:
+    """오늘의 문제 채점 → (결과 목록, 맞힌 수)."""
+    pool = {it["qid"]: it for it in practice_pool()}
+    details, correct = [], 0
+    for qid in day.get("items") or []:
+        it = pool.get(qid)
+        if not it:
+            # 그사이 원장님이 문항을 지웠거나 유형을 뺐다 — 원래 문서에서 다시 찾는다
+            doc_id, _, idx = qid.partition("#")
+            try:
+                snap = db.collection("quizzes").document(doc_id).get()
+                q = ((snap.to_dict() or {}).get("questions") or [])[int(idx)] if snap.exists else None
+            except Exception:
+                q = None
+            if not q:
+                continue
+            it = {"qid": qid, "q": q, "tag": study_extras.clean_tag(q.get("tag")),
+                  "subject": normalize_subject((snap.to_dict() or {}).get("subject"))}
+        q = it["q"]
+        mine = str((answers or {}).get(qid, "") or "").strip()
+        unsure = mine in ("?", "모름")
+        key = str(q.get("answer", ""))
+        ok = bool(mine) and not unsure and answer_matches(mine, key)
+        correct += 1 if ok else 0
+        m = study_extras.quiz_question_meta(q)
+        details.append({**practice_item_for_student(it), "ok": ok, "mine": mine, "unsure": unsure,
+                        "answer": key, "answer_text": practice_choice_text(q, key),
+                        "my_text": practice_choice_text(q, mine) if mine and not unsure else "",
+                        "explanation": str(q.get("explanation", "") or "")[:EXPLANATION_MAX_CHARS],
+                        "summary": m.get("summary", ""), "video": m.get("video", "")})
+    return details, correct
+
+
+@app.get("/api/practice/today")
+def practice_today(student_name: str):
+    """오늘의 유형 문제: 그동안 틀린 유형에서 하루 몇 문제만."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+    st = practice_settings()
+    day = now_kst().strftime("%Y-%m-%d")
+    misses, avoid, reasons_total, untagged = student_misses(name)
+    stats_doc = db.collection("practice_stats").document(sanitize_doc_id(name)).get()
+    stats = (stats_doc.to_dict() or {}) if stats_doc.exists else {}
+    weak = study_extras.weak_tags(misses, stats.get("tags") or {}, now_kst().date())
+    base = {"success": True, "date": day, "on": st["on"], "count": st["count"],
+            "weak": weak[:6], "reasons": reasons_total,
+            "streak": int(stats.get("streak", 0) or 0)}
+    if not st["on"]:
+        return {**base, "items": [], "empty": "off"}
+
+    ref = db.collection("practice_days").document(practice_day_id(name, day))
+    snap = ref.get()
+    if snap.exists:
+        d = snap.to_dict() or {}
+        if d.get("done"):
+            details, correct = d.get("details") or [], int(d.get("correct", 0) or 0)
+            return {**base, "done": True, "items": [], "details": details, "correct": correct,
+                    "total": len(details)}
+        pool = {it["qid"]: it for it in practice_pool()}
+        items = [practice_item_for_student(pool[q]) for q in (d.get("items") or []) if q in pool]
+        if items:
+            return {**base, "done": False, "items": items}
+
+    if not misses:
+        return {**base, "items": [], "empty": "no_tag" if untagged else "no_wrong"}
+    info = student_targeting_info(name)
+    subs = set((info or {}).get("subjects") or ["korean", "math", "english"])
+    pool = [it for it in practice_pool()
+            if it["subject"] in subs and task_visible_to_student(it["subject"], it["target_classes"], name, info)]
+    picked = study_extras.pick_daily(weak, pool, st["count"], seed=f"{name}|{day}",
+                                     solved_right=stats.get("right_qids") or [], avoid=avoid)
+    if not picked:
+        return {**base, "items": [], "empty": "no_pool"}
+    if not is_preview(name):
+        ref.set({"student_name": name, "date": day, "items": [it["qid"] for it in picked],
+                 "tags": [it["tag"] for it in picked], "done": False,
+                 "created_at": now_kst().strftime("%Y-%m-%d %H:%M:%S")})
+    return {**base, "done": False, "items": [practice_item_for_student(it) for it in picked]}
+
+
+class PracticeSubmitReq(BaseModel):
+    student_name: str
+    answers: dict = {}         # {qid: "3" | "답" | "?"}
+    qids: list = []            # 원장님 체험처럼 저장된 오늘 묶음이 없을 때 화면이 보낸 문항
+
+
+@app.post("/api/practice/submit")
+async def practice_submit(req: PracticeSubmitReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = (req.student_name or "").strip()
+    day = now_kst().strftime("%Y-%m-%d")
+    ref = db.collection("practice_days").document(practice_day_id(name, day))
+    snap = await asyncio.to_thread(ref.get)
+    d = (snap.to_dict() or {}) if snap.exists else {}
+    if d.get("done"):
+        return {"success": True, "already": True, "details": d.get("details") or [],
+                "correct": d.get("correct", 0), "total": len(d.get("details") or []), "xp_gain": 0}
+    if not d:
+        if not is_preview(name):
+            return {"success": False, "detail": "오늘의 문제를 다시 불러와 주세요."}
+        d = {"items": [str(q) for q in (req.qids or [])][:study_extras.DAILY_MAX]}
+    details, correct = await asyncio.to_thread(_grade_practice, d, req.answers or {})
+    if not details:
+        return {"success": False, "detail": "채점할 문제를 찾지 못했습니다."}
+    xp_gain, lvl_up = 0, None
+    if not is_preview(name):
+        sref = db.collection("practice_stats").document(sanitize_doc_id(name))
+        ssnap = await asyncio.to_thread(sref.get)
+        stats = (ssnap.to_dict() or {}) if ssnap.exists else {}
+        tags = stats.get("tags") or {}
+        right_qids = list(stats.get("right_qids") or [])
+        for x in details:
+            t = tags.setdefault(x["tag"] or "기타", {"right": 0, "wrong": 0})
+            t["right" if x["ok"] else "wrong"] = int(t.get("right" if x["ok"] else "wrong", 0) or 0) + 1
+            if x["ok"] and x["qid"] not in right_qids:
+                right_qids.append(x["qid"])
+        yesterday = (now_kst() - timedelta(days=1)).strftime("%Y-%m-%d")
+        streak = int(stats.get("streak", 0) or 0) + 1 if stats.get("last_day") == yesterday else 1
+        await asyncio.to_thread(lambda: sref.set({"student_name": name, "tags": tags, "right_qids": right_qids[-500:],
+                                                  "last_day": day, "streak": streak}, merge=True))
+        await asyncio.to_thread(lambda: ref.set({"done": True, "details": details, "correct": correct,
+                                                 "answers": req.answers or {},
+                                                 "done_at": now_kst().strftime("%Y-%m-%d %H:%M:%S")}, merge=True))
+        stu = await asyncio.to_thread(lambda: db.collection("students").document(name).get())
+        old_xp = ((stu.to_dict() or {}).get("xp", 0)) if stu.exists else 0
+        xp_gain = XP_REWARD_PRACTICE
+        await asyncio.to_thread(add_xp, name, xp_gain)
+        lvl_up = level_up_info(old_xp, xp_gain)
+        await asyncio.to_thread(save_report, {
+            "student_name": name, "type": PRACTICE_REPORT_TYPE, "task_name": f"{day} 유형 문제",
+            "score": f"{correct}/{len(details)}", "submitted_at": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+            "tags": [x["tag"] for x in details],
+            "wrongs": [i + 1 for i, x in enumerate(details) if not x["ok"]]})
+    return {"success": True, "details": details, "correct": correct, "total": len(details),
+            "xp_gain": xp_gain, "level_up": lvl_up}
+
+
+class PracticeSettingsReq(BaseModel):
+    on: bool = True
+    count: int = study_extras.DAILY_DEFAULT
+
+
+@app.get("/api/admin/practice/settings", dependencies=[Depends(verify_admin)])
+def get_practice_settings():
+    pool = practice_pool()
+    by_subject = {}
+    for it in pool:
+        by_subject.setdefault(it["subject"], {}).setdefault(it["tag"], 0)
+        by_subject[it["subject"]][it["tag"]] += 1
+    return {"success": True, **practice_settings(), "pool_size": len(pool), "pool_by_subject": by_subject,
+            "tag_suggestions": study_extras.TAG_SUGGESTIONS}
+
+
+@app.post("/api/admin/practice/settings", dependencies=[Depends(verify_admin)])
+def set_practice_settings(req: PracticeSettingsReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    count = max(1, min(study_extras.DAILY_MAX, int(req.count or study_extras.DAILY_DEFAULT)))
+    db.collection("settings").document("practice").set({"on": bool(req.on), "count": count}, merge=True)
+    return {"success": True, "on": bool(req.on), "count": count}
+
+
+@app.get("/api/admin/practice/student", dependencies=[Depends(verify_admin)])
+def admin_practice_student(student_name: str):
+    """한 학생의 약한 유형 · 오답 원인 · 최근 매일 문제 기록."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name or "").strip()
+    misses, _, reasons_total, untagged = student_misses(name)
+    stats_doc = db.collection("practice_stats").document(sanitize_doc_id(name)).get()
+    stats = (stats_doc.to_dict() or {}) if stats_doc.exists else {}
+    weak = study_extras.weak_tags(misses, stats.get("tags") or {}, now_kst().date())
+    days = []
+    for i in range(14):
+        day = (now_kst() - timedelta(days=i)).strftime("%Y-%m-%d")
+        s = db.collection("practice_days").document(practice_day_id(name, day)).get()
+        if s.exists:
+            v = s.to_dict() or {}
+            days.append({"date": day, "done": bool(v.get("done")), "correct": v.get("correct", 0),
+                         "total": len(v.get("items") or []), "tags": v.get("tags") or []})
+    return {"success": True, "student": name, "weak": weak[:10], "reasons": reasons_total,
+            "untagged_wrongs": untagged, "streak": int(stats.get("streak", 0) or 0),
+            "practice_tags": stats.get("tags") or {}, "days": days}
+
+
+@app.get("/api/admin/practice/reasons", dependencies=[Depends(verify_admin)])
+def admin_reason_overview():
+    """학생별 오답 원인 집계(최근 기록 400건)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    rows = [r.to_dict() for r in db.collection("reports").order_by("submitted_at", direction=firestore.Query.DESCENDING).limit(400).stream()]
+    per = {}
+    for r in rows:
+        rs = r.get("reasons") or {}
+        if not rs:
+            continue
+        p = per.setdefault(r.get("student_name", ""), {"guess": 0, "two": 0, "misread": 0})
+        for v in rs.values():
+            if v in p:
+                p[v] += 1
+    students = sorted(({"student": k, **v, "total": sum(v.values())} for k, v in per.items() if k),
+                      key=lambda x: -x["total"])
+    return {"success": True, "students": students, "labels": study_extras.REASONS}
 
 
 @app.get("/api/admin/activity", dependencies=[Depends(verify_admin)])
@@ -7921,6 +8420,8 @@ async def create_homework(
                 "answers": answer_list,
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
+                # 문항별 유형 · 요약 해설 · 영상(해설 칸에서 따로 넣는다) — 과제를 고쳐도 남긴다
+                "qmeta": prev_data.get("qmeta") or {},
                 "question_count": len(answer_list),
                 "deadline": deadline_str,
                 "group": group,
@@ -8586,7 +9087,7 @@ def student_todo(student_name: str):
         q = d.to_dict() or {}
         title = q.get("title", "")
         if (not title or title in done["타임어택 퀴즈"] or deadline_passed(q.get("deadline"))
-                or quiz_not_open(q.get("open_at"))):
+                or quiz_not_open(q.get("open_at")) or q.get("practice_only")):
             continue
         if not q.get("deadline") and not _created_within(q, TODO_RECENT_DAYS):
             continue
