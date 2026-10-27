@@ -2548,6 +2548,37 @@ def task_visible_to_student(subject: str, target_class, student_name: str, info=
     return any(c and c in targets for c in mine)
 
 
+def normalize_target_students(value) -> list:
+    """공지를 받을 학생 이름 목록(쉼표 · 줄바꿈으로 이어 와도 된다). 비면 '학생 지정 없음'."""
+    if isinstance(value, str):
+        value = re.split(r"[,\n|]", value)
+    elif not isinstance(value, (list, tuple, set)):
+        value = []
+    return [s for s in dict.fromkeys(str(v or "").strip() for v in value) if s][:500]
+
+
+def board_visible_to_student(row: dict, student_name: str, info=_NO_INFO) -> bool:
+    """이 공지가 이 학생에게 보이는지.
+
+    - 반도 학생도 고르지 않으면 전체 공지다.
+    - 학생을 고르면 그 학생에게 보인다. 반도 함께 골랐다면 그 반 학생에게도 보인다.
+    - 퇴원생에게는 보이지 않는다."""
+    row = row or {}
+    names = normalize_target_students(row.get("target_students"))
+    classes = task_target_classes(row)
+    if not names:
+        return task_visible_to_student("", classes, student_name, info=info)
+    if is_preview(student_name):
+        return True
+    if info is _NO_INFO:
+        info = student_targeting_info(student_name)
+    if info is not None and info.get("withdrawn"):
+        return False
+    if str(student_name or "").strip() in names:
+        return True
+    return bool(classes) and task_visible_to_student("", classes, student_name, info=info)
+
+
 def task_visibility_denied_reason(subject: str, target_class, student_name: str) -> str:
     """💡 예전에는 응시가 막힌 이유를 "응시할 수 없는 시험입니다"로만 뭉뚱그려서,
     과목 미등록 때문인지 반이 달라서인지 학생도 원장님도 알 수 없었다. 어느
@@ -6326,6 +6357,24 @@ def send_push_to_audience(subject: str, target_class, title: str, body: str, url
     return sent
 
 
+def send_push_to_names(names, title: str, body: str, url: str = "", tag: str = "") -> int:
+    """정해진 학생들에게만 앱 알림을 보낸다(학생을 고른 공지)."""
+    wanted = set(names or [])
+    if db is None or not wanted:
+        return 0
+    sent = 0
+    for d in db.collection("push_subs").stream():
+        row = d.to_dict() or {}
+        if row.get("student_name", "") not in wanted:
+            continue
+        result = _push_one(row, title, body, url, tag)
+        if result == "sent":
+            sent += 1
+        elif result == "gone":
+            db.collection("push_subs").document(d.id).delete()
+    return sent
+
+
 # ─────────────────────────────────────────────────────────
 # 새 글 → 학생 카카오 알림톡
 #   학생 휴대폰 번호와 솔라피(알림톡) 키는 홈페이지 서버(logyedu.com)에 있다.
@@ -6379,23 +6428,32 @@ def notice_homework_status(date: str = "", x_notify_secret: Optional[str] = Head
         return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
 
 
-def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_class) -> None:
-    """새 공지 · 과제 · 퀴즈 · 모의고사를 학생 카톡으로 알린다. 게시는 기다리지 않게 따로 돌린다."""
+def board_audience_names(row: dict) -> list:
+    """이 공지가 보이는 학생 이름(퇴원생 제외)."""
+    if db is None:
+        return []
+    return [d.id for d in db.collection("students").stream()
+            if board_visible_to_student(row, d.id, info=targeting_info_from(d.to_dict() or {}))]
+
+
+def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_class, names=None) -> None:
+    """새 공지 · 과제 · 퀴즈 · 모의고사를 학생 카톡으로 알린다. 게시는 기다리지 않게 따로 돌린다.
+    names 를 주면(학생을 고른 공지) 반 대신 그 명단에게 보낸다."""
     secret = os.environ.get("NOTIFY_SECRET", "").strip()
     if not secret or db is None:
         return
 
     def run():
         try:
-            names = audience_names(subject, target_class)
-            if not names:
+            to_names = list(names) if names is not None else audience_names(subject, target_class)
+            if not to_names:
                 return
             base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
             r = requests.post(f"{base}/api/notify/new-post",
                               json={"kind": kind, "title": str(title or "")[:60],
-                                    "deadline": str(deadline or ""), "names": names},
+                                    "deadline": str(deadline or ""), "names": to_names},
                               headers={"X-Notify-Secret": secret}, timeout=90)
-            print(f"[카톡 새 글 알림] {kind} '{title}' {len(names)}명 → {r.status_code} {r.text[:200]}")
+            print(f"[카톡 새 글 알림] {kind} '{title}' {len(to_names)}명 → {r.status_code} {r.text[:200]}")
         except Exception as e:
             print(f"[카톡 새 글 알림] 실패: {e}")
 
@@ -9016,8 +9074,7 @@ def get_board(student_name: str = ""):
     if student_name:
         # 💡 대상 반을 고른 공지는 그 반 학생에게만 보인다. 대상을 안 고른
         #    공지(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
-        rows = [r for r in rows
-                if task_visible_to_student("", task_target_classes(r), student_name)]
+        rows = [r for r in rows if board_visible_to_student(r, student_name)]
         # 💡 누가 읽었는지(read_by)는 학생에게 보낼 필요가 없다 — 나만 읽었는지 알려준다.
         name = student_name.strip()
         for r in rows:
@@ -9136,7 +9193,7 @@ def student_todo(student_name: str):
         p = d.to_dict() or {}
         if name in (p.get("read_by") or []) or not _created_within(p, TODO_NOTICE_DAYS):
             continue
-        if not task_visible_to_student("", task_target_classes(p), name, info):
+        if not board_visible_to_student(p, name, info):
             continue
         notices.append({"id": d.id, "title": p.get("title", ""), "created_at": p.get("created_at", "")})
     notices.sort(key=lambda x: x["created_at"], reverse=True)
@@ -9774,15 +9831,26 @@ def board_post_files(row: dict) -> list:
 async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
                                   # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 공지.
                                   target_classes: str = Form(""),
+                                  # 💡 학생을 골라 그 학생에게만 보내는 공지. 쉼표로 이어 보낸다.
+                                  target_students: str = Form(""),
                                   file: Optional[UploadFile] = File(None),
                                   files: List[UploadFile] = File(None)):
     if db is None: return {"success": False}
     urls = await _board_save_files(([file] if file else []) + list(files or []))
     tclasses = normalize_target_classes(target_classes)
-    await asyncio.to_thread(lambda: db.collection("board").add({"title": title, "desc": desc, "target_classes": tclasses, **board_file_fields(urls), "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
-    # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
-    await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
-    kakao_new_post("공지", title, "", "", tclasses)
+    tstudents = normalize_target_students(target_students)
+    row = {"title": title, "desc": desc, "target_classes": tclasses, "target_students": tstudents,
+           **board_file_fields(urls), "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    await asyncio.to_thread(lambda: db.collection("board").add(row))
+    if tstudents:
+        # 고른 학생(+ 함께 고른 반 학생)에게만 알린다
+        names = await asyncio.to_thread(board_audience_names, row)
+        await asyncio.to_thread(send_push_to_names, names, "새 공지사항", title[:120], "/#prog-classroom", "board")
+        kakao_new_post("공지", title, "", "", tclasses, names=names)
+    else:
+        # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
+        await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
+        kakao_new_post("공지", title, "", "", tclasses)
     return {"success": True}
 
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
@@ -9794,6 +9862,7 @@ def delete_board_post_admin(post_id: str):
 @app.post("/api/admin/board/{post_id}/update", dependencies=[Depends(verify_admin)])
 async def update_board_post_admin(post_id: str, title: str = Form(...), desc: str = Form(""),
                                   target_classes: str = Form(""),
+                                  target_students: str = Form(""),
                                   remove_file: bool = Form(False),
                                   # 남겨 둘 기존 첨부 주소들 (JSON 목록). 보내지 않으면 기존 첨부를 모두 남긴다.
                                   keep_files: Optional[str] = Form(None),
@@ -9811,6 +9880,7 @@ async def update_board_post_admin(post_id: str, title: str = Form(...), desc: st
     if not doc.exists:
         return {"success": False, "detail": "지워진 공지입니다."}
     upd = {"title": title, "desc": desc, "target_classes": normalize_target_classes(target_classes),
+           "target_students": normalize_target_students(target_students),
            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     current = board_post_files(doc.to_dict() or {})
     if keep_files is not None:
