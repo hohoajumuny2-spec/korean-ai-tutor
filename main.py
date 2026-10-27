@@ -6436,24 +6436,60 @@ def board_audience_names(row: dict) -> list:
             if board_visible_to_student(row, d.id, info=targeting_info_from(d.to_dict() or {}))]
 
 
+def kakao_new_post_now(kind: str, title: str, deadline: str, names: list) -> dict:
+    """새 글 카톡을 홈페이지 서버에 맡기고 결과를 돌려준다(관리자 화면에 보여 줄 수 있게).
+
+    돌려주는 것: sent(맡긴 수) · no_phone(번호 없는 학생) · unknown(홈페이지 명단에 없는 이름) · error(설정 문제)."""
+    out = {"sent": 0, "no_phone": [], "unknown": [], "error": ""}
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret:
+        out["error"] = "카톡 연결 설정(NOTIFY_SECRET)이 학생 앱 서버(Render korean-ai-tutor)에 없습니다."
+        return out
+    if not names:
+        out["error"] = "카톡을 받을 학생이 없습니다."
+        return out
+    base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
+    try:
+        r = requests.post(f"{base}/api/notify/new-post",
+                          json={"kind": kind, "title": str(title or "")[:60],
+                                "deadline": str(deadline or ""), "names": list(names)},
+                          headers={"X-Notify-Secret": secret}, timeout=90)
+    except Exception as e:
+        print(f"[카톡 새 글 알림] 실패: {e}")
+        out["error"] = "홈페이지 서버(logyedu.com)에 연결하지 못했습니다."
+        return out
+    print(f"[카톡 새 글 알림] {kind} '{title}' {len(names)}명 → {r.status_code} {r.text[:200]}")
+    if r.status_code == 403:
+        out["error"] = "두 서버의 NOTIFY_SECRET 값이 서로 다릅니다(Render 두 서비스의 값을 똑같이 맞춰 주세요)."
+        return out
+    try:
+        data = r.json()
+    except Exception:
+        out["error"] = f"홈페이지 서버 응답 오류 ({r.status_code})"
+        return out
+    if not data.get("ok"):
+        out["error"] = data.get("error") or "보내지 못했습니다."
+        return out
+    out["no_phone"] = data.get("noPhone") or []
+    out["unknown"] = data.get("unknown") or []
+    if not data.get("enabled"):
+        out["error"] = "새 글 알림 템플릿이 연결되지 않았습니다. Render logyedu-site 에 SOLAPI_TEMPLATE_NEWPOST(솔라피 템플릿 ID)를 넣어 주세요."
+        return out
+    out["sent"] = int(data.get("queued") or 0)
+    return out
+
+
 def kakao_new_post(kind: str, title: str, deadline: str, subject: str, target_class, names=None) -> None:
     """새 공지 · 과제 · 퀴즈 · 모의고사를 학생 카톡으로 알린다. 게시는 기다리지 않게 따로 돌린다.
     names 를 주면(학생을 고른 공지) 반 대신 그 명단에게 보낸다."""
-    secret = os.environ.get("NOTIFY_SECRET", "").strip()
-    if not secret or db is None:
+    if not os.environ.get("NOTIFY_SECRET", "").strip() or db is None:
         return
 
     def run():
         try:
             to_names = list(names) if names is not None else audience_names(subject, target_class)
-            if not to_names:
-                return
-            base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
-            r = requests.post(f"{base}/api/notify/new-post",
-                              json={"kind": kind, "title": str(title or "")[:60],
-                                    "deadline": str(deadline or ""), "names": to_names},
-                              headers={"X-Notify-Secret": secret}, timeout=90)
-            print(f"[카톡 새 글 알림] {kind} '{title}' {len(to_names)}명 → {r.status_code} {r.text[:200]}")
+            if to_names:
+                kakao_new_post_now(kind, title, deadline, to_names)
         except Exception as e:
             print(f"[카톡 새 글 알림] 실패: {e}")
 
@@ -9846,12 +9882,17 @@ async def create_board_post_admin(title: str = Form(...), desc: str = Form(""),
         # 고른 학생(+ 함께 고른 반 학생)에게만 알린다
         names = await asyncio.to_thread(board_audience_names, row)
         await asyncio.to_thread(send_push_to_names, names, "새 공지사항", title[:120], "/#prog-classroom", "board")
-        kakao_new_post("공지", title, "", "", tclasses, names=names)
     else:
         # 과목은 따지지 않고 반만 본다 — 공지는 수강 과목과 무관하다
+        names = await asyncio.to_thread(audience_names, "", tclasses)
         await asyncio.to_thread(send_push_to_audience, "", tclasses, "새 공지사항", title[:120], "/#prog-classroom", "board")
-        kakao_new_post("공지", title, "", "", tclasses)
-    return {"success": True}
+    # 💡 카톡 결과(보낸 수 · 번호 없는 학생 · 설정 문제)를 원장님 화면에 바로 보여 준다
+    try:
+        kakao = await asyncio.to_thread(kakao_new_post_now, "공지", title, "", names)
+    except Exception as e:
+        print(f"[카톡 새 글 알림] 실패: {e}")
+        kakao = {"sent": 0, "no_phone": [], "unknown": [], "error": "카톡을 보내는 중 오류가 났습니다."}
+    return {"success": True, "kakao": kakao}
 
 @app.delete("/api/admin/board/{post_id}", dependencies=[Depends(verify_admin)])
 def delete_board_post_admin(post_id: str):
