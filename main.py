@@ -8264,6 +8264,23 @@ def parse_answer_slots(raw) -> list:
 ANSWER_MAX_CHARS = 60
 
 
+_CIRCLED = "①②③④⑤"
+
+
+def multi_choice_slot(text: str) -> str:
+    """'③⑤' · '3,5' · '3 5' · '3·5' 처럼 보기 번호가 여럿 적힌 한 칸 → '3/5'.
+    '/'(둘 중 아무거나) · '+'(둘 다) 를 직접 적은 것과 단답형 글자는 그대로 둔다."""
+    t = str(text or "").strip()
+    if "/" in t or "+" in t:
+        return t
+    for i, ch in enumerate(_CIRCLED):
+        t = t.replace(ch, f" {i + 1} ")
+    parts = [p for p in re.split(r"[\s,·]+", t) if p]
+    if len(parts) > 1 and all(p in "12345" and len(p) == 1 for p in parts):
+        return "/".join(dict.fromkeys(parts))
+    return str(text or "").strip()
+
+
 def parse_answer_list(raw) -> list:
     """정답표를 목록으로 만든다. '①②③' / '1,2,3' / 줄바꿈 — 어떻게 적어도 받는다.
 
@@ -8295,7 +8312,12 @@ def parse_answer_list(raw) -> list:
                 if not line:
                     continue
                 m = re.match(r"^\s*\d{1,3}\s*(?:번|[.)])\s*(.+)$", line)
-                items.append((m.group(1) if m else line).strip())
+                if m:
+                    # 💡 번호를 붙여 적은 줄에 보기가 여럿이면('3번 ③⑤', '3번 3,5') 그 문항의 복수 정답이다.
+                    #    예전에는 두 문항으로 쪼개져 그 뒤 정답이 전부 한 칸씩 밀렸다. → '3/5'(둘 중 아무거나)
+                    items.append(multi_choice_slot(m.group(1).strip()))
+                else:
+                    items.append(line)
     circled = "①②③④⑤"
     out = []
     for it in items:
