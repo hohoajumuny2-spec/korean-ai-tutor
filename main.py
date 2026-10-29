@@ -14365,9 +14365,22 @@ def get_counsel_admin(student_name: str):
 #   들어갈 때는 관리자 이름과 비밀번호로 로그인한다(이름을 비우면 원장님).
 # ─────────────────────────────────────────────────────────
 def _question_maker_login(name: str, password: str) -> bool:
-    adoc = get_admin_doc(name or "원장님")
-    return bool(adoc) and bool(password) and \
-        _hash_password(password, adoc.get("salt", "")) == adoc.get("password_hash")
+    """학원 앱 관리자 로그인(/api/auth)과 같은 규칙: 이름을 비우거나 '관리자'라고 적으면 원장님,
+    등록되지 않은 이름(예: 원장님 본명)이라도 원장님 비밀번호가 맞으면 들어온다."""
+    if not password:
+        return False
+    ensure_owner_admin()
+    name = (name or "").strip()
+    if name in ("", "관리자"):
+        name = "원장님"
+
+    def ok(adoc):
+        return bool(adoc) and _hash_password(password, adoc.get("salt", "")) == adoc.get("password_hash")
+
+    adoc = get_admin_doc(name)
+    if ok(adoc):
+        return True
+    return not adoc and name != "원장님" and ok(get_admin_doc("원장님"))
 
 
 if db is not None:
