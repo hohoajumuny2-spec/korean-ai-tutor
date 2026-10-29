@@ -45,6 +45,7 @@ class ProfileReq(BaseModel):
 
 class IdeasReq(BaseModel):
     count: int = 8
+    subject: str = ""
 
 
 def _title(req: dict) -> str:
@@ -205,27 +206,31 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
         return {"ok": True}
 
     # ── 카드뉴스 그림 ─────────────────────────────────
-    def slides_of(pid: int) -> list:
+    def slides_of(pid: int):
+        """카드 목록과, 카드 아래에 적을 이름(학원 이름 · 과목)."""
         row = need_post(pid)
         slides = ((row.get("data") or {}).get("instagram") or {}).get("slides") or []
         if not slides:
             raise HTTPException(404, "카드뉴스가 없습니다.")
-        return slides
+        subject = (row.get("request") or {}).get("subject", "")
+        label = " · ".join(x for x in (profile()["name"], subject) if x)
+        return slides, label
 
     def theme_of(theme: str) -> str:
         return theme if theme in catalog.THEMES else profile()["theme"]
 
     @app.get("/api/posts/{pid}/cards/{n}.png")
     def card_png(pid: int, n: int, theme: str = ""):
-        slides = slides_of(pid)
+        slides, label = slides_of(pid)
         if not 0 <= n < len(slides):
             raise HTTPException(404, "그런 장이 없습니다.")
-        png = render_card(slides[n], n, len(slides), profile()["name"], theme_of(theme))
+        png = render_card(slides[n], n, len(slides), label, theme_of(theme))
         return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/posts/{pid}/cards.zip")
     def cards_zip(pid: int, theme: str = ""):
-        z = render_zip(slides_of(pid), profile()["name"], theme_of(theme))
+        slides, label = slides_of(pid)
+        z = render_zip(slides, label, theme_of(theme))
         return Response(z, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="cardnews_{pid}.zip"'})
 
@@ -235,7 +240,7 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
         recent = [p["title"] for p in store.list_posts(30)]
         try:
             items = await asyncio.to_thread(suggest_ideas, app.state.ai, profile(), datetime.now(KST),
-                                            recent, max(3, min(15, body.count)))
+                                            recent, max(3, min(15, body.count)), body.subject)
         except GenerationError as e:
             raise HTTPException(400, str(e))
         return {"ideas": items}

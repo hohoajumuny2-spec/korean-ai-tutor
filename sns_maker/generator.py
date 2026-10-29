@@ -25,6 +25,26 @@ def merge_profile(profile) -> dict:
     return out
 
 
+def subject_list(profile: dict) -> list:
+    """학원 정보의 과목 칸("국어, 수학 / 영어")을 과목 목록으로."""
+    out = []
+    for s in re.split(r"[,/·\n]+", profile.get("subjects", "")):
+        s = s.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def subject_notes(profile: dict) -> dict:
+    """과목별 소개("수학: 개념 → 유형 → 실전")를 {과목: 소개}로."""
+    out = {}
+    for line in (profile.get("subject_notes") or "").splitlines():
+        name, sep, note = line.partition(":")
+        if sep and name.strip() and note.strip():
+            out[name.strip()] = note.strip()
+    return out
+
+
 def normalize_request(req: dict) -> dict:
     req = req or {}
     channels = [c for c in (req.get("channels") or []) if c in catalog.CHANNELS]
@@ -48,6 +68,8 @@ def normalize_request(req: dict) -> dict:
         "tone": tone, "audience": audience, "blog_length": length,
         "slide_count": max(1, min(catalog.MAX_SLIDES, slides)),
         "reel": bool(req.get("reel")),
+        # 비워 두면 학원 전체 이야기
+        "subject": str(req.get("subject") or "").strip()[:20],
     }
 
 
@@ -64,10 +86,15 @@ COMMON_RULES = """[꼭 지킬 것]
 5. 답은 JSON 하나로만 주세요. 다른 말은 쓰지 마세요."""
 
 
-def _profile_block(p: dict) -> str:
+def _profile_block(p: dict, subject: str = "") -> str:
     rows = [("학원 이름", p["name"]), ("지역", p["region"]), ("과목", p["subjects"]), ("대상 학년", p["grades"]),
             ("강점", p["strengths"]), ("상담 연락처", p["contact"]), ("주소", p["address"])]
     lines = [f"- {k}: {v}" for k, v in rows if v]
+    notes = subject_notes(p)
+    if subject and notes.get(subject):
+        lines.append(f"- {subject} 수업 소개: {notes[subject]}")
+    elif not subject and notes:
+        lines += [f"- {k} 수업 소개: {v}" for k, v in notes.items()]
     if p["avoid"]:
         lines.append(f"- 쓰지 말아야 할 말: {p['avoid']}")
     text = "\n".join(lines) or "- (적힌 정보 없음 — 학원 이름은 '저희 학원'으로 쓰세요)"
@@ -76,14 +103,22 @@ def _profile_block(p: dict) -> str:
     return text
 
 
+def subject_line(subject: str) -> str:
+    if not subject:
+        return "학원 전체 (특정 과목에 치우치지 말고 학원 전체 이야기로)"
+    return (f"{subject} — 이 과목 글입니다. {subject} 공부법 · 수업 · 시험 이야기로 채우고 다른 과목 이야기는 하지 마세요. "
+            f"해시태그 · 블로그 제목 · 검색어에도 '{subject}'를 넣으세요.")
+
+
 def build_generate_prompt(req: dict, profile: dict, today: str) -> str:
     kind_name, kind_rule, _ = catalog.KINDS[req["kind"]]
     tone_name, tone_rule = catalog.TONES[req["tone"]]
     parts = [
         "당신은 한국 입시 학원의 SNS 홍보를 10년 넘게 맡아 온 마케터이자 카피라이터입니다.",
         f"오늘은 {today}입니다.",
-        f"\n[학원 정보]\n{_profile_block(profile)}",
+        f"\n[학원 정보]\n{_profile_block(profile, req['subject'])}",
         f"\n[이번 글]\n- 글 종류: {kind_name} — {kind_rule}\n- 주제: {req['topic']}"
+        f"\n- 과목: {subject_line(req['subject'])}"
         f"\n- 읽을 사람: {catalog.AUDIENCES[req['audience']]}\n- 말투: {tone_name} — {tone_rule}",
     ]
     if req["details"]:
@@ -95,7 +130,7 @@ def build_generate_prompt(req: dict, profile: dict, today: str) -> str:
 [인스타그램 게시물]
 - caption: 본문. 첫 줄은 스크롤을 멈추게 하는 한 줄(질문 · 공감 · 숫자). 짧은 문단과 줄 바꿈, 이모지를 알맞게.
   400~900자. 끝에 상담 · 문의로 이어지는 한두 줄. 해시태그는 caption에 넣지 말고 hashtags에 따로.
-- hashtags: 15~25개. '#' 붙여서. 지역+과목(예: #대치동국어학원), 학년, 주제, 일반 공부 태그를 섞되 주제와 무관한 태그는 빼세요.
+- hashtags: 15~25개. '#' 붙여서. 지역+과목(예: #대치동{req['subject'] or '국어'}학원), 학년, 주제, 일반 공부 태그를 섞되 주제와 무관한 태그는 빼세요.
 - slides: 카드뉴스 {n}장. 1장은 표지(title에 눈길을 끄는 제목 15자 안팎, body에 부제 한 줄).
   나머지는 장마다 title 20자 이내, body 2~4줄 70자 이내. 한 장에 한 가지 메시지. 마지막 장은 정리나 상담 안내.
 - image_ideas: 함께 올리면 좋을 사진 · 그림 아이디어 2~4개 (학생 얼굴이 나오지 않는 것으로).""")
@@ -122,12 +157,13 @@ def build_generate_prompt(req: dict, profile: dict, today: str) -> str:
     return "\n".join(parts)
 
 
-def build_revise_prompt(data: dict, instruction: str, profile: dict) -> str:
+def build_revise_prompt(data: dict, instruction: str, profile: dict, subject: str = "") -> str:
     keep = {k: data[k] for k in ("instagram", "blog") if k in data}
     return f"""당신은 학원 SNS 글을 다듬는 카피라이터입니다. 아래 글을 원장님 요청대로 고쳐 주세요.
 
 [학원 정보]
-{_profile_block(profile)}
+{_profile_block(profile, subject)}
+- 이 글의 과목: {subject or "학원 전체"}
 
 [원장님 요청]
 {instruction}
@@ -144,7 +180,8 @@ def build_revise_prompt(data: dict, instruction: str, profile: dict) -> str:
 {{"instagram": ..., "blog": ..., "summary": "..."}}  (지금 글에 있는 것만)"""
 
 
-def build_ideas_prompt(profile: dict, now: datetime, count: int, kinds: list, recent: list) -> str:
+def build_ideas_prompt(profile: dict, now: datetime, count: int, kinds: list, recent: list,
+                       subject: str = "") -> str:
     month = now.month
     nxt = month % 12 + 1
     kind_lines = "\n".join(f"- {k}: {catalog.KINDS[k][0]}" for k in kinds)
@@ -156,7 +193,10 @@ def build_ideas_prompt(profile: dict, now: datetime, count: int, kinds: list, re
 다음 달 학원가 일: {catalog.MONTH_HINTS[nxt]}
 
 [학원 정보]
-{_profile_block(profile)}
+{_profile_block(profile, subject)}
+
+[과목]
+{subject_line(subject) if subject else "학원 전체. 과목이 여럿이면 과목을 고루 섞고, 과목 글이면 subject에 그 과목을 적으세요 (전체 글이면 빈 글자)."}
 
 [최근에 올린 글 — 겹치지 않게]
 {recent_text}
@@ -171,7 +211,7 @@ def build_ideas_prompt(profile: dict, now: datetime, count: int, kinds: list, re
 - 확실하지 않은 날짜 · 숫자는 쓰지 마세요.
 
 [답 모양]
-{{"ideas": [{{"kind": "tip", "topic": "...", "why": "...", "channel": "instagram"}}]}}"""
+{{"ideas": [{{"kind": "tip", "topic": "...", "why": "...", "channel": "instagram", "subject": "..."}}]}}"""
 
 
 # ─────────────────────────────────────────────────────────
@@ -359,7 +399,7 @@ def revise_post(ai, data: dict, instruction: str, req: dict, profile: dict) -> d
     profile = merge_profile(profile)
     task = {"mode": "revise", "data": data, "instruction": instruction, "profile": profile}
     try:
-        raw = ai.generate_json(build_revise_prompt(data, instruction, profile), task)
+        raw = ai.generate_json(build_revise_prompt(data, instruction, profile, req["subject"]), task)
     except AIError as e:
         raise GenerationError(str(e))
     out = finish({k: raw.get(k) for k in ("instagram", "blog")}, req, profile)
@@ -367,14 +407,15 @@ def revise_post(ai, data: dict, instruction: str, req: dict, profile: dict) -> d
     return out
 
 
-def suggest_ideas(ai, profile: dict, now: datetime, recent: list, count: int = 8) -> list:
+def suggest_ideas(ai, profile: dict, now: datetime, recent: list, count: int = 8, subject: str = "") -> list:
     if ai is None:
         raise GenerationError("AI 키(GOOGLE_API_KEY)가 없습니다.")
     profile = merge_profile(profile)
     kinds = list(catalog.KINDS)
-    task = {"mode": "ideas", "count": count, "kinds": kinds, "profile": profile}
+    subject = (subject or "").strip()[:20]
+    task = {"mode": "ideas", "count": count, "kinds": kinds, "profile": profile, "subject": subject}
     try:
-        raw = ai.generate_json(build_ideas_prompt(profile, now, count, kinds, recent), task, quality=False)
+        raw = ai.generate_json(build_ideas_prompt(profile, now, count, kinds, recent, subject), task, quality=False)
     except AIError as e:
         raise GenerationError(str(e))
     ideas = []
@@ -383,7 +424,8 @@ def suggest_ideas(ai, profile: dict, now: datetime, recent: list, count: int = 8
             continue
         ideas.append({"kind": it.get("kind") if it.get("kind") in catalog.KINDS else "tip",
                       "topic": _s(it.get("topic"))[:120], "why": _s(it.get("why"))[:200],
-                      "channel": it.get("channel") if it.get("channel") in catalog.CHANNELS else "instagram"})
+                      "channel": it.get("channel") if it.get("channel") in catalog.CHANNELS else "instagram",
+                      "subject": subject or _s(it.get("subject"))[:20]})
     if not ideas:
         raise GenerationError("AI가 추천을 주지 않았습니다. 다시 시도해주세요.")
     return ideas[:count]

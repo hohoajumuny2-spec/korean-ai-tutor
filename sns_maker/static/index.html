@@ -41,6 +41,7 @@
   .badge.blog { background: var(--blog-soft); color: var(--blog); }
   .badge.working { background: #fff3dc; color: var(--warn); }
   .badge.error { background: #fde8e8; color: var(--bad); }
+  .badge.subj { background: #eef3ff; color: #2f5bd3; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chips label, .chips button { border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px; cursor: pointer; font-size: 14px;
                                 user-select: none; background: #fff; font-family: inherit; }
@@ -100,6 +101,9 @@
         <label class="on"><input type="checkbox" value="blog" checked>📝 블로그</label>
       </div>
 
+      <label class="f">과목 <span class="muted">— 과목은 '학원 정보'에서 쉼표로 더할 수 있어요</span></label>
+      <div class="chips" id="subjChips"></div>
+
       <label class="f">글 종류</label>
       <div class="chips" id="kindChips"></div>
 
@@ -125,7 +129,9 @@
     <div class="card">
       <h2>무엇을 올릴지 모르겠을 때</h2>
       <p class="muted" id="monthHint"></p>
-      <button class="btn primary" id="ideasBtn">💡 올릴 거리 추천받기</button>
+      <div class="row" style="justify-content:flex-start">
+        <select id="ideaSubject" style="flex:0 1 200px"></select>
+        <button class="btn primary" id="ideasBtn" style="flex:0 0 auto">💡 올릴 거리 추천받기</button></div>
       <div id="ideaList" style="margin-top:14px"></div>
     </div>
   </section>
@@ -133,7 +139,8 @@
   <!-- 보관함 -->
   <section id="tab-posts" class="hidden">
     <div class="split">
-      <div class="card"><h2>만든 글</h2><div class="list" id="postList"></div></div>
+      <div class="card"><h2>만든 글</h2><div class="chips" id="postFilter" style="margin-bottom:8px"></div>
+        <div class="list" id="postList"></div></div>
       <div id="postView"><div class="card muted">왼쪽에서 글을 고르세요.</div></div>
     </div>
   </section>
@@ -147,9 +154,11 @@
         <div><label class="f">지역</label><input type="text" data-p="region" placeholder="예) 대치동"></div>
       </div>
       <div class="row">
-        <div><label class="f">과목</label><input type="text" data-p="subjects" placeholder="예) 국어 (내신 · 수능)"></div>
+        <div><label class="f">과목 <span class="muted">— 쉼표로 구분</span></label><input type="text" data-p="subjects" placeholder="예) 국어, 수학, 영어"></div>
         <div><label class="f">대상 학년</label><input type="text" data-p="grades" placeholder="예) 중3 ~ 고3"></div>
       </div>
+      <label class="f">과목별 소개 <span class="muted">— 한 줄에 한 과목. 그 과목 글을 쓸 때 참고합니다 (사실만)</span></label>
+      <textarea data-p="subject_notes" rows="3" placeholder="국어: 매주 서술형 첨삭, 학교별 기출 분석&#10;수학: 개념 → 유형 → 실전 3단계 수업, 오답 노트 검사"></textarea>
       <label class="f">학원의 강점 <span class="muted">— 사실만. AI는 여기 적힌 것만 자랑합니다</span></label>
       <textarea data-p="strengths" rows="3" placeholder="예) 반 정원 8명, 매주 서술형 첨삭, 시험 전 학교별 기출 분석, 원장 직강"></textarea>
       <div class="row">
@@ -176,7 +185,7 @@
 <div id="toast" class="toast hidden"></div>
 
 <script>
-let META = {}, PROFILE = {}, CURRENT = null, POLL = null, EDITING = false, THEME = "";
+let META = {}, PROFILE = {}, CURRENT = null, POLL = null, EDITING = false, THEME = "", FILTER = null;
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -255,10 +264,31 @@ async function init() {
   $("#tone").innerHTML = opts(META.tones, "friendly");
   $("#blogLen").innerHTML = opts(META.blog_lengths, "normal");
   $("#themeSel").innerHTML = opts(META.themes, "navy");
-  chipToggle($("#chChips"), true); chipToggle($("#kindChips"), false);
+  chipToggle($("#chChips"), true); chipToggle($("#kindChips"), false); chipToggle($("#subjChips"), false);
   $("#chChips").addEventListener("chipchange", refreshChannelFields);
   refreshChannelFields();
   await loadProfile();
+}
+
+// ── 과목 ──
+function subjects() {
+  return [...new Set(String(PROFILE.subjects || "").split(/[,/·\n]+/).map(s => s.trim()).filter(Boolean))];
+}
+const subjName = s => s || "학원 전체";
+function setSubject(subj) {
+  if (subj && !subjects().includes(subj)) subj = "";
+  $$("#subjChips input").forEach(i => i.checked = i.value === subj);
+  $$("#subjChips label").forEach(l => l.classList.toggle("on", $("input", l).checked));
+}
+function renderSubjects() {
+  const keep = $("#subjChips input:checked")?.value ?? "";
+  const list = ["", ...subjects()];
+  $("#subjChips").innerHTML = list.map(s =>
+    `<label><input type="radio" name="subj" value="${esc(s)}">${esc(subjName(s))}</label>`).join("");
+  setSubject(keep);
+  const ideaKeep = $("#ideaSubject").value || "";
+  $("#ideaSubject").innerHTML = list.map(s => `<option value="${esc(s)}">${s ? esc(s) + " 글감" : "모든 과목 고루"}</option>`).join("");
+  $("#ideaSubject").value = list.includes(ideaKeep) ? ideaKeep : "";
 }
 
 // ── 학원 정보 ──
@@ -266,11 +296,13 @@ async function loadProfile() {
   PROFILE = (await api("api/profile")).profile;
   $$("[data-p]").forEach(el => el.value = PROFILE[el.dataset.p] ?? "");
   $("#noProfile").classList.toggle("hidden", !!PROFILE.name);
+  renderSubjects();
 }
 $("#saveProfile").onclick = async () => {
   const p = {}; $$("[data-p]").forEach(el => p[el.dataset.p] = el.value);
   PROFILE = (await api("api/profile", {method: "PUT", body: {profile: p}})).profile;
   $("#noProfile").classList.toggle("hidden", !!PROFILE.name);
+  renderSubjects();
   toast("저장했습니다.");
 };
 
@@ -278,6 +310,7 @@ $("#saveProfile").onclick = async () => {
 $("#makeBtn").onclick = async () => {
   const req = {
     channels: channels(), kind: $("#kindChips input:checked")?.value, topic: $("#topic").value,
+    subject: $("#subjChips input:checked")?.value || "",
     details: $("#details").value, audience: $("#audience").value, tone: $("#tone").value,
     slide_count: +$("#slides").value || 6, blog_length: $("#blogLen").value, reel: $("#reel").checked,
   };
@@ -293,17 +326,18 @@ $("#makeBtn").onclick = async () => {
 $("#ideasBtn").onclick = async () => {
   const btn = $("#ideasBtn"); btn.disabled = true; btn.textContent = "생각하는 중…";
   try {
-    const { ideas } = await api("api/ideas", {method: "POST", body: {count: 8}});
+    const { ideas } = await api("api/ideas", {method: "POST", body: {count: 8, subject: $("#ideaSubject").value}});
     $("#ideaList").innerHTML = ideas.map((it, i) => `
       <div class="idea"><div class="grow">
         <span class="badge ${it.channel === "blog" ? "blog" : "ig"}">${it.channel === "blog" ? "블로그" : "인스타"}</span>
         <span class="badge">${esc(META.kinds[it.kind]?.name || "")}</span>
+        <span class="badge subj">${esc(subjName(it.subject))}</span>
         <div style="font-weight:600;margin-top:4px">${esc(it.topic)}</div>
         <div class="muted">${esc(it.why)}</div></div>
         <button class="btn small" data-i="${i}">이걸로 쓰기</button></div>`).join("");
     $$("#ideaList button").forEach(b => b.onclick = () => {
       const it = ideas[+b.dataset.i];
-      $("#topic").value = it.topic; $("#details").value = ""; setKind(it.kind); setChannels([it.channel]);
+      $("#topic").value = it.topic; $("#details").value = ""; setKind(it.kind); setChannels([it.channel]); setSubject(it.subject || "");
       showTab("new"); $("#details").focus(); toast("주제를 넣었어요. 메모를 더 적고 '글 만들기'를 누르세요.");
     });
   } catch (e) { toast(e.message, 4000); }
@@ -312,11 +346,19 @@ $("#ideasBtn").onclick = async () => {
 
 // ── 보관함 ──
 async function loadPosts() {
-  const { posts } = await api("api/posts");
+  const { posts: all } = await api("api/posts");
+  // 과목별로 골라 보기: 만든 글에 있는 과목만 보여 준다
+  const used = [...new Set(all.map(p => p.subject || ""))];
+  if (FILTER !== null && !used.includes(FILTER)) FILTER = null;
+  $("#postFilter").innerHTML = used.length > 1 ? [null, ...used].map(s =>
+    `<label class="${s === FILTER ? "on" : ""}" data-s="${s === null ? "*" : esc(s)}">${s === null ? "모두" : esc(subjName(s))}</label>`).join("") : "";
+  $$("#postFilter label").forEach(l => l.onclick = () => { FILTER = l.dataset.s === "*" ? null : l.dataset.s; loadPosts(); });
+  const posts = FILTER === null ? all : all.filter(p => (p.subject || "") === FILTER);
   $("#postList").innerHTML = posts.length ? posts.map(p => `
     <div class="item ${CURRENT && CURRENT.id === p.id ? "sel" : ""}" data-id="${p.id}"><div class="grow">
       <div class="title">${esc(p.title)}</div>
       <div class="muted">${esc((p.created_at || "").slice(0, 16))}
+        <span class="badge subj">${esc(subjName(p.subject))}</span>
         ${p.channels.map(c => `<span class="badge ${c === "blog" ? "blog" : "ig"}">${c === "blog" ? "블로그" : "인스타"}</span>`).join(" ")}
         ${p.status === "working" ? '<span class="badge working">만드는 중</span>' : ""}
         ${p.status === "error" ? '<span class="badge error">실패</span>' : ""}</div></div></div>`).join("")
@@ -387,7 +429,7 @@ function renderPost() {
   }
   if (EDITING) return renderEditor();
   const d = post.data, ig = d.instagram, bl = d.blog;
-  let h = `<div class="card"><h2>${esc(post.title)}</h2>`;
+  let h = `<div class="card"><h2>${esc(post.title)} <span class="badge subj">${esc(subjName(post.request?.subject))}</span></h2>`;
   if (post.error) h += `<p class="error">${esc(post.error)}</p>`;
   if (d.summary) h += `<p class="muted">✏️ ${esc(d.summary)}</p>`;
   if (d.notes?.length) h += `<ul class="notes">${d.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>`;

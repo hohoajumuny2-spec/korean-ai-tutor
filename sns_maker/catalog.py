@@ -30,7 +30,8 @@ BLOG_LENGTHS = {"short": ("짧게", 1000), "normal": ("보통", 1800), "long": (
 DEFAULT_PROFILE = {
     "name": "",            # 학원 이름
     "region": "",          # 지역 (예: 대치동, 분당 정자동)
-    "subjects": "국어",     # 가르치는 과목
+    "subjects": "국어",     # 가르치는 과목 (쉼표로 구분: 국어, 수학, 영어)
+    "subject_notes": "",   # 과목별 소개 (한 줄에 하나: "수학: 개념 → 유형 → 실전 3단계 수업")
     "grades": "",          # 대상 학년 (예: 중1~고3)
     "strengths": "",       # 학원의 강점
     "contact": "",         # 상담 전화 · 카카오톡 채널

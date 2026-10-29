@@ -38,6 +38,7 @@ def _summary(row: dict) -> dict:
     req = row.get("request") or {}
     out["channels"] = req.get("channels", [])
     out["kind"] = req.get("kind")
+    out["subject"] = req.get("subject", "")
     return out
 
 
