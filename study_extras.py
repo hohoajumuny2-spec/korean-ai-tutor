@@ -248,3 +248,76 @@ def pick_daily(weak: List[dict], pool: List[dict], count: int, seed: str,
                 picked.append(it)
                 seen.add(it["qid"])
     return picked
+
+
+# ─────────────────────────────────────────────────────────
+# ④ 유형 자동 붙이기: AI가 문항 글 · 해설을 읽고 정해 둔 유형 목록에서 하나씩 고른다.
+#    AI 답은 '보기'일 뿐 — 화면에 채워 두고 원장님이 확인한 뒤 저장한다.
+#    목록 밖의 이름은 버린다(같은 유형이 이름만 달라 따로 세지지 않게).
+# ─────────────────────────────────────────────────────────
+AUTO_TAG_MAX_ITEMS = 80
+AUTO_TAG_TEXT_MAX = 900
+
+
+def _squash(t: str) -> str:
+    return re.sub(r"[\s·・ㆍ\-_()\[\]]", "", str(t or "")).lower()
+
+
+def tag_prompt(subject_label: str, allowed: List[str], items: List[dict], has_file: bool = False) -> str:
+    """items: [{no, text, options, answer, explanation}] → AI에게 보낼 글."""
+    lines = []
+    for it in items[:AUTO_TAG_MAX_ITEMS]:
+        part = [f"[{it['no']}번]"]
+        if it.get("text"):
+            part.append("문제: " + str(it["text"])[:AUTO_TAG_TEXT_MAX])
+        opts = [str(o) for o in (it.get("options") or []) if str(o).strip()]
+        if opts:
+            part.append("보기: " + " / ".join(f"{i + 1}) {o[:120]}" for i, o in enumerate(opts)))
+        if it.get("answer"):
+            part.append("정답: " + str(it["answer"])[:60])
+        if it.get("explanation"):
+            part.append("해설: " + str(it["explanation"])[:AUTO_TAG_TEXT_MAX])
+        lines.append("\n".join(part))
+    file_note = "\n첨부한 그림은 이 자료의 해설지(또는 문제지)입니다. 번호를 맞춰 함께 보세요." if has_file else ""
+    return f"""당신은 {subject_label} 교사입니다. 아래 문항마다 '어떤 유형의 문제인지'를 고르세요.
+
+[유형 목록 — 반드시 이 안에서 하나만, 글자 그대로]
+{chr(10).join('- ' + t for t in allowed)}
+
+[규칙]
+- 문제 글이 없으면 해설·정답·첨부 그림으로 짐작하세요.
+- 어떤 유형인지 근거가 부족하면 빈 글자("")로 두세요. 억지로 고르지 마세요.
+- 오직 JSON 하나만 출력하세요. 코드블록 표시나 설명을 붙이지 마세요.
+- 모양: {{"1": "추론", "2": "어휘·문맥", "3": ""}}{file_note}
+
+[문항]
+{chr(10).join(lines)}
+"""
+
+
+def parse_tag_reply(text: str, allowed: List[str], nos: Iterable) -> Dict[str, str]:
+    """AI 답(JSON 비슷한 글) → {"1": "추론"}. 목록에 없는 이름 · 없는 번호는 뺀다."""
+    raw = str(text or "")
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return {}
+    body = m.group(0)
+    import json as _json
+    try:
+        data = _json.loads(body)
+    except ValueError:
+        # "1": "추론" 꼴만 골라 읽는다(따옴표 · 쉼표가 조금 어긋나도)
+        data = {k: v for k, v in re.findall(r'"?(\d+)"?\s*:\s*"([^"]*)"', body)}
+    if not isinstance(data, dict):
+        return {}
+    by_key = {_squash(t): t for t in allowed}
+    want = {str(n) for n in nos}
+    out = {}
+    for k, v in data.items():
+        no = re.sub(r"\D", "", str(k))
+        if no not in want:
+            continue
+        t = by_key.get(_squash(v))
+        if t:
+            out[no] = t
+    return out

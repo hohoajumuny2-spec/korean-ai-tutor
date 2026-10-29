@@ -7311,6 +7311,104 @@ def invalidate_practice_pool():
     _PRACTICE_CACHE.update({"at": 0.0, "pool": None, "tags": None})
 
 
+def stored_file_bytes(url: str) -> bytes:
+    """save_bytes 로 저장한 파일(/uploads/폴더/이름)을 다시 읽는다. 못 읽으면 빈 바이트."""
+    m = re.match(r"^/?uploads/([^/]+)/([^/?#]+)", str(url or "").strip())
+    if not m:
+        return b""
+    path = f"uploads/{get_safe_filename(m.group(1))}/{get_safe_filename(m.group(2))}"
+    if bucket:
+        try:
+            return bucket.blob(path).download_as_bytes()
+        except Exception as e:
+            print("저장 파일 읽기 실패(저장소):", path, e)
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return f.read()
+    return b""
+
+
+def file_parts_for_ai(url: str, max_pages: int = 10) -> list:
+    """해설지 · 문제지 파일(PDF · 그림)을 AI에게 보낼 그림 조각으로."""
+    raw = stored_file_bytes(url)
+    if not raw:
+        return []
+    parts = []
+    if str(url).lower().split("?")[0].endswith(".pdf") or raw[:4] == b"%PDF":
+        try:
+            doc = fitz.open(stream=raw, filetype="pdf")
+            for page in doc[:max_pages]:
+                parts.append({"mime_type": "image/png", "data": page.get_pixmap(dpi=130).tobytes("png")})
+            doc.close()
+        except Exception as e:
+            print("해설지 PDF 읽기 실패:", e)
+        return parts
+    mt, _ = mimetypes.guess_type(str(url))
+    if (mt or "").startswith("image/"):
+        data, ctype = compress_image_for_ai(raw, mt)
+        parts.append({"mime_type": ctype, "data": data})
+    return parts
+
+
+class AutoTagReq(BaseModel):
+    title: str
+    kind: str = "타임어택 퀴즈"
+    # 해설 창에서 아직 저장하지 않은 해설도 같이 읽도록(사진으로 막 채운 해설 등)
+    explanations: dict = {}
+
+
+@app.post("/api/admin/auto_tags", dependencies=[Depends(verify_admin)])
+async def auto_tags(req: AutoTagReq):
+    """문항마다 유형을 AI가 골라 '보기'로 돌려준다. 저장은 하지 않는다(원장님이 확인 후 저장).
+
+    읽는 것: 퀴즈는 문제 · 보기 · 정답, 모든 자료는 해설, 과제는 올려 둔 해설지 파일.
+    고를 수 있는 이름은 그 과목의 유형 목록 + 원장님이 지금까지 붙인 유형뿐이다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    kind, task = (req.kind or "").strip(), (req.title or "").strip()
+    if kind not in EXPL_TARGETS or not task:
+        return {"success": False, "detail": "이 자료에는 유형을 붙일 수 없습니다."}
+    subject = await asyncio.to_thread(task_subject, kind, task)
+    allowed = list(dict.fromkeys(study_extras.TAG_SUGGESTIONS.get(subject, []) + known_tags(subject)))
+    if not allowed:
+        return {"success": False, "detail": "이 과목의 유형 목록이 없습니다."}
+    count = await asyncio.to_thread(task_question_count, kind, task)
+    src = await asyncio.to_thread(task_source_questions, kind, task)
+    saved = await asyncio.to_thread(explanations_for, kind, task)
+    expl = {**saved, **{str(k): str(v) for k, v in (req.explanations or {}).items() if str(v or "").strip()}}
+    n = max(count, len(src))
+    if not n:
+        return {"success": False, "detail": "정답표가 없어 문항 수를 알 수 없습니다."}
+    items, used = [], set()
+    for i in range(min(n, study_extras.AUTO_TAG_MAX_ITEMS)):
+        q = src[i] if i < len(src) else {}
+        it = {"no": i + 1, "text": q.get("text", ""), "options": q.get("options") or [],
+              "answer": q.get("answer_text") or q.get("answer", ""), "explanation": expl.get(str(i + 1), "")}
+        if it["text"]:
+            used.add("문제 글")
+        if it["explanation"]:
+            used.add("해설")
+        items.append(it)
+    parts = []
+    if kind == "과제 제출":
+        hw = await asyncio.to_thread(homework_doc, task)
+        if hw.get("answer_file"):
+            parts = await asyncio.to_thread(file_parts_for_ai, hw["answer_file"])
+            if parts:
+                used.add("해설지 파일")
+    if not used:
+        return {"success": False, "detail": "문제 글 · 해설 · 해설지 파일이 하나도 없어 유형을 짐작할 수 없습니다. "
+                                            "먼저 해설을 넣거나(해설지 사진·캡처로 채우기) 과제에 해설지 파일을 올려 주세요."}
+    prompt = study_extras.tag_prompt(SUBJECTS[subject]["label"], allowed, items, bool(parts))
+    try:
+        resp = await asyncio.to_thread(safe_generate, [prompt] + parts, False, True)
+        text = resp.text
+    except Exception as e:
+        return {"success": False, "detail": friendly_ai_error(e)}
+    tags = study_extras.parse_tag_reply(text, allowed, range(1, len(items) + 1))
+    return {"success": True, "tags": tags, "count": len(items), "used": sorted(used)}
+
+
 def task_subject(kind: str, title: str) -> str:
     """그 퀴즈 · 과제의 과목(유형 보기를 고를 때). 과제는 과목 칸이 없어 제목으로 짐작한다."""
     if db is None or not title:
