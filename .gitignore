@@ -3,3 +3,4 @@ __pycache__/
 .env
 uploads/
 question_maker.db
+sns_maker.db
