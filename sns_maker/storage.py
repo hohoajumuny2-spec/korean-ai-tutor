@@ -13,11 +13,12 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT, request TEXT, status TEXT, progress TEXT, error TEXT,
-    data TEXT, prev TEXT, created_at TEXT, updated_at TEXT
+    data TEXT, prev TEXT, created_at TEXT, updated_at TEXT, instagram TEXT
 );
 """
 
 LIST_FIELDS = ("id", "title", "status", "error", "created_at", "updated_at")
+JSON_FIELDS = ("request", "data", "prev", "instagram")   # 글자로 바꿔 저장하는 칸
 
 
 def now_str() -> str:
@@ -39,6 +40,8 @@ def _summary(row: dict) -> dict:
     out["channels"] = req.get("channels", [])
     out["kind"] = req.get("kind")
     out["subject"] = req.get("subject", "")
+    ig = row.get("instagram") or {}
+    out["instagram"] = ig.get("status", "")   # 인스타그램에 올렸는지 (working · done · error)
     return out
 
 
@@ -49,6 +52,10 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            # 예전에 만든 파일에는 instagram 칸이 없다
+            cols = [r[1] for r in self._conn.execute("PRAGMA table_info(posts)").fetchall()]
+            if "instagram" not in cols:
+                self._conn.execute("ALTER TABLE posts ADD COLUMN instagram TEXT")
             self._conn.execute("UPDATE posts SET status='error', error='프로그램이 다시 시작되어 끊겼습니다. 다시 만들어 주세요.' "
                                "WHERE status='working'")
             self._conn.commit()
@@ -74,8 +81,8 @@ class Store:
 
     def _post(self, row):
         if row:
-            for k in ("request", "data", "prev"):
-                row[k] = _loads(row[k])
+            for k in JSON_FIELDS:
+                row[k] = _loads(row.get(k))
         return row
 
     def create_post(self, title, request) -> int:
@@ -88,7 +95,7 @@ class Store:
         if not fields:
             return
         fields["updated_at"] = now_str()
-        for k in ("request", "data", "prev"):
+        for k in JSON_FIELDS:
             if k in fields:
                 fields[k] = json.dumps(fields[k], ensure_ascii=False) if fields[k] is not None else None
         cols = ", ".join(f"{k}=?" for k in fields)
@@ -100,10 +107,11 @@ class Store:
     def list_posts(self, limit=200):
         with self._lock:
             rows = [dict(r) for r in self._conn.execute(
-                "SELECT id, title, status, error, created_at, updated_at, request FROM posts ORDER BY id DESC LIMIT ?",
-                (limit,)).fetchall()]
+                "SELECT id, title, status, error, created_at, updated_at, request, instagram FROM posts "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
         for r in rows:
             r["request"] = _loads(r["request"], {})
+            r["instagram"] = _loads(r["instagram"], {})
         return [_summary(r) for r in rows]
 
     def delete_post(self, pid):
