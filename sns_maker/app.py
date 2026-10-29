@@ -4,12 +4,8 @@
 """
 
 import asyncio
-import base64
-import hashlib
 import os
-import secrets
 import threading
-import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from . import catalog
+from question_maker.login import install_login
+
 from .ai import make_ai
 from .cards import render_card, render_zip
 from .generator import (GenerationError, check_post, generate_post, merge_profile, normalize_request,
@@ -54,7 +52,8 @@ def _title(req: dict) -> str:
 
 
 def create_app(db_path: Optional[str] = None, ai="auto", store=None,
-               check_login: Optional[Callable[[str, str], bool]] = None) -> FastAPI:
+               check_login: Optional[Callable[[str, str], bool]] = None,
+               check_token: Optional[Callable[[str], bool]] = None) -> FastAPI:
     """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
     관리자 계정으로 들어오게 하는 함수. 없으면 SNS_PASSWORD 환경 변수로 막는다."""
     if store is None:
@@ -62,7 +61,6 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
     if ai == "auto":
         ai = make_ai()
     password = os.environ.get("SNS_PASSWORD", "").strip()
-    login_cache = {}
     jobs_sem = threading.Semaphore(2)
 
     app = FastAPI(title="홍보글 공장")
@@ -70,30 +68,7 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
     app.state.ai = ai
 
     # 인터넷에 올려 쓸 때는 비밀번호를 꼭 정한다. 아무나 들어와 AI 사용료를 쓰지 못하게.
-    @app.middleware("http")
-    async def check_password(request: Request, call_next):
-        if password or check_login:
-            ok = False
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("basic "):
-                try:
-                    user, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
-                    if check_login:
-                        key = hashlib.sha256(f"{user}\0{given}".encode()).hexdigest()
-                        if login_cache.get(key, 0) > time.time():
-                            ok = True
-                        else:
-                            ok = bool(await asyncio.to_thread(check_login, user.strip(), given))
-                            if ok:
-                                login_cache[key] = time.time() + 600
-                    else:
-                        ok = secrets.compare_digest(given, password)
-                except Exception:
-                    ok = False
-            if not ok:
-                return Response("비밀번호가 필요합니다.", status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="sns-maker", charset="UTF-8"'})
-        return await call_next(request)
+    install_login(app, realm="sns-maker", password=password, check_login=check_login, check_token=check_token)
 
     def profile() -> dict:
         return merge_profile(store.get_setting("profile", {}))

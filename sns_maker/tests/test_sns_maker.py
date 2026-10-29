@@ -176,3 +176,19 @@ def test_app_without_ai_and_with_login(tmp_path):
                                    check_login=lambda u, p: p == "pw"))
     assert locked.get("/api/meta").status_code == 401
     assert locked.get("/api/meta", auth=("원장님", "pw")).status_code == 200
+
+
+def test_login_with_admin_token_from_academy_app(tmp_path):
+    """학원 앱 버튼: 관리자 토큰을 POST /sns/login 으로 보내면 쿠키를 받고 비밀번호 없이 들어간다."""
+    from fastapi import FastAPI
+    parent = FastAPI()
+    parent.mount("/sns", create_app(ai=FakeAI(), store=Store(str(tmp_path / "t.db")),
+                                    check_login=lambda u, p: False, check_token=lambda t: t == "good"))
+    client = TestClient(parent)
+    assert client.get("/sns/api/meta").status_code == 401
+    assert client.post("/sns/login", data={"token": "bad"}, follow_redirects=False).status_code == 401
+    r = client.post("/sns/login", data={"token": "good"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "./"
+    assert client.cookies.get("admin_session") == "good"
+    assert client.get("/sns/api/meta").status_code == 200
+    assert client.get("/sns/").status_code == 200

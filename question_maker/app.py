@@ -4,8 +4,6 @@
 """
 
 import asyncio
-import base64
-import hashlib
 import os
 import random
 import secrets
@@ -23,6 +21,7 @@ from pydantic import BaseModel
 
 from . import catalog
 from .ai import AIError, make_ai
+from .login import install_login
 from .generator import (GenerationError, generate_set, merge_style, normalize_question,
                         normalize_recipe, renumber, revise_set)
 from .render import render_paper
@@ -112,7 +111,8 @@ class DailyReq(BaseModel):
 
 def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool = True,
                store=None, check_login: Optional[Callable[[str, str], bool]] = None,
-               telegram="auto", public_url: Optional[str] = None) -> FastAPI:
+               telegram="auto", public_url: Optional[str] = None,
+               check_token: Optional[Callable[[str], bool]] = None) -> FastAPI:
     """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
     관리자 계정으로 들어오게 하는 함수. 없으면 QM_PASSWORD 환경 변수로 막는다."""
     if store is None:
@@ -120,7 +120,6 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
     if ai == "auto":
         ai = make_ai()
     password = os.environ.get("QM_PASSWORD", "").strip()
-    login_cache = {}   # 같은 사람이 요청마다 DB를 거치지 않게 10분간 기억
     jobs_sem = threading.Semaphore(2)   # AI에 동시에 너무 많이 보내지 않게
 
     app = FastAPI(title="문제 공장")
@@ -128,34 +127,10 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
     app.state.ai = ai
 
     # 인터넷에 올려 쓸 때는 QM_PASSWORD를 꼭 정한다. 아무나 들어와 AI 사용료를 쓰지 못하게.
-    @app.middleware("http")
-    async def check_password(request: Request, call_next):
-        # 매일 출제 깨우기 주소는 비밀번호 없이 연다 (하루 한 번 정해진 일만 하므로 안전)
-        # 텔레그램이 보내는 주소도 연다 (주소 속 비밀값과 머리글 비밀값으로 따로 확인한다)
-        if request.url.path.endswith("/api/daily/tick") or "/telegram/" in request.url.path:
-            return await call_next(request)
-        if password or check_login:
-            ok = False
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("basic "):
-                try:
-                    user, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
-                    if check_login:
-                        key = hashlib.sha256(f"{user}\0{given}".encode()).hexdigest()
-                        if login_cache.get(key, 0) > time.time():
-                            ok = True
-                        else:
-                            ok = bool(await asyncio.to_thread(check_login, user.strip(), given))
-                            if ok:
-                                login_cache[key] = time.time() + 600
-                    else:
-                        ok = secrets.compare_digest(given, password)
-                except Exception:
-                    ok = False
-            if not ok:
-                return Response("비밀번호가 필요합니다.", status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="question-maker", charset="UTF-8"'})
-        return await call_next(request)
+    # 매일 출제 깨우기 주소는 비밀번호 없이 연다 (하루 한 번 정해진 일만 하므로 안전)
+    # 텔레그램이 보내는 주소도 연다 (주소 속 비밀값과 머리글 비밀값으로 따로 확인한다)
+    install_login(app, realm="question-maker", password=password, check_login=check_login,
+                  check_token=check_token, open_paths=("/api/daily/tick",), open_parts=("/telegram/",))
 
     def style_for(style_id) -> dict:
         row = store.get_style(style_id) if style_id else None

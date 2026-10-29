@@ -14383,6 +14383,11 @@ def _question_maker_login(name: str, password: str) -> bool:
     return not adoc and name != "원장님" and ok(get_admin_doc("원장님"))
 
 
+def _question_maker_token(token: str) -> bool:
+    """학원 앱에 이미 관리자로 로그인해 받은 토큰이면 비밀번호 없이 들여보낸다."""
+    return bool(_resolve_admin_token(token))
+
+
 if db is not None:
     try:
         from question_maker.app import create_app as _create_question_maker
@@ -14398,6 +14403,7 @@ if db is not None:
                        if os.environ.get("RENDER_EXTERNAL_URL") else ""))
         app.mount("/qm", _create_question_maker(store=_QMFirestoreStore(db),
                                                 check_login=_question_maker_login,
+                                                check_token=_question_maker_token,
                                                 public_url=_qm_public))
     except Exception as e:
         print("문제 공장 연결 실패:", e)
@@ -14417,6 +14423,7 @@ if db is not None:
         def sns_maker_redirect():
             return RedirectResponse("/sns/")
 
-        app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login))
+        app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login,
+                                            check_token=_question_maker_token))
     except Exception as e:
         print("홍보글 공장 연결 실패:", e)
