@@ -14365,9 +14365,27 @@ def get_counsel_admin(student_name: str):
 #   들어갈 때는 관리자 이름과 비밀번호로 로그인한다(이름을 비우면 원장님).
 # ─────────────────────────────────────────────────────────
 def _question_maker_login(name: str, password: str) -> bool:
-    adoc = get_admin_doc(name or "원장님")
-    return bool(adoc) and bool(password) and \
-        _hash_password(password, adoc.get("salt", "")) == adoc.get("password_hash")
+    """학원 앱 관리자 로그인(/api/auth)과 같은 규칙: 이름을 비우거나 '관리자'라고 적으면 원장님,
+    등록되지 않은 이름(예: 원장님 본명)이라도 원장님 비밀번호가 맞으면 들어온다."""
+    if not password:
+        return False
+    ensure_owner_admin()
+    name = (name or "").strip()
+    if name in ("", "관리자"):
+        name = "원장님"
+
+    def ok(adoc):
+        return bool(adoc) and _hash_password(password, adoc.get("salt", "")) == adoc.get("password_hash")
+
+    adoc = get_admin_doc(name)
+    if ok(adoc):
+        return True
+    return not adoc and name != "원장님" and ok(get_admin_doc("원장님"))
+
+
+def _question_maker_token(token: str) -> bool:
+    """학원 앱에 이미 관리자로 로그인해 받은 토큰이면 비밀번호 없이 들여보낸다."""
+    return bool(_resolve_admin_token(token))
 
 
 if db is not None:
@@ -14385,6 +14403,7 @@ if db is not None:
                        if os.environ.get("RENDER_EXTERNAL_URL") else ""))
         app.mount("/qm", _create_question_maker(store=_QMFirestoreStore(db),
                                                 check_login=_question_maker_login,
+                                                check_token=_question_maker_token,
                                                 public_url=_qm_public))
     except Exception as e:
         print("문제 공장 연결 실패:", e)
@@ -14404,6 +14423,7 @@ if db is not None:
         def sns_maker_redirect():
             return RedirectResponse("/sns/")
 
-        app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login))
+        app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login,
+                                            check_token=_question_maker_token))
     except Exception as e:
         print("홍보글 공장 연결 실패:", e)

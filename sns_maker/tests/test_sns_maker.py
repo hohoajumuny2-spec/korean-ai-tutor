@@ -176,3 +176,57 @@ def test_app_without_ai_and_with_login(tmp_path):
                                    check_login=lambda u, p: p == "pw"))
     assert locked.get("/api/meta").status_code == 401
     assert locked.get("/api/meta", auth=("원장님", "pw")).status_code == 200
+
+
+def test_login_with_admin_token_from_academy_app(tmp_path):
+    """학원 앱 버튼: 관리자 토큰을 POST /sns/login 으로 보내면 쿠키를 받고 비밀번호 없이 들어간다."""
+    from fastapi import FastAPI
+    parent = FastAPI()
+    parent.mount("/sns", create_app(ai=FakeAI(), store=Store(str(tmp_path / "t.db")),
+                                    check_login=lambda u, p: False, check_token=lambda t: t == "good"))
+    client = TestClient(parent)
+    assert client.get("/sns/api/meta").status_code == 401
+    assert client.post("/sns/login", data={"token": "bad"}, follow_redirects=False).status_code == 401
+    r = client.post("/sns/login", data={"token": "good"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "./"
+    assert client.cookies.get("admin_session") == "good"
+    assert client.get("/sns/api/meta").status_code == 200
+    assert client.get("/sns/").status_code == 200
+
+
+def test_subject_posts():
+    from sns_maker.generator import subject_list, subject_notes
+    p = merge_profile({"subjects": "국어, 수학 / 영어, 수학", "subject_notes": "수학: 개념 → 유형 → 실전\n잘못된 줄"})
+    assert subject_list(p) == ["국어", "수학", "영어"]
+    assert subject_notes(p) == {"수학": "개념 → 유형 → 실전"}
+
+    req = normalize_request({"channels": ["instagram"], "topic": "기말 대비", "subject": " 수학 "})
+    assert req["subject"] == "수학"
+    prompt = build_generate_prompt(req, p, "오늘")
+    assert "과목: 수학" in prompt and "수학 수업 소개: 개념" in prompt and "#대치동수학학원" in prompt
+    whole = build_generate_prompt(normalize_request({"channels": ["blog"], "topic": "x"}), p, "오늘")
+    assert "학원 전체" in whole and "수학 수업 소개" in whole   # 전체 글이면 과목 소개를 모두 준다
+
+    ideas = suggest_ideas(FakeAI(), p, datetime(2026, 10, 29, tzinfo=KST), [], 3, subject="영어")
+    assert all(i["subject"] == "영어" for i in ideas)
+
+
+def test_subject_in_list_and_card_label(tmp_path, monkeypatch):
+    import sns_maker.app as app_mod
+    seen = {}
+    real = app_mod.render_card
+
+    def spy(slide, i, total, label, theme):
+        seen["label"] = label
+        return real(slide, i, total, label, theme)
+
+    monkeypatch.setattr(app_mod, "render_card", spy)
+    client = TestClient(create_app(ai=FakeAI(), store=Store(str(tmp_path / "s.db"))))
+    client.put("/api/profile", json={"profile": {"name": "바른학원", "subjects": "국어, 수학"}})
+    pid = client.post("/api/posts", json={"request": {"channels": ["instagram"], "topic": "오답 노트",
+                                                      "subject": "수학"}}).json()["id"]
+    wait_done(client, pid)
+    assert client.get("/api/posts").json()["posts"][0]["subject"] == "수학"
+    client.get(f"/api/posts/{pid}/cards/0.png")
+    assert seen["label"] == "바른학원 · 수학"
+    assert client.post("/api/ideas", json={"count": 3, "subject": "국어"}).json()["ideas"][0]["subject"] == "국어"

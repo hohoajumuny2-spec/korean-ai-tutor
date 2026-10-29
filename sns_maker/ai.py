@@ -16,6 +16,7 @@ class FakeAI:
     def generate_json(self, prompt: str, task: dict, quality: bool = True) -> dict:
         mode = task.get("mode")
         topic = (task.get("topic") or "학원 소식").strip()[:40]
+        subject = task.get("subject") or ""
         academy = (task.get("profile") or {}).get("name") or "우리 학원"
         if mode == "generate":
             out = {}
@@ -23,7 +24,7 @@ class FakeAI:
                 n = task.get("slide_count", 5)
                 out["instagram"] = {
                     "caption": f"📚 {topic}\n\n{academy}이(가) 준비한 이야기예요.\n연습용 AI가 쓴 글이라 실제 내용은 없어요.\n\n👉 상담은 프로필 링크에서!",
-                    "hashtags": ["#학원", "#공부스타그램", "#국어학원", "#공부팁", "#내신대비"],
+                    "hashtags": ["#학원", "#공부스타그램", f"#{subject or '국어'}학원", "#공부팁", "#내신대비"],
                     "slides": [{"title": topic if i == 0 else f"{i}. 연습 카드 제목",
                                 "body": "" if i == 0 else "연습용 AI가 쓴 카드 내용입니다. 실제 키를 넣으면 주제에 맞춰 씁니다."}
                                for i in range(n)],
@@ -52,7 +53,8 @@ class FakeAI:
         if mode == "ideas":
             kinds = list(task.get("kinds") or ["tip"])
             return {"ideas": [{"kind": kinds[i % len(kinds)], "topic": f"연습 주제 {i + 1}",
-                               "why": "연습용 AI가 만든 추천입니다.", "channel": "instagram" if i % 2 else "blog"}
+                               "why": "연습용 AI가 만든 추천입니다.", "channel": "instagram" if i % 2 else "blog",
+                               "subject": subject}
                               for i in range(task.get("count", 8))]}
         raise AIError("알 수 없는 요청입니다.")
 
