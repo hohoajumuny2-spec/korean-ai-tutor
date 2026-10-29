@@ -14423,7 +14423,11 @@ if db is not None:
         def sns_maker_redirect():
             return RedirectResponse("/sns/")
 
+        # 인스타그램이 카드 그림을 가져갈 주소 (Render가 RENDER_EXTERNAL_URL에 이 서버 주소를 넣어 준다)
+        _sns_public = (os.environ.get("SNS_PUBLIC_URL") or
+                       (os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/") + "/sns"
+                        if os.environ.get("RENDER_EXTERNAL_URL") else ""))
         app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login,
-                                            check_token=_question_maker_token))
+                                            check_token=_question_maker_token, public_url=_sns_public))
     except Exception as e:
         print("홍보글 공장 연결 실패:", e)

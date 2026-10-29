@@ -29,6 +29,33 @@
 (예: `https://학원서버.onrender.com/sns/`). 로그인은 문제 공장과 같습니다(관리자 이름 · 비밀번호, 이름을 비우면 원장님).
 자료는 Firestore의 `sns_` 로 시작하는 컬렉션에 저장됩니다. AI 키는 서버의 `GOOGLE_API_KEY`를 그대로 씁니다.
 
+## 📤 인스타그램에 바로 올리기
+
+글 화면의 **📤 인스타그램에 올리기**를 누르면 카드뉴스 전체 · 본문 · 해시태그가 한 게시물로 올라갑니다.
+(올리기 전에 한 번 더 묻습니다. 올린 게시물은 인스타그램 앱에서만 지울 수 있습니다.)
+처음 한 번 아래 준비가 필요합니다. 메타가 여는 길이 두 가지이고, 둘 중 하나만 하면 됩니다.
+
+**공통**: 학원 인스타 계정을 **프로페셔널(비즈니스 · 크리에이터) 계정**으로 바꿉니다 (인스타 앱 → 설정 → 계정 유형).
+
+**가) Instagram 로그인 방식 (권장 · 페이스북 페이지 없어도 됨)**
+1. 메타 개발자 사이트의 앱 → 이용 사례 'Instagram에서 메시지 및 콘텐츠 관리' → **Instagram 로그인을 통한 API 설정**
+2. 학원 인스타 계정을 추가하고 **접속 키(액세스 토큰) 생성** (콘텐츠 게시 권한 허용)
+3. Render → 학원 서버 → Environment 에 `INSTAGRAM_ACCESS_TOKEN` = 그 키
+   - 이 키는 60일짜리지만, 프로그램이 일주일마다 새로 받아 두므로 끊기지 않습니다.
+
+**나) Facebook 로그인 방식 (인스타 계정이 페이스북 페이지에 연결돼 있을 때)**
+1. 같은 이용 사례의 **Facebook 로그인이 포함된 API 설정**에서 `instagram_basic`, `instagram_content_publish`, `pages_show_list`, `pages_read_engagement` 권한으로 접속 키를 만들고, **오래 가는 페이지 접속 키**로 바꿉니다 (이 키는 끊기지 않습니다).
+2. Render Environment 에 세 가지를 넣습니다.
+   - `INSTAGRAM_ACCESS_TOKEN` = 페이지 접속 키
+   - `INSTAGRAM_API_HOST` = `graph.facebook.com`
+   - `INSTAGRAM_USER_ID` = 인스타 비즈니스 계정 번호 (그래프 API 탐색기에서 `페이지번호?fields=instagram_business_account` 로 확인)
+
+**알아 둘 것**
+- 인스타그램은 그림을 **주소로 직접 가져갑니다.** 그래서 카드 그림은 `/sns/public/cards/...` 주소로 로그인 없이 열리되, 글마다 서명이 붙은 주소만 열립니다.
+  학원 서버(Render)에서는 이 주소를 자동으로 압니다. 다른 곳에서 켜면 `SNS_PUBLIC_URL`(예: `https://학원서버/sns`)을 넣어 주세요.
+- 하루(24시간)에 50개까지 올릴 수 있습니다 (메타가 정한 수, 카드뉴스 하나가 1개).
+- 서버가 잠들어 있으면 인스타그램이 그림을 못 가져갈 수 있습니다. 그럴 땐 잠시 뒤 다시 누르세요.
+
 ## PC에서 따로 켜기
 ```bash
 pip install -r question_maker/requirements.txt Pillow
@@ -45,6 +72,10 @@ python -m sns_maker
 | `SNS_PORT` / `SNS_HOST` | 주소 | `8810` / `127.0.0.1` |
 | `SNS_PASSWORD` | 정하면 들어올 때 비밀번호를 물음 (인터넷에 올릴 때 필수) | 없음 |
 | `SNS_DEMO` | `1`이면 연습용 AI | — |
+| `INSTAGRAM_ACCESS_TOKEN` | 인스타그램 접속 키 (위 '인스타그램에 바로 올리기') | — |
+| `INSTAGRAM_API_HOST` | Facebook 로그인 방식이면 `graph.facebook.com` | `graph.instagram.com` |
+| `INSTAGRAM_USER_ID` | 인스타 계정 번호 (Facebook 로그인 방식이면 필수) | 자동 |
+| `SNS_PUBLIC_URL` | 인스타그램이 카드 그림을 가져갈 이 프로그램 주소 | Render면 자동 |
 
 ## 개발자용
 ```bash
@@ -52,6 +83,7 @@ python -m pytest sns_maker/tests
 ```
 - `catalog.py` 글 종류 · 말투 · 달마다 학원가 일 · 과장 광고 말 목록
 - `generator.py` 프롬프트, AI 답 확인, 등록번호 꼬리말, 올리기 전 확인
+- `instagram.py` 인스타그램에 올리기 (컨테이너 → 게시, 접속 키 새로 받기)
 - `cards.py` 카드뉴스 PNG (저장소의 `fonts/NotoSansKR.ttf` 사용)
 - `storage.py` SQLite / Firestore 저장
 - `app.py` 웹 서버, `static/index.html` 화면

@@ -42,6 +42,7 @@
   .badge.working { background: #fff3dc; color: var(--warn); }
   .badge.error { background: #fde8e8; color: var(--bad); }
   .badge.subj { background: #eef3ff; color: #2f5bd3; }
+  .badge.done { background: #e3f4ea; color: var(--ok); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chips label, .chips button { border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px; cursor: pointer; font-size: 14px;
                                 user-select: none; background: #fff; font-family: inherit; }
@@ -254,6 +255,8 @@ function refreshChannelFields() {
 // ── 처음 ──
 async function init() {
   META = await api("api/meta");
+  // 연결된 인스타 계정 이름 (확인 창에 보여 준다). 늦게 와도 괜찮다
+  if (META.instagram) api("api/instagram").then(r => { META.igUser = r.username || ""; }).catch(() => {});
   $("#aiName").textContent = META.ai ? `· ${META.ai}` : "";
   $("#noAi").classList.toggle("hidden", !!META.ai);
   $("#monthHint").textContent = `이번 달 학원가: ${META.month_hint}. 이 시기와 학원 정보에 맞춰 글감을 골라 드려요.`;
@@ -361,7 +364,8 @@ async function loadPosts() {
         <span class="badge subj">${esc(subjName(p.subject))}</span>
         ${p.channels.map(c => `<span class="badge ${c === "blog" ? "blog" : "ig"}">${c === "blog" ? "블로그" : "인스타"}</span>`).join(" ")}
         ${p.status === "working" ? '<span class="badge working">만드는 중</span>' : ""}
-        ${p.status === "error" ? '<span class="badge error">실패</span>' : ""}</div></div></div>`).join("")
+        ${p.status === "error" ? '<span class="badge error">실패</span>' : ""}
+        ${p.instagram === "done" ? '<span class="badge done">인스타 올림</span>' : ""}</div></div></div>`).join("")
     : '<div class="muted">아직 만든 글이 없습니다.</div>';
   $$("#postList .item").forEach(el => el.onclick = () => openPost(+el.dataset.id));
 }
@@ -374,7 +378,42 @@ async function openPost(id) {
   if (changed) THEME = "";
   renderPost();
   loadPosts();
-  if (post.status === "working") POLL = setTimeout(() => CURRENT && CURRENT.id === id && openPost(id), 2500);
+  if (post.status === "working" || post.instagram?.status === "working")
+    POLL = setTimeout(() => CURRENT && CURRENT.id === id && !EDITING && openPost(id), 2500);
+}
+
+// ── 인스타그램에 올리기 ──
+function publishHtml(post, ig) {
+  if (!ig.slides?.length) return "";
+  const st = post.instagram || {};
+  let h = `<div class="row" style="justify-content:flex-start;margin:6px 0 10px">`;
+  if (!META.instagram) {
+    return h + `<button class="btn small" disabled style="flex:0 0 auto">📤 인스타그램에 올리기</button>
+      <span class="muted" style="flex:1 1 220px">학원 서버에 INSTAGRAM_ACCESS_TOKEN을 넣으면 쓸 수 있어요</span></div>`;
+  }
+  if (st.status === "working") {
+    return h + `<span class="progress">📤 ${esc(st.progress || "인스타그램에 올리는 중…")}</span></div>`;
+  }
+  if (st.status === "done") {
+    return h + `<span style="color:var(--ok);font-weight:600;flex:0 0 auto">✅ 인스타그램에 올렸어요 (${esc((st.at || "").slice(0, 16))})</span>
+      ${st.permalink ? `<a href="${esc(st.permalink)}" target="_blank" rel="noopener" style="flex:0 0 auto">게시물 보기</a>` : ""}
+      <button class="btn small" id="igPublish" data-force="1" style="flex:0 0 auto">한 번 더 올리기</button></div>`;
+  }
+  return h + `<button class="btn small primary" id="igPublish" style="flex:0 0 auto">📤 인스타그램에 올리기</button>
+    ${META.igUser ? `<span class="muted" style="flex:0 0 auto">@${esc(META.igUser)}</span>` : ""}</div>
+    ${st.status === "error" ? `<p class="error" style="margin:0 0 10px">${esc(st.error || "올리지 못했습니다.")}</p>` : ""}`;
+}
+async function publishInstagram(force) {
+  const n = CURRENT.data.instagram.slides.length;
+  const who = META.igUser ? `@${META.igUser} ` : "";
+  const msg = force ? `이미 올린 글입니다. ${who}인스타그램에 한 번 더 올릴까요?`
+    : `${who}인스타그램에 지금 바로 올릴까요?\n카드뉴스 ${n}장 + 본문 + 해시태그가 공개 게시물로 올라갑니다.\n(올린 뒤에는 인스타그램 앱에서만 지울 수 있어요)`;
+  if (!confirm(msg)) return;
+  try {
+    await api(`api/posts/${CURRENT.id}/instagram/publish`, {method: "POST",
+      body: {theme: THEME || PROFILE.theme || "navy", force: !!force}});
+    openPost(CURRENT.id);
+  } catch (e) { toast(e.message, 5000); }
 }
 
 function cardsHtml(post, ig) {
@@ -446,6 +485,7 @@ function renderPost() {
 
   if (ig) {
     h += `<div class="card ch-ig"><h2>📸 인스타그램 <button class="btn small primary" id="copyIg">본문 + 해시태그 복사</button></h2>
+      ${publishHtml(post, ig)}
       <div class="out">${esc(ig.caption)}</div>
       <h3>해시태그 ${ig.hashtags.length}개 <button class="btn small" id="copyTags">해시태그만 복사</button></h3>
       <div class="tags">${esc(ig.hashtags.join(" "))}</div>
@@ -480,6 +520,7 @@ function renderPost() {
     $("#copyTags").onclick = () => copyText(ig.hashtags.join(" "));
     if ($("#copyReel")) $("#copyReel").onclick = () => copyText(ig.reel_script);
     if ($("#cardTheme")) $("#cardTheme").onchange = e => { THEME = e.target.value; renderPost(); };
+    if ($("#igPublish")) $("#igPublish").onclick = e => publishInstagram(!!e.target.dataset.force);
     $$(".cards img").forEach(img => img.onclick = e => {
       e.preventDefault();
       const z = document.createElement("div"); z.className = "zoom"; z.innerHTML = `<img src="${img.src}">`;
