@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>홍보글 공장</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --line: #dfe3e8; --text: #1d2329; --muted: #67717d;
+    --accent: #c13584; --accent-soft: #fbeaf3; --blog: #03a94e; --blog-soft: #e6f7ee;
+    --ok: #1f8a4c; --warn: #b26a00; --bad: #c62f2f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; font-size: 15px; }
+  header.top { background: #fff; border-bottom: 1px solid var(--line); padding: 12px 16px; position: sticky; top: 0; z-index: 5; }
+  header.top h1 { margin: 0 0 8px; font-size: 20px; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button { border: 1px solid var(--line); background: #fff; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 15px; }
+  nav button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 17px; }
+  .card h3 { margin: 16px 0 8px; font-size: 15px; }
+  label.f { display: block; font-weight: 600; margin: 12px 0 4px; font-size: 14px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+  textarea { resize: vertical; line-height: 1.6; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .row > * { flex: 1 1 160px; }
+  button.btn { border: 1px solid var(--line); background: #fff; padding: 8px 14px; border-radius: 8px; cursor: pointer; font: inherit; }
+  button.btn:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.small { padding: 4px 10px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .warnbox { background: #fff6e5; border: 1px solid #f1d29a; color: #6b4300; padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: #eef0f3; color: var(--muted); white-space: nowrap; }
+  .badge.ig { background: var(--accent-soft); color: var(--accent); }
+  .badge.blog { background: var(--blog-soft); color: var(--blog); }
+  .badge.working { background: #fff3dc; color: var(--warn); }
+  .badge.error { background: #fde8e8; color: var(--bad); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips label, .chips button { border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px; cursor: pointer; font-size: 14px;
+                                user-select: none; background: #fff; font-family: inherit; }
+  .chips label.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .chips input { display: none; }
+  .list .item { border-bottom: 1px solid var(--line); padding: 10px 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; cursor: pointer; }
+  .list .item:last-child { border-bottom: 0; }
+  .list .item:hover { background: #fafbfc; }
+  .list .item .grow { flex: 1 1 220px; min-width: 0; }
+  .list .item .title { font-weight: 600; overflow-wrap: anywhere; }
+  .list .item.sel { background: var(--accent-soft); border-radius: 8px; }
+  .split { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+  .out { white-space: pre-wrap; line-height: 1.75; background: #fafbfc; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow-wrap: anywhere; }
+  .tags { color: #00376b; line-height: 1.8; overflow-wrap: anywhere; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .cards img { width: 100%; aspect-ratio: 4 / 5; border-radius: 8px; border: 1px solid var(--line); background: #eee; cursor: zoom-in; }
+  .sect h4 { margin: 14px 0 4px; font-size: 16px; }
+  .photo { color: var(--blog); font-size: 13px; margin: 4px 0; }
+  .notes { background: #fff8e8; border-radius: 8px; padding: 8px 12px 8px 28px; font-size: 14px; margin: 0 0 12px; }
+  .notes li { margin: 3px 0; }
+  .ch-ig { border-top: 4px solid var(--accent); }
+  .ch-blog { border-top: 4px solid var(--blog); }
+  .idea { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .idea .grow { flex: 1 1 260px; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #222; color: #fff;
+           padding: 10px 18px; border-radius: 10px; z-index: 50; max-width: 90vw; white-space: pre-wrap; }
+  .hidden { display: none !important; }
+  .progress { color: var(--warn); font-weight: 600; }
+  .error { color: var(--bad); white-space: pre-wrap; }
+  .zoom { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; z-index: 40; }
+  .zoom img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
+  .edit-slide { display: grid; grid-template-columns: 1fr 2fr; gap: 6px; margin-bottom: 6px; }
+  @media (max-width: 600px) { .edit-slide { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>📣 홍보글 공장 <span class="muted" id="aiName"></span></h1>
+  <nav>
+    <button data-tab="new" class="on">새 글 만들기</button>
+    <button data-tab="ideas">올릴 거리 추천</button>
+    <button data-tab="posts">보관함</button>
+    <button data-tab="profile">학원 정보</button>
+  </nav>
+</header>
+<main>
+  <div id="noAi" class="warnbox hidden">AI 키(GOOGLE_API_KEY)가 없어 글을 만들 수 없습니다. 키를 넣고 다시 켜 주세요. (둘러보기만 하려면 SNS_DEMO=1)</div>
+  <div id="noProfile" class="warnbox hidden">먼저 <a href="#" onclick="showTab('profile');return false">학원 정보</a>를 적어 두면 학원 이름 · 지역 · 연락처가 들어간 글이 나옵니다.</div>
+
+  <!-- 새 글 -->
+  <section id="tab-new">
+    <div class="card">
+      <h2>어디에 올릴 글인가요?</h2>
+      <div class="chips" id="chChips">
+        <label class="on"><input type="checkbox" value="instagram" checked>📸 인스타그램</label>
+        <label class="on"><input type="checkbox" value="blog" checked>📝 블로그</label>
+      </div>
+
+      <label class="f">글 종류</label>
+      <div class="chips" id="kindChips"></div>
+
+      <label class="f">주제 <span class="muted">— 무엇에 대한 글인지 한 줄로</span></label>
+      <input type="text" id="topic" placeholder="예) 중간고사 2주 전, 국어 내신 이렇게 준비하세요">
+
+      <label class="f">자세한 내용 · 메모 <span class="muted">— 꼭 들어가야 할 사실 (날짜, 반, 수업 방식, 실제 있었던 일 등). 적은 것만 사실로 씁니다.</span></label>
+      <textarea id="details" rows="5" placeholder="예) 11/3 개강, 고1 화목 7시 반, 정원 8명. 매주 서술형 첨삭. 상담은 카톡 채널로."></textarea>
+
+      <div class="row">
+        <div><label class="f">읽을 사람</label><select id="audience"></select></div>
+        <div><label class="f">말투</label><select id="tone"></select></div>
+        <div class="igOnly"><label class="f">카드뉴스 장수</label><input type="number" id="slides" min="1" max="10" value="6"></div>
+        <div class="blogOnly"><label class="f">블로그 길이</label><select id="blogLen"></select></div>
+      </div>
+      <label class="igOnly" style="display:block;margin-top:10px"><input type="checkbox" id="reel"> 릴스(짧은 영상) 대본도 함께</label>
+      <div style="margin-top:16px"><button class="btn primary" id="makeBtn">✨ 글 만들기</button></div>
+    </div>
+  </section>
+
+  <!-- 추천 -->
+  <section id="tab-ideas" class="hidden">
+    <div class="card">
+      <h2>무엇을 올릴지 모르겠을 때</h2>
+      <p class="muted" id="monthHint"></p>
+      <button class="btn primary" id="ideasBtn">💡 올릴 거리 추천받기</button>
+      <div id="ideaList" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- 보관함 -->
+  <section id="tab-posts" class="hidden">
+    <div class="split">
+      <div class="card"><h2>만든 글</h2><div class="list" id="postList"></div></div>
+      <div id="postView"><div class="card muted">왼쪽에서 글을 고르세요.</div></div>
+    </div>
+  </section>
+
+  <!-- 학원 정보 -->
+  <section id="tab-profile" class="hidden">
+    <div class="card">
+      <h2>학원 정보 <span class="muted">— 한 번 적어 두면 모든 글에 반영됩니다</span></h2>
+      <div class="row">
+        <div><label class="f">학원 이름</label><input type="text" data-p="name" placeholder="예) 바른국어학원"></div>
+        <div><label class="f">지역</label><input type="text" data-p="region" placeholder="예) 대치동"></div>
+      </div>
+      <div class="row">
+        <div><label class="f">과목</label><input type="text" data-p="subjects" placeholder="예) 국어 (내신 · 수능)"></div>
+        <div><label class="f">대상 학년</label><input type="text" data-p="grades" placeholder="예) 중3 ~ 고3"></div>
+      </div>
+      <label class="f">학원의 강점 <span class="muted">— 사실만. AI는 여기 적힌 것만 자랑합니다</span></label>
+      <textarea data-p="strengths" rows="3" placeholder="예) 반 정원 8명, 매주 서술형 첨삭, 시험 전 학교별 기출 분석, 원장 직강"></textarea>
+      <div class="row">
+        <div><label class="f">상담 연락처</label><input type="text" data-p="contact" placeholder="예) 02-000-0000 / 카톡 채널 '바른국어'"></div>
+        <div><label class="f">주소</label><input type="text" data-p="address"></div>
+      </div>
+      <div class="row">
+        <div><label class="f">학원 등록번호</label><input type="text" data-p="reg_no" placeholder="예) 제0000호"></div>
+        <div><label class="f">교습비 안내 문구</label><input type="text" data-p="fee_note" placeholder="예) 교습비: 고1 월 00만원 (교육청 신고 금액)"></div>
+      </div>
+      <p class="muted">모집 · 홍보 글에는 등록번호와 교습비를 함께 적어야 할 수 있어요(학원법). 적어 두면 모집 · 소개 · 후기 · 이벤트 글 끝에 자동으로 붙습니다.</p>
+      <label class="f">늘 붙일 해시태그 <span class="muted">— 띄어쓰기로 구분</span></label>
+      <input type="text" data-p="base_hashtags" placeholder="#바른국어학원 #대치동국어학원">
+      <label class="f">쓰지 말았으면 하는 말 <span class="muted">— 쉼표로 구분. 글에 나오면 알려 드려요</span></label>
+      <input type="text" data-p="avoid" placeholder="예) 스파르타, 족집게">
+      <label class="f">예전에 올린 글 예시 <span class="muted">— 붙여 두면 그 말투를 따라 씁니다</span></label>
+      <textarea data-p="sample" rows="5"></textarea>
+      <label class="f">카드뉴스 기본 색</label>
+      <select data-p="theme" id="themeSel"></select>
+      <div style="margin-top:16px"><button class="btn primary" id="saveProfile">저장</button></div>
+    </div>
+  </section>
+</main>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+let META = {}, PROFILE = {}, CURRENT = null, POLL = null, EDITING = false, THEME = "";
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg, ms = 2600) {
+  const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add("hidden"), ms);
+}
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: {"Content-Type": "application/json"}, ...opts,
+                                  body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `오류 (${res.status})`);
+  return data;
+}
+async function copyText(text, html) {
+  try {
+    if (html && window.ClipboardItem) {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], {type: "text/html"}), "text/plain": new Blob([text], {type: "text/plain"})})]);
+    } else {
+      await navigator.clipboard.writeText(text);
+    }
+    toast("복사했습니다. 붙여 넣으세요!");
+  } catch (e) {
+    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove(); toast("복사했습니다.");
+  }
+}
+
+// ── 탭 ──
+function showTab(name) {
+  $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  $$("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + name));
+  if (name === "posts") loadPosts();
+}
+$$("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+function chipToggle(container, multi) {
+  container.addEventListener("click", e => {
+    const lab = e.target.closest("label"); if (!lab) return;
+    e.preventDefault();
+    const inp = $("input", lab);
+    if (multi) inp.checked = !inp.checked;
+    else $$("input", container).forEach(i => i.checked = (i === inp));
+    $$("label", container).forEach(l => l.classList.toggle("on", $("input", l).checked));
+    container.dispatchEvent(new Event("chipchange"));
+  });
+}
+function setKind(kind) {
+  $$("#kindChips input").forEach(i => i.checked = i.value === kind);
+  $$("#kindChips label").forEach(l => l.classList.toggle("on", $("input", l).checked));
+}
+function channels() { return $$("#chChips input").filter(i => i.checked).map(i => i.value); }
+function setChannels(list) {
+  $$("#chChips input").forEach(i => i.checked = list.includes(i.value));
+  $$("#chChips label").forEach(l => l.classList.toggle("on", $("input", l).checked));
+  refreshChannelFields();
+}
+function refreshChannelFields() {
+  const ch = channels();
+  $$(".igOnly").forEach(e => e.classList.toggle("hidden", !ch.includes("instagram")));
+  $$(".blogOnly").forEach(e => e.classList.toggle("hidden", !ch.includes("blog")));
+}
+
+// ── 처음 ──
+async function init() {
+  META = await api("api/meta");
+  $("#aiName").textContent = META.ai ? `· ${META.ai}` : "";
+  $("#noAi").classList.toggle("hidden", !!META.ai);
+  $("#monthHint").textContent = `이번 달 학원가: ${META.month_hint}. 이 시기와 학원 정보에 맞춰 글감을 골라 드려요.`;
+  $("#kindChips").innerHTML = Object.entries(META.kinds).map(([k, v], i) =>
+    `<label class="${i === 2 ? "on" : ""}"><input type="radio" name="kind" value="${k}" ${i === 2 ? "checked" : ""}>${esc(v.name)}</label>`).join("");
+  const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(v.name || v)}</option>`).join("");
+  $("#audience").innerHTML = opts(META.audiences, "both");
+  $("#tone").innerHTML = opts(META.tones, "friendly");
+  $("#blogLen").innerHTML = opts(META.blog_lengths, "normal");
+  $("#themeSel").innerHTML = opts(META.themes, "navy");
+  chipToggle($("#chChips"), true); chipToggle($("#kindChips"), false);
+  $("#chChips").addEventListener("chipchange", refreshChannelFields);
+  refreshChannelFields();
+  await loadProfile();
+}
+
+// ── 학원 정보 ──
+async function loadProfile() {
+  PROFILE = (await api("api/profile")).profile;
+  $$("[data-p]").forEach(el => el.value = PROFILE[el.dataset.p] ?? "");
+  $("#noProfile").classList.toggle("hidden", !!PROFILE.name);
+}
+$("#saveProfile").onclick = async () => {
+  const p = {}; $$("[data-p]").forEach(el => p[el.dataset.p] = el.value);
+  PROFILE = (await api("api/profile", {method: "PUT", body: {profile: p}})).profile;
+  $("#noProfile").classList.toggle("hidden", !!PROFILE.name);
+  toast("저장했습니다.");
+};
+
+// ── 만들기 ──
+$("#makeBtn").onclick = async () => {
+  const req = {
+    channels: channels(), kind: $("#kindChips input:checked")?.value, topic: $("#topic").value,
+    details: $("#details").value, audience: $("#audience").value, tone: $("#tone").value,
+    slide_count: +$("#slides").value || 6, blog_length: $("#blogLen").value, reel: $("#reel").checked,
+  };
+  const btn = $("#makeBtn"); btn.disabled = true;
+  try {
+    const { id } = await api("api/posts", {method: "POST", body: {request: req}});
+    showTab("posts"); openPost(id);
+  } catch (e) { toast(e.message, 4000); }
+  finally { btn.disabled = false; }
+};
+
+// ── 추천 ──
+$("#ideasBtn").onclick = async () => {
+  const btn = $("#ideasBtn"); btn.disabled = true; btn.textContent = "생각하는 중…";
+  try {
+    const { ideas } = await api("api/ideas", {method: "POST", body: {count: 8}});
+    $("#ideaList").innerHTML = ideas.map((it, i) => `
+      <div class="idea"><div class="grow">
+        <span class="badge ${it.channel === "blog" ? "blog" : "ig"}">${it.channel === "blog" ? "블로그" : "인스타"}</span>
+        <span class="badge">${esc(META.kinds[it.kind]?.name || "")}</span>
+        <div style="font-weight:600;margin-top:4px">${esc(it.topic)}</div>
+        <div class="muted">${esc(it.why)}</div></div>
+        <button class="btn small" data-i="${i}">이걸로 쓰기</button></div>`).join("");
+    $$("#ideaList button").forEach(b => b.onclick = () => {
+      const it = ideas[+b.dataset.i];
+      $("#topic").value = it.topic; $("#details").value = ""; setKind(it.kind); setChannels([it.channel]);
+      showTab("new"); $("#details").focus(); toast("주제를 넣었어요. 메모를 더 적고 '글 만들기'를 누르세요.");
+    });
+  } catch (e) { toast(e.message, 4000); }
+  finally { btn.disabled = false; btn.textContent = "💡 올릴 거리 추천받기"; }
+};
+
+// ── 보관함 ──
+async function loadPosts() {
+  const { posts } = await api("api/posts");
+  $("#postList").innerHTML = posts.length ? posts.map(p => `
+    <div class="item ${CURRENT && CURRENT.id === p.id ? "sel" : ""}" data-id="${p.id}"><div class="grow">
+      <div class="title">${esc(p.title)}</div>
+      <div class="muted">${esc((p.created_at || "").slice(0, 16))}
+        ${p.channels.map(c => `<span class="badge ${c === "blog" ? "blog" : "ig"}">${c === "blog" ? "블로그" : "인스타"}</span>`).join(" ")}
+        ${p.status === "working" ? '<span class="badge working">만드는 중</span>' : ""}
+        ${p.status === "error" ? '<span class="badge error">실패</span>' : ""}</div></div></div>`).join("")
+    : '<div class="muted">아직 만든 글이 없습니다.</div>';
+  $$("#postList .item").forEach(el => el.onclick = () => openPost(+el.dataset.id));
+}
+
+async function openPost(id) {
+  clearTimeout(POLL); EDITING = false;
+  const { post } = await api(`api/posts/${id}`);
+  const changed = !CURRENT || CURRENT.id !== post.id;
+  CURRENT = post;
+  if (changed) THEME = "";
+  renderPost();
+  loadPosts();
+  if (post.status === "working") POLL = setTimeout(() => CURRENT && CURRENT.id === id && openPost(id), 2500);
+}
+
+function cardsHtml(post, ig) {
+  if (!ig.slides?.length) return "";
+  const theme = THEME || PROFILE.theme || "navy";
+  const stamp = post.updated_at || "";
+  const q = `theme=${theme}&v=${encodeURIComponent(stamp)}`;
+  return `<h3>카드뉴스 ${ig.slides.length}장
+      <select id="cardTheme" style="width:auto;margin-left:8px">${Object.entries(META.themes).map(([k, v]) =>
+        `<option value="${k}" ${k === theme ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
+      <a class="btn small" style="text-decoration:none;color:inherit;border:1px solid var(--line);border-radius:8px;padding:4px 10px;margin-left:6px"
+         href="api/posts/${post.id}/cards.zip?${q}">⬇ 한 번에 받기(ZIP)</a></h3>
+    <div class="cards">${ig.slides.map((s, i) => `<a href="api/posts/${post.id}/cards/${i}.png?${q}" download="card_${i + 1}.png">
+      <img loading="lazy" src="api/posts/${post.id}/cards/${i}.png?${q}" alt="${esc(s.title)}"></a>`).join("")}</div>
+    <p class="muted">그림을 누르면 한 장씩 받습니다. 인스타그램에서 여러 장을 한 게시물로 올리세요.</p>`;
+}
+
+function blogHtml(bl) {
+  const p = s => esc(s).replace(/\n/g, "<br>");
+  let h = `<p>${p(bl.intro)}</p>`;
+  for (const s of bl.sections) {
+    h += `<h3>${esc(s.heading)}</h3>`;
+    if (s.photo) h += `<p style="color:#03a94e">[사진: ${esc(s.photo)}]</p>`;
+    h += `<p>${p(s.body)}</p>`;
+  }
+  return h + `<p>${p(bl.outro)}</p>`;
+}
+function blogPlain(bl, ti) {
+  const out = [bl.titles[ti] || bl.titles[0], "", bl.intro, ""];
+  for (const s of bl.sections) {
+    out.push("■ " + s.heading, "");
+    if (s.photo) out.push(`[사진: ${s.photo}]`, "");
+    out.push(s.body, "");
+  }
+  out.push(bl.outro);
+  if (bl.tags?.length) out.push("", bl.tags.map(t => "#" + t).join(" "));
+  return out.join("\n").trim();
+}
+
+function renderPost() {
+  const post = CURRENT, v = $("#postView");
+  if (post.status === "working") {
+    v.innerHTML = `<div class="card"><h2>${esc(post.title)}</h2><p class="progress">⏳ ${esc(post.progress || "만드는 중…")}</p>
+      <p class="muted">보통 20초 ~ 1분 걸립니다. 다른 탭을 봐도 계속 만듭니다.</p></div>`;
+    return;
+  }
+  if (post.status === "error" || !post.data) {
+    v.innerHTML = `<div class="card"><h2>${esc(post.title)}</h2><p class="error">${esc(post.error || "실패했습니다.")}</p>
+      <button class="btn" id="regen">다시 만들기</button> <button class="btn danger" id="del">지우기</button></div>`;
+    $("#regen").onclick = regenerate; $("#del").onclick = delPost;
+    return;
+  }
+  if (EDITING) return renderEditor();
+  const d = post.data, ig = d.instagram, bl = d.blog;
+  let h = `<div class="card"><h2>${esc(post.title)}</h2>`;
+  if (post.error) h += `<p class="error">${esc(post.error)}</p>`;
+  if (d.summary) h += `<p class="muted">✏️ ${esc(d.summary)}</p>`;
+  if (d.notes?.length) h += `<ul class="notes">${d.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>`;
+  h += `<label class="f" style="margin-top:0">말로 고치기</label>
+    <div class="chips" id="quick">${["더 짧게", "더 친근하게", "더 전문적으로", "이모지 줄이기", "학부모 대상으로", "첫 줄을 더 끌리게", "블로그 제목을 더 검색 잘 되게"]
+      .map(t => `<button>${t}</button>`).join("")}</div>
+    <div class="row" style="margin-top:8px"><input type="text" id="reviseText" placeholder="예) 카드뉴스 3장에 서술형 첨삭 이야기를 넣어 줘">
+      <button class="btn primary" id="reviseBtn" style="flex:0 0 auto">고치기</button></div>
+    <div class="row" style="margin-top:10px;justify-content:flex-start">
+      <button class="btn small" id="editBtn" style="flex:0 0 auto">✍️ 직접 고치기</button>
+      <button class="btn small" id="undoBtn" style="flex:0 0 auto" ${post.prev ? "" : "disabled"}>↩ 되돌리기</button>
+      <button class="btn small" id="regen" style="flex:0 0 auto">🔄 새로 쓰기</button>
+      <button class="btn small danger" id="del" style="flex:0 0 auto">지우기</button></div></div>`;
+
+  if (ig) {
+    h += `<div class="card ch-ig"><h2>📸 인스타그램 <button class="btn small primary" id="copyIg">본문 + 해시태그 복사</button></h2>
+      <div class="out">${esc(ig.caption)}</div>
+      <h3>해시태그 ${ig.hashtags.length}개 <button class="btn small" id="copyTags">해시태그만 복사</button></h3>
+      <div class="tags">${esc(ig.hashtags.join(" "))}</div>
+      ${cardsHtml(post, ig)}
+      ${ig.image_ideas?.length ? `<h3>함께 올릴 사진 아이디어</h3><ul>${ig.image_ideas.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${ig.reel_script ? `<h3>릴스 대본 <button class="btn small" id="copyReel">복사</button></h3><div class="out">${esc(ig.reel_script)}</div>` : ""}
+    </div>`;
+  }
+  if (bl) {
+    h += `<div class="card ch-blog"><h2>📝 블로그</h2>
+      <label class="f" style="margin-top:0">제목 고르기</label>
+      <div id="titlePick">${bl.titles.map((t, i) => `<label style="display:block;margin:4px 0"><input type="radio" name="bt" value="${i}" ${i ? "" : "checked"}> ${esc(t)}</label>`).join("")}</div>
+      ${bl.keywords?.length ? `<p class="muted">검색 키워드: ${bl.keywords.map(esc).join(", ")}</p>` : ""}
+      <div class="row" style="justify-content:flex-start;margin:8px 0">
+        <button class="btn small primary" id="copyBlogRich" style="flex:0 0 auto">네이버 블로그용 복사 (소제목 살림)</button>
+        <button class="btn small" id="copyBlogPlain" style="flex:0 0 auto">글자만 복사</button>
+        <button class="btn small" id="copyBlogTags" style="flex:0 0 auto">태그 복사</button></div>
+      <div class="out sect" style="white-space:normal">${blogHtml(bl)}</div>
+      ${bl.tags?.length ? `<h3>태그</h3><div class="tags">${esc(bl.tags.map(t => "#" + t).join(" "))}</div>` : ""}
+      <p class="muted">[사진: …] 자리에 학원 사진을 넣고 올리세요. 초록 글씨는 지우면 됩니다.</p></div>`;
+  }
+  v.innerHTML = h;
+
+  $$("#quick button").forEach(b => b.onclick = () => revise(b.textContent));
+  $("#reviseBtn").onclick = () => revise($("#reviseText").value);
+  $("#reviseText").onkeydown = e => { if (e.key === "Enter" && !e.isComposing) revise($("#reviseText").value); };
+  $("#editBtn").onclick = () => { EDITING = true; renderPost(); };
+  $("#undoBtn").onclick = async () => { CURRENT = (await api(`api/posts/${post.id}/undo`, {method: "POST"})).post; renderPost(); toast("되돌렸습니다."); };
+  $("#regen").onclick = regenerate; $("#del").onclick = delPost;
+  if (ig) {
+    $("#copyIg").onclick = () => copyText(ig.caption + "\n\n" + ig.hashtags.join(" "));
+    $("#copyTags").onclick = () => copyText(ig.hashtags.join(" "));
+    if ($("#copyReel")) $("#copyReel").onclick = () => copyText(ig.reel_script);
+    if ($("#cardTheme")) $("#cardTheme").onchange = e => { THEME = e.target.value; renderPost(); };
+    $$(".cards img").forEach(img => img.onclick = e => {
+      e.preventDefault();
+      const z = document.createElement("div"); z.className = "zoom"; z.innerHTML = `<img src="${img.src}">`;
+      z.onclick = () => z.remove(); document.body.appendChild(z);
+    });
+  }
+  if (bl) {
+    const ti = () => +($("#titlePick input:checked")?.value || 0);
+    $("#copyBlogPlain").onclick = () => copyText(blogPlain(bl, ti()));
+    $("#copyBlogRich").onclick = () => copyText(blogPlain(bl, ti()), `<h2>${esc(bl.titles[ti()])}</h2>` + blogHtml(bl));
+    $("#copyBlogTags").onclick = () => copyText(bl.tags.join(", "));
+  }
+}
+
+function renderEditor() {
+  const d = CURRENT.data, ig = d.instagram, bl = d.blog;
+  let h = `<div class="card"><h2>✍️ 직접 고치기</h2>`;
+  if (ig) {
+    h += `<h3>📸 인스타그램 본문</h3><textarea id="eCaption" rows="10">${esc(ig.caption)}</textarea>
+      <label class="f">해시태그 (띄어쓰기로 구분)</label><textarea id="eTags" rows="3">${esc(ig.hashtags.join(" "))}</textarea>
+      <label class="f">카드뉴스 (제목 / 내용)</label>
+      <div id="eSlides">${ig.slides.map(s => `<div class="edit-slide"><input type="text" value="${esc(s.title)}"><textarea rows="2">${esc(s.body)}</textarea></div>`).join("")}</div>`;
+    if (ig.reel_script !== undefined) h += `<label class="f">릴스 대본</label><textarea id="eReel" rows="5">${esc(ig.reel_script)}</textarea>`;
+  }
+  if (bl) {
+    h += `<h3>📝 블로그</h3><label class="f">제목 후보 (한 줄에 하나)</label><textarea id="eTitles" rows="3">${esc(bl.titles.join("\n"))}</textarea>
+      <label class="f">들어가는 말</label><textarea id="eIntro" rows="4">${esc(bl.intro)}</textarea>
+      <div id="eSections">${bl.sections.map(s => `<div style="border:1px dashed var(--line);border-radius:8px;padding:8px;margin:8px 0">
+        <input type="text" data-k="heading" value="${esc(s.heading)}" placeholder="소제목">
+        <input type="text" data-k="photo" value="${esc(s.photo)}" placeholder="사진 설명 (없으면 비움)" style="margin-top:6px">
+        <textarea data-k="body" rows="6" style="margin-top:6px">${esc(s.body)}</textarea></div>`).join("")}</div>
+      <label class="f">맺는 말</label><textarea id="eOutro" rows="4">${esc(bl.outro)}</textarea>
+      <label class="f">태그 (쉼표로 구분)</label><input type="text" id="eBTags" value="${esc(bl.tags.join(", "))}">`;
+  }
+  h += `<div class="row" style="margin-top:14px;justify-content:flex-start">
+    <button class="btn primary" id="eSave" style="flex:0 0 auto">저장</button>
+    <button class="btn" id="eCancel" style="flex:0 0 auto">그만두기</button></div></div>`;
+  $("#postView").innerHTML = h;
+  $("#eCancel").onclick = () => { EDITING = false; renderPost(); };
+  $("#eSave").onclick = async () => {
+    const out = {};
+    if (ig) {
+      out.instagram = { ...ig, caption: $("#eCaption").value, hashtags: $("#eTags").value.split(/\s+/).filter(Boolean),
+        slides: $$("#eSlides .edit-slide").map(r => ({title: $("input", r).value, body: $("textarea", r).value}))
+                 .filter(s => s.title.trim() || s.body.trim()) };
+      if ($("#eReel")) out.instagram.reel_script = $("#eReel").value;
+    }
+    if (bl) {
+      out.blog = { ...bl, titles: $("#eTitles").value.split("\n").map(s => s.trim()).filter(Boolean),
+        intro: $("#eIntro").value, outro: $("#eOutro").value,
+        tags: $("#eBTags").value.split(",").map(s => s.trim().replace(/^#/, "")).filter(Boolean),
+        sections: $$("#eSections > div").map(r => ({heading: $("[data-k=heading]", r).value,
+          photo: $("[data-k=photo]", r).value, body: $("[data-k=body]", r).value})) };
+    }
+    try {
+      CURRENT = (await api(`api/posts/${CURRENT.id}`, {method: "PUT", body: {data: out}})).post;
+      EDITING = false; renderPost(); toast("저장했습니다.");
+    } catch (e) { toast(e.message, 4000); }
+  };
+}
+
+async function revise(text) {
+  if (!text.trim()) return toast("어떻게 고칠지 적어주세요.");
+  try { await api(`api/posts/${CURRENT.id}/revise`, {method: "POST", body: {instruction: text}}); openPost(CURRENT.id); }
+  catch (e) { toast(e.message, 4000); }
+}
+async function regenerate() {
+  if (CURRENT.data && !confirm("같은 주제로 처음부터 새로 쓸까요? (되돌리기로 지금 글을 다시 볼 수 있어요)")) return;
+  try { await api(`api/posts/${CURRENT.id}/regenerate`, {method: "POST"}); openPost(CURRENT.id); }
+  catch (e) { toast(e.message, 4000); }
+}
+async function delPost() {
+  if (!confirm("이 글을 지울까요?")) return;
+  await api(`api/posts/${CURRENT.id}`, {method: "DELETE"});
+  CURRENT = null; $("#postView").innerHTML = '<div class="card muted">왼쪽에서 글을 고르세요.</div>'; loadPosts();
+}
+
+init().catch(e => toast(e.message, 5000));
+</script>
+</body>
+</html>

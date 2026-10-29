@@ -14388,3 +14388,22 @@ if db is not None:
                                                 public_url=_qm_public))
     except Exception as e:
         print("문제 공장 연결 실패:", e)
+
+
+# ─────────────────────────────────────────────────────────
+# 📣 홍보글 공장 (sns_maker) — 이 서버의 /sns/ 주소에 붙인다
+#   학원 인스타그램 글 · 카드뉴스 그림 · 블로그 글을 만들어 준다.
+#   자료는 Firestore의 sns_ 컬렉션에 저장하고, 로그인은 문제 공장과 같다(관리자 계정).
+# ─────────────────────────────────────────────────────────
+if db is not None:
+    try:
+        from sns_maker.app import create_app as _create_sns_maker
+        from sns_maker.storage import FirestoreStore as _SNSFirestoreStore
+
+        @app.get("/sns", include_in_schema=False)
+        def sns_maker_redirect():
+            return RedirectResponse("/sns/")
+
+        app.mount("/sns", _create_sns_maker(store=_SNSFirestoreStore(db), check_login=_question_maker_login))
+    except Exception as e:
+        print("홍보글 공장 연결 실패:", e)
