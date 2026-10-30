@@ -104,8 +104,22 @@
       <label class="f">과목 <span class="muted">— 과목은 '학원 정보'에서 쉼표로 더할 수 있어요</span></label>
       <div class="chips" id="subjChips"></div>
 
-      <label class="f">글 종류</label>
+      <label class="f">글 종류 <span class="muted">— 여러 개 골라도 돼요(최대 3개). 고른 종류를 한 글에 섞어 씁니다.</span></label>
       <div class="chips" id="kindChips"></div>
+
+      <label class="f">학원 소개 내용</label>
+      <div class="chips" id="introChips">
+        <label class="on"><input type="radio" name="intro" value="homepage" checked>🏠 홈페이지 과목 소개 쓰기</label>
+        <label><input type="radio" name="intro" value="custom">✍️ 이번 글은 직접 쓰기</label>
+      </div>
+      <div id="introHome" style="margin-top:6px">
+        <span class="muted">logyedu.com 상담용 안내의 과목별 프로그램 내용을 바탕으로 씁니다. 홈페이지 내용을 고치면 여기에도 반영돼요.</span>
+        <button class="btn" type="button" id="introPreviewBtn" style="margin-left:6px;padding:4px 10px;font-size:13px">내용 보기</button>
+        <pre id="introPreview" class="hidden" style="white-space:pre-wrap;max-height:240px;overflow:auto;background:#f6f7f9;border-radius:8px;padding:10px;font-size:12.5px;margin-top:6px"></pre>
+      </div>
+      <div id="introCustom" class="hidden" style="margin-top:6px">
+        <textarea id="customIntro" rows="4" placeholder="예) 이번 겨울방학에 새로 여는 '고1 국어 기초 완성반' — 화목 7시, 정원 6명, 매주 서술형 첨삭. 홈페이지에 아직 없는 내용을 여기에 적으면 이 내용으로 소개합니다."></textarea>
+      </div>
 
       <label class="f">주제 <span class="muted">— 무엇에 대한 글인지 한 줄로</span></label>
       <input type="text" id="topic" placeholder="예) 중간고사 2주 전, 국어 내신 이렇게 준비하세요">
@@ -239,6 +253,14 @@ function setKind(kind) {
   $$("#kindChips input").forEach(i => i.checked = i.value === kind);
   $$("#kindChips label").forEach(l => l.classList.toggle("on", $("input", l).checked));
 }
+function kinds() { return $$("#kindChips input").filter(i => i.checked).map(i => i.value); }
+function introMode() { return $("#introChips input:checked")?.value || "homepage"; }
+function refreshIntro() {
+  const custom = introMode() === "custom";
+  $("#introHome").classList.toggle("hidden", custom);
+  $("#introCustom").classList.toggle("hidden", !custom);
+  if (custom) $("#customIntro").focus();
+}
 function channels() { return $$("#chChips input").filter(i => i.checked).map(i => i.value); }
 function setChannels(list) {
   $$("#chChips input").forEach(i => i.checked = list.includes(i.value));
@@ -258,13 +280,21 @@ async function init() {
   $("#noAi").classList.toggle("hidden", !!META.ai);
   $("#monthHint").textContent = `이번 달 학원가: ${META.month_hint}. 이 시기와 학원 정보에 맞춰 글감을 골라 드려요.`;
   $("#kindChips").innerHTML = Object.entries(META.kinds).map(([k, v], i) =>
-    `<label class="${i === 2 ? "on" : ""}"><input type="radio" name="kind" value="${k}" ${i === 2 ? "checked" : ""}>${esc(v.name)}</label>`).join("");
+    `<label class="${i === 0 ? "on" : ""}"><input type="checkbox" name="kind" value="${k}" ${i === 0 ? "checked" : ""}>${esc(v.name)}</label>`).join("");
   const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(v.name || v)}</option>`).join("");
   $("#audience").innerHTML = opts(META.audiences, "both");
   $("#tone").innerHTML = opts(META.tones, "friendly");
   $("#blogLen").innerHTML = opts(META.blog_lengths, "normal");
   $("#themeSel").innerHTML = opts(META.themes, "navy");
-  chipToggle($("#chChips"), true); chipToggle($("#kindChips"), false); chipToggle($("#subjChips"), false);
+  chipToggle($("#chChips"), true); chipToggle($("#kindChips"), true); chipToggle($("#subjChips"), false);
+  chipToggle($("#introChips"), false);
+  $("#introChips").addEventListener("chipchange", refreshIntro);
+  // 글 종류는 3개까지만
+  $("#kindChips").addEventListener("chipchange", () => {
+    const on = $$("#kindChips input").filter(i => i.checked);
+    if (on.length > 3) { toast("글 종류는 3개까지 고를 수 있어요."); on[on.length - 1].checked = false;
+      $$("#kindChips label").forEach(l => l.classList.toggle("on", $("input", l).checked)); }
+  });
   $("#chChips").addEventListener("chipchange", refreshChannelFields);
   refreshChannelFields();
   await loadProfile();
@@ -309,7 +339,8 @@ $("#saveProfile").onclick = async () => {
 // ── 만들기 ──
 $("#makeBtn").onclick = async () => {
   const req = {
-    channels: channels(), kind: $("#kindChips input:checked")?.value, topic: $("#topic").value,
+    channels: channels(), kinds: kinds(), topic: $("#topic").value,
+    intro_mode: introMode(), custom_intro: $("#customIntro").value,
     subject: $("#subjChips input:checked")?.value || "",
     details: $("#details").value, audience: $("#audience").value, tone: $("#tone").value,
     slide_count: +$("#slides").value || 6, blog_length: $("#blogLen").value, reel: $("#reel").checked,
@@ -320,6 +351,17 @@ $("#makeBtn").onclick = async () => {
     showTab("posts"); openPost(id);
   } catch (e) { toast(e.message, 4000); }
   finally { btn.disabled = false; }
+};
+
+// 홈페이지 과목 소개 미리보기
+$("#introPreviewBtn").onclick = async () => {
+  const box = $("#introPreview");
+  if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
+  box.textContent = "홈페이지에서 읽는 중…"; box.classList.remove("hidden");
+  try {
+    const r = await api("api/homepage?subject=" + encodeURIComponent($("#subjChips input:checked")?.value || ""));
+    box.textContent = r.text || (r.error || "고른 과목의 홈페이지 안내가 없습니다. '직접 쓰기'를 골라 주세요.");
+  } catch (e) { box.textContent = e.message; }
 };
 
 // ── 추천 ──

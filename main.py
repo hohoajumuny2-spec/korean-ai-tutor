@@ -3143,11 +3143,51 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
 
     explanations = parse_explanation_map(parsed.get("explanations"))
 
-    if not answers:
+    if not answers and not explanations:
         return {"success": False, "detail": "이미지에서 문항 번호와 정답을 찾지 못했습니다."}
 
-    return {"success": True, "answers": answers, "count": len(answers),
-            "max_no": max(int(k) for k in answers)}
+    # 💡 예전에는 읽은 해설을 돌려주지 않아, 해설 창에서 캡처를 붙여도 '해설을 찾지 못했다'고만 나왔다.
+    return {"success": True, "answers": answers, "explanations": explanations, "count": len(answers),
+            "max_no": max([int(k) for k in answers] + [int(k) for k in explanations if str(k).isdigit()] or [0])}
+
+
+@app.post("/api/admin/extract_explanations", dependencies=[Depends(verify_admin)])
+async def extract_explanations(files: List[UploadFile] = File(default=[]), text: str = Form(""),
+                               known_tags: str = Form("")):
+    """해설 창 전용: 해설지 사진 · 캡처 · PDF 또는 붙여넣은 해설지 글에서
+    문항별 자세한 해설 · 요약 해설 · 유형 · 정답을 한 번에 읽는다.
+
+    💡 해설을 한 칸씩 손으로 넣기가 너무 불편하다는 요청. 캡처 여러 장, PDF, 글 통째로 모두 받는다.
+       정답표가 없는 해설만 있는 캡처도 읽는다(예전 정답표 읽기는 정답이 없으면 실패했다)."""
+    parts = []
+    for f in files or []:
+        if not f or not f.filename:
+            continue
+        raw = await f.read()
+        if not raw:
+            continue
+        ctype = f.content_type or ("application/pdf" if f.filename.lower().endswith(".pdf") else "image/png")
+        if not (ctype.startswith("image/") or ctype == "application/pdf"):
+            continue
+        cdata, ctype = compress_image_for_ai(raw, ctype)
+        parts.append({"mime_type": ctype, "data": cdata})
+    body = (text or "").strip()
+    if len(body) > 60000:
+        body = body[:60000]
+    if not parts and not body:
+        return {"success": False, "detail": "해설지 사진 · PDF를 올리거나 해설 글을 붙여넣어 주세요."}
+
+    contents = [study_extras.explain_prompt(known_tags)] + parts + ([("[해설지 글]\n" + body)] if body else [])
+    try:
+        resp = await asyncio.to_thread(lambda: safe_generate(contents, prefer_quality=True))
+        out_text = (resp.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"해설지 읽기 실패: {friendly_ai_error(e)}"}
+
+    result = study_extras.parse_explain_reply(out_text)
+    if not result:
+        return {"success": False, "detail": "해설을 찾지 못했습니다. 문항 번호와 해설 글이 또렷하게 보이는 사진(또는 글)인지 확인해 주세요."}
+    return {"success": True, "items": result, "count": len(result)}
 
 
 @app.post("/api/exam/submit")
@@ -6605,6 +6645,61 @@ def _score_text(r: dict) -> str:
     if got is None:
         return str(r.get("score", "")).strip() or "-"
     return f"{fmt(got)}점 / {fmt(total)}점" if total else f"{fmt(got)}점"
+
+
+@app.get("/api/admin/overview", dependencies=[Depends(verify_admin)])
+async def admin_overview(month: str = ""):
+    """학생 한눈에 보기: 이 달 성적(모의고사 · 퀴즈 · 과제 · 단어시험) + 홈페이지 키오스크 출결.
+
+    출결은 홈페이지 서버(logyedu.com)의 /api/notify/attendance 를 NOTIFY_SECRET 으로 불러 온다.
+    그 서버에 못 닿아도 성적은 그대로 보여 주고, 이유를 attendance_error 로 알려 준다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import overview as ov
+    today = now_kst().date()
+    m = re.fullmatch(r"(\d{4})-(\d{2})", (month or "").strip())
+    y, mo = (int(m.group(1)), int(m.group(2))) if m and 1 <= int(m.group(2)) <= 12 else (today.year, today.month)
+    start = f"{y:04d}-{mo:02d}-01"
+    nxt = f"{y + (mo == 12):04d}-{(mo % 12) + 1:02d}-01"
+    last_day = (datetime(y + (mo == 12), (mo % 12) + 1, 1) - timedelta(days=1)).date()
+
+    def load():
+        studs = [{"name": d.id, **(d.to_dict() or {})} for d in db.collection("students").stream()]
+        reps = [r.to_dict() or {} for r in db.collection("reports")
+                .where("submitted_at", ">=", start).where("submitted_at", "<", nxt).stream()]
+        return studs, reps
+
+    def kiosk():
+        secret = os.environ.get("NOTIFY_SECRET", "").strip()
+        if not secret:
+            return None, "출결 연결 설정(NOTIFY_SECRET)이 학생 앱 서버에 없습니다."
+        base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
+        try:
+            r = requests.get(f"{base}/api/notify/attendance", params={"from": start, "to": last_day.isoformat()},
+                             headers={"X-Notify-Secret": secret}, timeout=40)
+        except Exception:
+            return None, "홈페이지 서버(logyedu.com)에 연결하지 못했습니다."
+        if r.status_code == 403:
+            return None, "두 서버의 NOTIFY_SECRET 값이 서로 다릅니다."
+        if r.status_code == 404:
+            return None, "홈페이지 서버가 아직 출결 연결을 지원하지 않습니다(배포 전)."
+        try:
+            data = r.json()
+        except ValueError:
+            return None, "홈페이지 서버의 대답을 읽지 못했습니다."
+        if not data.get("ok"):
+            return None, data.get("error") or "출결을 불러오지 못했습니다."
+        return data.get("students") or [], ""
+
+    try:
+        (studs, reps), (att, att_err) = await asyncio.gather(asyncio.to_thread(load), asyncio.to_thread(kiosk))
+    except Exception as e:
+        print("[한눈에 보기] 실패:", repr(e))
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+    built = ov.build(studs, reps, att)
+    return {"success": True, "month": f"{y:04d}-{mo:02d}", "today": today.isoformat(),
+            "rows": built["rows"], "kiosk_only": built["kiosk_only"],
+            "attendance_ok": att is not None, "attendance_error": att_err}
 
 
 @app.post("/api/admin/kakao/scores", dependencies=[Depends(verify_admin)])

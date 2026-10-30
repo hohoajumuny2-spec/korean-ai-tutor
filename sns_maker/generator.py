@@ -54,7 +54,13 @@ def normalize_request(req: dict) -> dict:
     topic = str(req.get("topic") or "").strip()
     if not topic:
         raise GenerationError("무엇에 대한 글인지 주제를 적어주세요.")
-    kind = req.get("kind") if req.get("kind") in catalog.KINDS else "tip"
+    # 글 종류는 여러 개(최대 3개)를 섞을 수 있다. 예전 요청(kind 하나)도 그대로 받는다.
+    raw_kinds = req.get("kinds") if isinstance(req.get("kinds"), list) else [req.get("kind")]
+    kinds = list(dict.fromkeys(k for k in raw_kinds if k in catalog.KINDS))[:3] or ["tip"]
+    intro_mode = "custom" if req.get("intro_mode") == "custom" else "homepage"
+    custom_intro = str(req.get("custom_intro") or "").strip()[:3000]
+    if intro_mode == "custom" and not custom_intro:
+        raise GenerationError("직접 쓸 학원 소개 내용을 적어주세요. (아니면 '홈페이지 과목 소개'를 고르세요)")
     tone = req.get("tone") if req.get("tone") in catalog.TONES else "friendly"
     audience = req.get("audience") if req.get("audience") in catalog.AUDIENCES else "both"
     length = req.get("blog_length") if req.get("blog_length") in catalog.BLOG_LENGTHS else "normal"
@@ -63,7 +69,8 @@ def normalize_request(req: dict) -> dict:
     except (TypeError, ValueError):
         slides = 6
     return {
-        "channels": channels, "kind": kind, "topic": topic[:300],
+        "channels": channels, "kind": kinds[0], "kinds": kinds, "topic": topic[:300],
+        "intro_mode": intro_mode, "custom_intro": custom_intro if intro_mode == "custom" else "",
         "details": str(req.get("details") or "").strip()[:4000],
         "tone": tone, "audience": audience, "blog_length": length,
         "slide_count": max(1, min(catalog.MAX_SLIDES, slides)),
@@ -110,14 +117,45 @@ def subject_line(subject: str) -> str:
             f"해시태그 · 블로그 제목 · 검색어에도 '{subject}'를 넣으세요.")
 
 
-def build_generate_prompt(req: dict, profile: dict, today: str) -> str:
-    kind_name, kind_rule, _ = catalog.KINDS[req["kind"]]
+def kinds_of(req: dict) -> list:
+    return [k for k in (req.get("kinds") or [req.get("kind")]) if k in catalog.KINDS] or ["tip"]
+
+
+def is_promo(req: dict) -> bool:
+    """모집 · 홍보 글이 하나라도 섞이면 홍보 글로 본다(등록번호 · 교습비 표시)."""
+    return any(catalog.KINDS[k][2] for k in kinds_of(req))
+
+
+def kind_line(req: dict) -> str:
+    ks = kinds_of(req)
+    if len(ks) == 1:
+        name, rule, _ = catalog.KINDS[ks[0]]
+        return f"{name} — {rule}"
+    names = " + ".join(catalog.KINDS[k][0] for k in ks)
+    rules = "\n".join(f"  · {catalog.KINDS[k][0]}: {catalog.KINDS[k][1]}" for k in ks)
+    return (f"{names} (여러 종류를 한 글에 자연스럽게 섞으세요. 따로 노는 글 여러 편이 아니라 한 흐름으로)\n{rules}")
+
+
+def intro_block(req: dict, homepage_notes: str = "") -> str:
+    """학원 소개 재료: 원장님이 이번에 직접 쓴 소개가 있으면 그것만, 아니면 홈페이지 과목 안내."""
+    if req.get("intro_mode") == "custom" and req.get("custom_intro"):
+        return ("\n[이번 글에 쓸 학원 소개 — 원장님이 직접 쓴 내용입니다. 학원 · 수업 소개는 이 내용을 바탕으로 쓰고,"
+                " 홈페이지 내용이나 다른 소개를 지어 붙이지 마세요]\n" + req["custom_intro"])
+    if homepage_notes:
+        return ("\n[홈페이지(logyedu.com) 과목별 안내 — 학원 · 수업 소개는 이 내용을 사실로 삼아 쓰세요."
+                " 여기 없는 프로그램 · 숫자는 지어내지 마세요. 글 주제와 관계있는 부분만 골라 쓰고 통째로 옮기지 마세요]\n"
+                + homepage_notes)
+    return ""
+
+
+def build_generate_prompt(req: dict, profile: dict, today: str, homepage_notes: str = "") -> str:
     tone_name, tone_rule = catalog.TONES[req["tone"]]
     parts = [
         "당신은 한국 입시 학원의 SNS 홍보를 10년 넘게 맡아 온 마케터이자 카피라이터입니다.",
         f"오늘은 {today}입니다.",
         f"\n[학원 정보]\n{_profile_block(profile, req['subject'])}",
-        f"\n[이번 글]\n- 글 종류: {kind_name} — {kind_rule}\n- 주제: {req['topic']}"
+        intro_block(req, homepage_notes),
+        f"\n[이번 글]\n- 글 종류: {kind_line(req)}\n- 주제: {req['topic']}"
         f"\n- 과목: {subject_line(req['subject'])}"
         f"\n- 읽을 사람: {catalog.AUDIENCES[req['audience']]}\n- 말투: {tone_name} — {tone_rule}",
     ]
@@ -322,7 +360,7 @@ def check_post(data: dict, req: dict, profile: dict) -> list:
     blanks = sorted(set(re.findall(r"\[[^\[\]\n]{1,15}\]", text)))
     if blanks:
         notes.append("채워 넣을 빈칸이 있어요: " + " ".join(blanks))
-    if catalog.KINDS[req["kind"]][2] and not (profile.get("reg_no") and profile.get("fee_note")):
+    if is_promo(req) and not (profile.get("reg_no") and profile.get("fee_note")):
         notes.append("모집 · 홍보 글에는 학원 등록번호와 교습비를 함께 적어야 할 수 있어요. "
                      "'학원 정보'에 넣어 두면 글 끝에 자동으로 붙여요.")
     if "instagram" in data and len(data["instagram"]["caption"]) > 2200:
@@ -359,7 +397,7 @@ def finish(raw: dict, req: dict, profile: dict) -> dict:
 
 
 def apply_footer(data: dict, req: dict, profile: dict):
-    footer = ad_footer(profile) if catalog.KINDS[req["kind"]][2] else ""
+    footer = ad_footer(profile) if is_promo(req) else ""
     if not footer:
         return
     ig = data.get("instagram")
@@ -373,12 +411,12 @@ def apply_footer(data: dict, req: dict, profile: dict):
 # ─────────────────────────────────────────────────────────
 # 하는 일
 # ─────────────────────────────────────────────────────────
-def generate_post(ai, req: dict, profile: dict, today: str) -> dict:
+def generate_post(ai, req: dict, profile: dict, today: str, homepage_notes: str = "") -> dict:
     if ai is None:
         raise GenerationError("AI 키(GOOGLE_API_KEY)가 없습니다. 키를 넣고 다시 켜 주세요.")
     req = normalize_request(req)
     profile = merge_profile(profile)
-    prompt = build_generate_prompt(req, profile, today)
+    prompt = build_generate_prompt(req, profile, today, homepage_notes)
     task = dict(req, mode="generate", profile=profile)
     last = None
     for _ in range(2):   # 모양이 깨져 오면 한 번 더 부탁한다

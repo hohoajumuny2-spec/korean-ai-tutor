@@ -14,6 +14,7 @@ DB 없이 돌아가는 계산만 둔다(따로 시험할 수 있게). DB 읽기 
 """
 import hashlib
 import re
+import json
 from datetime import date, datetime, timedelta
 from typing import Dict, Iterable, List, Optional
 
@@ -320,4 +321,79 @@ def parse_tag_reply(text: str, allowed: List[str], nos: Iterable) -> Dict[str, s
         t = by_key.get(_squash(v))
         if t:
             out[no] = t
+    return out
+
+
+# ─────────────────────────────────────────────────────────
+# 해설지 읽기 — 해설 창의 [해설지 사진 · 캡처 · 글로 채우기]
+# ─────────────────────────────────────────────────────────
+EXPLAIN_PROMPT = """첨부된 자료(사진 · 캡처 · PDF · 글)는 시험의 해설지입니다. 문항마다 해설을 읽어 정리하세요.
+
+[반드시 지킬 것]
+- 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
+- 형식: {"items": {"1": {"answer": 3, "detail": "...", "summary": "...", "tag": "..."}, "2": {...}}}
+- 키는 문항 번호(문자열). 자료에 없는 문항은 넣지 마세요. 추측해서 채우지 마세요.
+- detail: 자료에 적힌 해설을 빠짐없이 그대로 옮겨 적으세요(줄바꿈 유지, 1200자 이내). ①②③④⑤ 같은 원문자와 <보기> 표기는 그대로 둡니다.
+  선지별 풀이(①이 틀린 이유 등)가 있으면 줄을 바꿔 모두 적으세요. 해설이 없으면 빈 글자.
+- summary: 학생이 가장 먼저 볼 한두 줄 요약(80자 이내). 정답의 근거를 한 문장으로. 자료에 해설이 없으면 빈 글자.
+- answer: 자료에 정답이 보이면 1~5 정수, 안 보이면 넣지 마세요.
+- tag: 그 문항이 묻는 유형을 짧게(예: 추론, 내용 일치, 표현상 특징, 어휘, 문법 - 음운 변동). {tags}
+- 페이지가 여러 장이면 모두 합쳐 하나의 JSON으로 만드세요. 페이지 경계에서 이어지는 해설은 한 문항으로 합치세요."""
+
+
+def explain_prompt(known_tags="") -> str:
+    """해설지 읽기 지시문. 이미 쓰는 유형 이름이 있으면 그중에서 고르게 한다."""
+    if isinstance(known_tags, (list, tuple)):
+        raw = list(known_tags)
+    else:
+        raw = re.split(r"[,\n]", str(known_tags or ""))
+    tags = []
+    for t in raw:
+        t = str(t).strip()
+        if t and t not in tags:
+            tags.append(t)
+    hint = ("이미 쓰는 유형 이름이 있으면 그중에서 고르세요: " + ", ".join(tags[:60])) if tags else "모르면 빈 글자."
+    return EXPLAIN_PROMPT.replace("{tags}", hint)
+
+
+def _clip(v, n):
+    t = str(v or "").strip()
+    return t if len(t) <= n else t[:n].rstrip() + "…"
+
+
+def parse_explain_reply(text) -> dict:
+    """AI 답(JSON) → {"1": {"detail", "summary", "tag", "answer"?}}. 코드블록 · 군말 · 끝 쉼표가 섞여도 읽는다."""
+    raw = str(text or "")
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return {}
+    blob = m.group(0)
+    try:
+        parsed = json.loads(blob)
+    except ValueError:
+        try:
+            parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", blob))
+        except ValueError:
+            return {}
+    items = parsed.get("items", parsed) if isinstance(parsed, dict) else None
+    if isinstance(items, list):
+        items = {str(it.get("no", i + 1)): it for i, it in enumerate(items) if isinstance(it, dict)}
+    if not isinstance(items, dict):
+        return {}
+    out = {}
+    for k, v in items.items():
+        num = re.search(r"\d+", str(k))
+        if not num or not isinstance(v, dict):
+            continue
+        no = str(int(num.group(0)))
+        if no == "0":
+            continue
+        row = {"detail": _clip(v.get("detail") or v.get("explanation"), 2000),
+               "summary": _clip(v.get("summary"), 200), "tag": _clip(v.get("tag"), 30)}
+        ans = str(v.get("answer", "")).strip()
+        ans = {"①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5"}.get(ans, ans)
+        if ans.isdigit() and 1 <= int(ans) <= 5:
+            row["answer"] = int(ans)
+        if row["detail"] or row["summary"] or row["tag"]:
+            out[no] = row
     return out
