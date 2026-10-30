@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-from . import catalog
+from . import catalog, homepage
 from question_maker.login import install_login
 
 from .ai import make_ai
@@ -54,7 +54,8 @@ def _title(req: dict) -> str:
 
 def create_app(db_path: Optional[str] = None, ai="auto", store=None,
                check_login: Optional[Callable[[str, str], bool]] = None,
-               check_token: Optional[Callable[[str], bool]] = None) -> FastAPI:
+               check_token: Optional[Callable[[str], bool]] = None,
+               guide_fetch: Optional[Callable[[str], str]] = None) -> FastAPI:
     """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
     관리자 계정으로 들어오게 하는 함수. 없으면 SNS_PASSWORD 환경 변수로 막는다."""
     if store is None:
@@ -87,7 +88,11 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
     def run_generate(pid: int, req: dict, prev=None):
         with jobs_sem:
             try:
-                data = generate_post(app.state.ai, req, profile(), today())
+                notes = ""
+                if req.get("intro_mode") != "custom":
+                    subs, _ = homepage.load(guide_fetch)
+                    notes = homepage.notes_for(subs, str(req.get("subject") or "").strip())
+                data = generate_post(app.state.ai, req, profile(), today(), notes)
                 store.update_post(pid, status="done", data=data, prev=prev, error=None, progress="")
             except GenerationError as e:
                 store.update_post(pid, status="error" if prev is None else "done", error=str(e), progress="")
@@ -128,6 +133,13 @@ def create_app(db_path: Optional[str] = None, ai="auto", store=None,
             "month_hint": catalog.MONTH_HINTS[datetime.now(KST).month],
             "ai": app.state.ai.name if app.state.ai else None,
         }
+
+    @app.get("/api/homepage")
+    def homepage_preview(subject: str = ""):
+        """새 글 화면의 '홈페이지 과목 소개' 미리보기."""
+        subs, err = homepage.load(guide_fetch)
+        return {"text": homepage.notes_for(subs, subject.strip()), "error": err,
+                "subjects": [str(x.get("name")) for x in subs]}
 
     # ── 학원 정보 ─────────────────────────────────────
     @app.get("/api/profile")
