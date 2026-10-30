@@ -3143,11 +3143,51 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
 
     explanations = parse_explanation_map(parsed.get("explanations"))
 
-    if not answers:
+    if not answers and not explanations:
         return {"success": False, "detail": "이미지에서 문항 번호와 정답을 찾지 못했습니다."}
 
-    return {"success": True, "answers": answers, "count": len(answers),
-            "max_no": max(int(k) for k in answers)}
+    # 💡 예전에는 읽은 해설을 돌려주지 않아, 해설 창에서 캡처를 붙여도 '해설을 찾지 못했다'고만 나왔다.
+    return {"success": True, "answers": answers, "explanations": explanations, "count": len(answers),
+            "max_no": max([int(k) for k in answers] + [int(k) for k in explanations if str(k).isdigit()] or [0])}
+
+
+@app.post("/api/admin/extract_explanations", dependencies=[Depends(verify_admin)])
+async def extract_explanations(files: List[UploadFile] = File(default=[]), text: str = Form(""),
+                               known_tags: str = Form("")):
+    """해설 창 전용: 해설지 사진 · 캡처 · PDF 또는 붙여넣은 해설지 글에서
+    문항별 자세한 해설 · 요약 해설 · 유형 · 정답을 한 번에 읽는다.
+
+    💡 해설을 한 칸씩 손으로 넣기가 너무 불편하다는 요청. 캡처 여러 장, PDF, 글 통째로 모두 받는다.
+       정답표가 없는 해설만 있는 캡처도 읽는다(예전 정답표 읽기는 정답이 없으면 실패했다)."""
+    parts = []
+    for f in files or []:
+        if not f or not f.filename:
+            continue
+        raw = await f.read()
+        if not raw:
+            continue
+        ctype = f.content_type or ("application/pdf" if f.filename.lower().endswith(".pdf") else "image/png")
+        if not (ctype.startswith("image/") or ctype == "application/pdf"):
+            continue
+        cdata, ctype = compress_image_for_ai(raw, ctype)
+        parts.append({"mime_type": ctype, "data": cdata})
+    body = (text or "").strip()
+    if len(body) > 60000:
+        body = body[:60000]
+    if not parts and not body:
+        return {"success": False, "detail": "해설지 사진 · PDF를 올리거나 해설 글을 붙여넣어 주세요."}
+
+    contents = [study_extras.explain_prompt(known_tags)] + parts + ([("[해설지 글]\n" + body)] if body else [])
+    try:
+        resp = await asyncio.to_thread(lambda: safe_generate(contents, prefer_quality=True))
+        out_text = (resp.text or "").strip()
+    except Exception as e:
+        return {"success": False, "detail": f"해설지 읽기 실패: {friendly_ai_error(e)}"}
+
+    result = study_extras.parse_explain_reply(out_text)
+    if not result:
+        return {"success": False, "detail": "해설을 찾지 못했습니다. 문항 번호와 해설 글이 또렷하게 보이는 사진(또는 글)인지 확인해 주세요."}
+    return {"success": True, "items": result, "count": len(result)}
 
 
 @app.post("/api/exam/submit")
