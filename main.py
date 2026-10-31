@@ -6702,6 +6702,37 @@ async def admin_overview(month: str = ""):
             "attendance_ok": att is not None, "attendance_error": att_err}
 
 
+@app.get("/api/notify/student_homework")
+def notify_student_homework(name: str = "", x_notify_secret: Optional[str] = Header(None)):
+    """홈페이지(logyedu.com) 학부모 전용 화면이 묻는다: 한 학생의 최근 과제와 냈는지.
+
+    두 서버가 같이 아는 NOTIFY_SECRET 이 맞아야 답한다. 과제 이름 · 마감 · 제출 여부만 넘긴다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or not x_notify_secret or not secrets.compare_digest(secret, x_notify_secret.strip()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import homework_status as hs
+    who = (name or "").strip()
+    if not who:
+        return {"success": False, "detail": "이름이 없습니다."}
+    try:
+        doc = db.collection("students").document(who).get()
+        if not doc.exists:
+            return {"success": True, "homeworks": [], "known": False}
+        info = targeting_info_from(doc.to_dict() or {})
+        homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+        mine = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", who)
+                .where("type", "==", "과제 제출").stream()]
+        rows = hs.for_student(now_kst().date(), homeworks, mine,
+                              lambda hw: task_visible_to_student("", task_target_classes(hw), who, info=info),
+                              deadline_passed)
+        return {"success": True, "homeworks": rows, "known": True}
+    except Exception as e:
+        print("[학부모 화면 과제] 실패:", repr(e))
+        return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
+
+
 @app.get("/api/notify/student_scores")
 def notify_student_scores(name: str = "", x_notify_secret: Optional[str] = Header(None)):
     """홈페이지(logyedu.com) 학부모 전용 화면이 묻는다: 한 학생의 최근 성적.

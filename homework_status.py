@@ -102,3 +102,47 @@ def build(class_day: date,
             "students": {n: student_status(latest.get(n), passed, bool(deadline)) for n in names},
         })
     return out
+
+
+# ─────────────────────────────────────────────────────────
+# 학부모 전용 화면(logyedu.com/p/코드): 한 학생의 최근 과제와 제출 여부
+# ─────────────────────────────────────────────────────────
+STUDENT_DAYS = 45      # 이만큼 앞까지 마감(마감이 없으면 만든 날)인 과제
+STUDENT_MAX = 12
+
+
+def for_student(today: date,
+                homeworks: Iterable[dict],
+                my_reports: Iterable[dict],
+                visible: Callable[[dict], bool],
+                deadline_passed: Callable[[str], bool]) -> List[dict]:
+    """한 학생에게 나간 최근 과제 → [{title, deadline, status, submitted_at, percent?}] 최근 것부터.
+
+    my_reports: 그 학생의 '과제 제출' 기록(과제 이름 = task_name)."""
+    mine: Dict[str, dict] = {}
+    for r in my_reports or []:
+        t = str((r or {}).get("task_name") or "").strip()
+        if not t:
+            continue
+        when = str(r.get("updated_at") or r.get("submitted_at") or "")
+        prev = mine.get(t)
+        if prev is None or when >= str(prev.get("updated_at") or prev.get("submitted_at") or ""):
+            mine[t] = r
+    rows = []
+    for hw in homeworks or []:
+        title = str((hw or {}).get("title") or "").strip()
+        if not title or hw.get("hidden") or not visible(hw):
+            continue
+        due = parse_day(hw.get("deadline"))
+        made = parse_day(hw.get("created_at"))
+        anchor = due or made
+        if anchor is None or anchor < today - timedelta(days=STUDENT_DAYS) or anchor > today + timedelta(days=30):
+            continue
+        deadline = str(hw.get("deadline") or "").strip()
+        row = student_status(mine.get(title), bool(deadline) and deadline_passed(deadline), bool(deadline))
+        row.update({"title": title, "deadline": deadline.replace("T", " ")[:16], "_anchor": anchor.isoformat()})
+        rows.append(row)
+    rows.sort(key=lambda r: r["_anchor"], reverse=True)
+    for r in rows:
+        r.pop("_anchor", None)
+    return rows[:STUDENT_MAX]
