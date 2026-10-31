@@ -63,5 +63,32 @@ class HomeworkStatusTests(unittest.TestCase):
         self.assertFalse(hs.latest_by_student(rows)["김유경"].get("late"))
 
 
+class ForStudentTests(unittest.TestCase):
+    def test_statuses_and_visibility(self):
+        today = date(2026, 10, 31)
+        hws = [
+            {"title": "문법 과제", "deadline": "2026-10-28T22:00", "created_at": "2026-10-25"},
+            {"title": "독서 과제", "deadline": "2026-10-29", "created_at": "2026-10-26"},
+            {"title": "어휘 과제", "deadline": "2026-10-20", "created_at": "2026-10-15"},
+            {"title": "다음 주 과제", "deadline": "2026-11-04", "created_at": "2026-10-30"},
+            {"title": "다른 반 과제", "deadline": "2026-10-30", "created_at": "2026-10-28", "target_class": "고3"},
+            {"title": "숨긴 과제", "deadline": "2026-10-30", "hidden": True},
+            {"title": "옛날 과제", "deadline": "2026-08-01"},
+        ]
+        reports = [
+            {"task_name": "문법 과제", "submitted_at": "2026-10-27 20:00:00", "percent": 90},
+            {"task_name": "독서 과제", "submitted_at": "2026-10-30 09:00:00", "late": True},
+        ]
+        rows = hs.for_student(today, hws, reports, lambda hw: hw.get("target_class") != "고3",
+                              lambda d: d[:10] < "2026-10-31")
+        by = {r["title"]: r for r in rows}
+        self.assertEqual([r["title"] for r in rows], ["다음 주 과제", "독서 과제", "문법 과제", "어휘 과제"])
+        self.assertEqual(by["문법 과제"]["status"], "submitted"); self.assertEqual(by["문법 과제"]["percent"], 90)
+        self.assertEqual(by["문법 과제"]["deadline"], "2026-10-28 22:00")
+        self.assertEqual(by["독서 과제"]["status"], "late")
+        self.assertEqual(by["어휘 과제"]["status"], "missing")
+        self.assertEqual(by["다음 주 과제"]["status"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()
