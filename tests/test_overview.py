@@ -38,5 +38,20 @@ class OverviewTests(unittest.TestCase):
         self.assertIsNone(out["rows"][0]["avg"])
 
 
+class RecentScoresTests(unittest.TestCase):
+    def test_latest_per_test_and_avg(self):
+        rows = [
+            {"type": "모의고사", "task_name": "10월", "score": 60, "total_score": 100, "submitted_at": "2026-10-19 10:00:00"},
+            {"type": "모의고사", "task_name": "10월", "score": 90, "total_score": 100, "submitted_at": "2026-10-20 10:00:00"},
+            {"type": "과제 제출", "task_name": "문법", "score": 7, "total_score": 10, "submitted_at": "2026-10-25 10:00:00"},
+            {"type": "로그인", "task_name": "", "score": "", "submitted_at": "2026-10-26 10:00:00"},
+        ]
+        out = o.recent_scores(rows, 10)
+        self.assertEqual([x["title"] for x in out["scores"]], ["문법", "10월"])
+        self.assertEqual(out["scores"][1]["score"], "90/100")
+        self.assertEqual(out["avg"], 80.0)
+        self.assertEqual(o.recent_scores([], 5), {"scores": [], "avg": None})
+
+
 if __name__ == "__main__":
     unittest.main()

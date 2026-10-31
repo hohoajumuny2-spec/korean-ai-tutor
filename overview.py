@@ -87,3 +87,22 @@ def build(students: Iterable[dict], reports: Iterable[dict], attendance: Optiona
     rows.sort(key=lambda r: (r["class_name"] or "힣", r["name"]))
     kiosk_only = sorted(a.get("name", "") for k, a in att.items() if k not in matched)
     return {"rows": rows, "kiosk_only": kiosk_only}
+
+
+def recent_scores(reports: Iterable[dict], limit: int = 10) -> Dict:
+    """한 학생의 기록 → 최근 성적 몇 개와 평균(같은 시험을 다시 냈으면 마지막 것만)."""
+    latest = {}
+    for r in reports or []:
+        if r.get("type") not in SCORED_TYPES:
+            continue
+        key = (r.get("type"), str(r.get("task_name", "")))
+        if key not in latest or str(r.get("submitted_at", "")) > str(latest[key].get("submitted_at", "")):
+            latest[key] = r
+    reps = sorted(latest.values(), key=lambda r: str(r.get("submitted_at", "")), reverse=True)[:limit]
+    pcts = [p for p in (score_pct(r) for r in reps) if p is not None]
+    return {
+        "scores": [{"title": str(r.get("task_name", "")), "type": r.get("type", ""), "score": score_text(r),
+                    "pct": None if score_pct(r) is None else round(score_pct(r)),
+                    "date": str(r.get("submitted_at", ""))[:10]} for r in reps],
+        "avg": round(sum(pcts) / len(pcts), 1) if pcts else None,
+    }

@@ -6702,6 +6702,28 @@ async def admin_overview(month: str = ""):
             "attendance_ok": att is not None, "attendance_error": att_err}
 
 
+@app.get("/api/notify/student_scores")
+def notify_student_scores(name: str = "", x_notify_secret: Optional[str] = Header(None)):
+    """홈페이지(logyedu.com) 학부모 전용 화면이 묻는다: 한 학생의 최근 성적.
+
+    두 서버가 같이 아는 NOTIFY_SECRET 이 맞아야 답한다. 시험 이름 · 점수만 넘긴다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or not x_notify_secret or not secrets.compare_digest(secret, x_notify_secret.strip()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import overview as ov
+    who = (name or "").strip()
+    if not who:
+        return {"success": False, "detail": "이름이 없습니다."}
+    try:
+        rows = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", who).limit(1500).stream()]
+    except Exception as e:
+        print("[학부모 화면 성적] 실패:", repr(e))
+        return {"success": False, "detail": "기록을 불러오지 못했습니다."}
+    return {"success": True, **ov.recent_scores(rows, 10)}
+
+
 @app.post("/api/admin/kakao/scores", dependencies=[Depends(verify_admin)])
 async def kakao_scores(req: KakaoTaskReq):
     """시험 · 퀴즈 · 과제를 낸 학생마다 자기 점수를 카톡으로."""
