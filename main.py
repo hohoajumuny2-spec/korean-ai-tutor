@@ -2334,6 +2334,267 @@ def delete_clinic(req: ClinicReq):
     return {"success": True}
 
 
+# ─────────────────────────────────────────────────────────
+# 반별 과제 제출표 — 반을 고르면 학생(줄) × 최근 과제(열)로 냈는지 한눈에
+# ─────────────────────────────────────────────────────────
+def class_roster(class_name: str) -> list:
+    """그 반 학생 이름(퇴원생 제외), 가나다순."""
+    if db is None or not class_name:
+        return []
+    out = []
+    for d in db.collection("students").stream():
+        info = targeting_info_from(d.to_dict() or {})
+        if not info.get("withdrawn") and class_name in info["all_classes"]:
+            out.append(d.id)
+    return sorted(out)
+
+
+@app.get("/api/admin/homework_grid", dependencies=[Depends(verify_admin)])
+def homework_grid(class_name: str = "", limit: int = 10):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import homework_status as hs
+    cls = urllib.parse.unquote(class_name or "").strip()
+    if not cls:
+        return {"success": False, "detail": "반을 골라 주세요."}
+    names = class_roster(cls)
+    homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+
+    class Reports(dict):
+        # 표에 들어가는 과제만 그때그때 읽는다
+        def get(self, title, default=None):
+            if title not in self:
+                rows = (db.collection("reports").where("task_name", "==", title)
+                        .where("type", "==", "과제 제출").stream())
+                self[title] = [r.to_dict() or {} for r in rows]
+            return dict.get(self, title, default)
+
+    def for_class(hw):
+        targets = task_target_classes(hw)
+        return not targets or cls in targets
+
+    try:
+        grid = hs.class_grid(now_kst().date(), homeworks, names, Reports(), for_class,
+                             deadline_passed, max(1, min(int(limit or 10), 20)))
+    except Exception as e:
+        print("[반별 과제표] 실패:", repr(e))
+        return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
+    return {"success": True, "class_name": cls, **grid}
+
+
+# ─────────────────────────────────────────────────────────
+# 클리닉 시간 신청 — 원장님이 매주 시간들을 열면, 학생은 가능한 시간을 모두 고르고,
+# 원장님이 학생마다 하나를 확정한다(확정하면 '매주 고정 클리닉'으로 들어간다).
+# ─────────────────────────────────────────────────────────
+class ClinicPollReq(BaseModel):
+    id: str = ""
+    title: str = "클리닉 시간 신청"
+    note: str = ""
+    slots: list = []              # [{weekday: 0~6, time: "17:00"}]
+    target_classes: list = []     # 비우면 전체 학생
+    deadline: str = ""            # "2026-11-03T22:00" (비우면 마감 없음)
+    subject: str = ""
+    open: bool = True
+    push: bool = True
+
+
+class ClinicPollAnswerReq(BaseModel):
+    poll_id: str
+    student_name: str
+    slot_ids: list = []
+    memo: str = ""
+
+
+class ClinicPollConfirmReq(BaseModel):
+    poll_id: str
+    student_name: str
+    slot_id: str = ""             # 비우면 확정 취소
+
+
+def _poll_answer_id(poll_id: str, name: str) -> str:
+    return sanitize_doc_id(f"{poll_id}__{name}")
+
+
+def _poll_audience(poll: dict) -> list:
+    if db is None:
+        return []
+    targets = normalize_target_classes(poll.get("target_classes"))
+    return sorted(d.id for d in db.collection("students").stream()
+                  if task_visible_to_student("", targets, d.id, info=targeting_info_from(d.to_dict() or {})))
+
+
+def _poll_is_open(poll: dict) -> bool:
+    if not poll.get("open"):
+        return False
+    dl = str(poll.get("deadline") or "").strip()
+    return not (dl and deadline_passed(dl))
+
+
+@app.post("/api/admin/clinic_poll", dependencies=[Depends(verify_admin)])
+def save_clinic_poll(req: ClinicPollReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import clinic_poll as cp
+    slots = cp.normalize_slots(req.slots)
+    if not slots:
+        return {"success": False, "detail": "요일과 시간(예: 17:00)을 하나 이상 넣어 주세요."}
+    row = {"title": (req.title or "클리닉 시간 신청").strip()[:60], "note": req.note.strip()[:500],
+           "slots": slots, "target_classes": normalize_target_classes(req.target_classes),
+           "deadline": req.deadline.strip(), "subject": req.subject.strip(), "open": bool(req.open)}
+    if req.id:
+        ref = db.collection("clinic_polls").document(req.id)
+        if not ref.get().exists:
+            return {"success": False, "detail": "신청을 찾지 못했습니다."}
+        ref.set(row, merge=True)
+        return {"success": True, "id": req.id}
+    row["created_at"] = now_kst().strftime("%Y-%m-%d %H:%M")
+    ref = db.collection("clinic_polls").document()
+    ref.set(row)
+    pushed = 0
+    if req.push and row["open"]:
+        try:
+            pushed = send_push_to_audience("", row["target_classes"], "🗓️ 클리닉 시간을 골라 주세요",
+                                           f"{row['title']} — 가능한 시간을 모두 체크해 주세요.", "/", "clinic-poll")
+        except Exception as e:
+            print("[클리닉 신청 알림] 실패:", repr(e))
+    return {"success": True, "id": ref.id, "pushed": pushed}
+
+
+@app.get("/api/admin/clinic_polls", dependencies=[Depends(verify_admin)])
+def list_clinic_polls():
+    if db is None:
+        return {"success": False, "rows": []}
+    rows = []
+    for d in db.collection("clinic_polls").stream():
+        r = d.to_dict() or {}
+        answered = sum(1 for _ in db.collection("clinic_poll_answers").where("poll_id", "==", d.id).stream())
+        rows.append({"id": d.id, "title": r.get("title", ""), "deadline": r.get("deadline", ""),
+                     "open": _poll_is_open(r), "closed_by_admin": not r.get("open"),
+                     "target_classes": r.get("target_classes", []), "slot_count": len(r.get("slots") or []),
+                     "created_at": r.get("created_at", ""), "answered": answered})
+    rows.sort(key=lambda x: str(x["created_at"]), reverse=True)
+    return {"success": True, "rows": rows}
+
+
+@app.get("/api/admin/clinic_poll", dependencies=[Depends(verify_admin)])
+def get_clinic_poll(id: str = ""):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import clinic_poll as cp
+    doc = db.collection("clinic_polls").document(id).get() if id else None
+    if not doc or not doc.exists:
+        return {"success": False, "detail": "신청을 찾지 못했습니다."}
+    poll = doc.to_dict() or {}
+    answers = [a.to_dict() or {} for a in db.collection("clinic_poll_answers").where("poll_id", "==", id).stream()]
+    return {"success": True, "poll": {"id": id, **poll, "is_open": _poll_is_open(poll)},
+            **cp.summary(poll.get("slots") or [], answers, _poll_audience(poll))}
+
+
+@app.post("/api/admin/clinic_poll/confirm", dependencies=[Depends(verify_admin)])
+def confirm_clinic_poll(req: ClinicPollConfirmReq):
+    """학생 한 명의 클리닉 시간을 확정한다 → 매주 고정 클리닉으로 넣는다(전에 확정한 것은 바꾼다)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    doc = db.collection("clinic_polls").document(req.poll_id).get()
+    if not doc.exists:
+        return {"success": False, "detail": "신청을 찾지 못했습니다."}
+    poll = doc.to_dict() or {}
+    name = req.student_name.strip()
+    if not name:
+        return {"success": False, "detail": "학생을 골라 주세요."}
+    slot = next((s for s in poll.get("slots") or [] if s.get("id") == req.slot_id), None)
+    if req.slot_id and slot is None:
+        return {"success": False, "detail": "열어 둔 시간이 아닙니다."}
+    aref = db.collection("clinic_poll_answers").document(_poll_answer_id(req.poll_id, name))
+    adoc = aref.get()
+    ans = (adoc.to_dict() or {}) if adoc.exists else {}
+    old_clinic = str(ans.get("clinic_id") or "")
+    if old_clinic:
+        db.collection("clinics").document(old_clinic).delete()
+    patch = {"poll_id": req.poll_id, "student_name": name, "confirmed_slot": "", "clinic_id": ""}
+    if slot is not None:
+        cref = db.collection("clinics").document()
+        cref.set({"kind": "weekly", "weekday": int(slot["weekday"]), "time": slot["time"],
+                  "subject": str(poll.get("subject") or ""), "memo": str(poll.get("title") or "클리닉"),
+                  "student_name": name, "poll_id": req.poll_id})
+        patch.update({"confirmed_slot": slot["id"], "clinic_id": cref.id,
+                      "confirmed_at": now_kst().strftime("%Y-%m-%d %H:%M")})
+    aref.set(patch, merge=True)
+    if slot is not None:
+        try:
+            send_push_to_names([name], "🗓️ 클리닉 시간이 정해졌어요",
+                               f"매주 {slot['label']} 클리닉입니다.", "/", "clinic-poll")
+        except Exception as e:
+            print("[클리닉 확정 알림] 실패:", repr(e))
+    return {"success": True, "confirmed": slot["label"] if slot else ""}
+
+
+@app.post("/api/admin/clinic_poll/delete", dependencies=[Depends(verify_admin)])
+def delete_clinic_poll(req: ClinicPollReq):
+    """신청만 지운다. 이미 확정해 넣은 매주 클리닉은 그대로 둔다."""
+    if db is None or not req.id:
+        return {"success": False, "detail": "신청을 찾지 못했습니다."}
+    for a in db.collection("clinic_poll_answers").where("poll_id", "==", req.id).stream():
+        a.reference.delete()
+    db.collection("clinic_polls").document(req.id).delete()
+    return {"success": True}
+
+
+@app.get("/api/student/clinic_polls")
+def student_clinic_polls(student_name: str = ""):
+    """학생 화면: 나에게 열린 클리닉 신청과 내가 고른 시간."""
+    name = urllib.parse.unquote(student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "polls": []}
+    sdoc = db.collection("students").document(name).get()
+    info = targeting_info_from(sdoc.to_dict() or {}) if sdoc.exists else None
+    out = []
+    for d in db.collection("clinic_polls").stream():
+        poll = d.to_dict() or {}
+        if not task_visible_to_student("", task_target_classes(poll), name, info=info):
+            continue
+        adoc = db.collection("clinic_poll_answers").document(_poll_answer_id(d.id, name)).get()
+        ans = (adoc.to_dict() or {}) if adoc.exists else {}
+        is_open = _poll_is_open(poll)
+        if not is_open and not ans.get("confirmed_slot"):
+            continue
+        slots = poll.get("slots") or []
+        conf = next((s["label"] for s in slots if s.get("id") == ans.get("confirmed_slot")), "")
+        out.append({"id": d.id, "title": poll.get("title", ""), "note": poll.get("note", ""),
+                    "deadline": str(poll.get("deadline") or "").replace("T", " ")[:16],
+                    "slots": [{"id": s["id"], "label": s["label"]} for s in slots],
+                    "open": is_open, "my_slot_ids": ans.get("slot_ids") or [], "my_memo": ans.get("memo", ""),
+                    "answered": bool(ans.get("updated_at")), "confirmed": conf,
+                    "created_at": poll.get("created_at", "")})
+    out.sort(key=lambda x: str(x["created_at"]), reverse=True)
+    return {"success": True, "polls": out}
+
+
+@app.post("/api/student/clinic_poll/answer")
+def answer_clinic_poll(req: ClinicPollAnswerReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import clinic_poll as cp
+    name = req.student_name.strip()
+    if not name or is_preview(name):
+        return {"success": False, "detail": "원장님 체험에서는 신청이 저장되지 않습니다." if name else "이름이 없습니다."}
+    doc = db.collection("clinic_polls").document(req.poll_id).get()
+    if not doc.exists:
+        return {"success": False, "detail": "신청을 찾지 못했습니다."}
+    poll = doc.to_dict() or {}
+    if not task_visible_to_student("", task_target_classes(poll), name):
+        return {"success": False, "detail": "이 신청 대상이 아닙니다."}
+    if not _poll_is_open(poll):
+        return {"success": False, "detail": "신청이 마감되었습니다. 원장님께 말씀해 주세요."}
+    chosen = cp.clean_choice(req.slot_ids, poll.get("slots") or [])
+    if not chosen:
+        return {"success": False, "detail": "가능한 시간을 하나 이상 골라 주세요."}
+    db.collection("clinic_poll_answers").document(_poll_answer_id(req.poll_id, name)).set(
+        {"poll_id": req.poll_id, "student_name": name, "slot_ids": chosen, "memo": req.memo.strip()[:200],
+         "updated_at": now_kst().strftime("%Y-%m-%d %H:%M")}, merge=True)
+    return {"success": True, "count": len(chosen)}
+
+
 @app.get("/api/admin/reports")
 def get_reports(_: bool = Depends(verify_admin)):
     if db is None:

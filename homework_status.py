@@ -136,7 +136,8 @@ def for_student(today: date,
         due = parse_day(hw.get("deadline"))
         made = parse_day(hw.get("created_at"))
         anchor = due or made
-        if anchor is None or anchor < today - timedelta(days=STUDENT_DAYS) or anchor > today + timedelta(days=30):
+        # 지난 45일 안 과제와, 마감이 아직 안 온 과제(멀리 있어도)를 넣는다
+        if anchor is None or anchor < today - timedelta(days=STUDENT_DAYS):
             continue
         deadline = str(hw.get("deadline") or "").strip()
         row = student_status(mine.get(title), bool(deadline) and deadline_passed(deadline), bool(deadline))
@@ -146,3 +147,37 @@ def for_student(today: date,
     for r in rows:
         r.pop("_anchor", None)
     return rows[:STUDENT_MAX]
+
+
+def class_grid(today: date, homeworks: Iterable[dict], names: List[str],
+               reports_by_title: Dict[str, Iterable[dict]],
+               visible_to_class: Callable[[dict], bool],
+               deadline_passed: Callable[[str], bool], limit: int = 10) -> Dict:
+    """반별 과제 제출표: 그 반에 나간 최근 과제(열) × 학생(줄). 칸마다 submitted · late · missing · pending."""
+    cols = []
+    for hw in homeworks or []:
+        title = str((hw or {}).get("title") or "").strip()
+        if not title or hw.get("hidden") or not visible_to_class(hw):
+            continue
+        anchor = parse_day(hw.get("deadline")) or parse_day(hw.get("created_at"))
+        # 지난 45일 안 과제와, 마감이 아직 안 온 과제(멀리 있어도)를 넣는다
+        if anchor is None or anchor < today - timedelta(days=STUDENT_DAYS):
+            continue
+        cols.append((anchor, hw))
+    cols.sort(key=lambda x: x[0], reverse=True)
+    cols = [hw for _, hw in cols[:limit]]
+    out_cols, cells = [], {n: {} for n in names}
+    for hw in cols:
+        title = str(hw.get("title")).strip()
+        deadline = str(hw.get("deadline") or "").strip()
+        passed = bool(deadline) and deadline_passed(deadline)
+        latest = latest_by_student(reports_by_title.get(title, []))
+        counts = {"submitted": 0, "late": 0, "missing": 0, "pending": 0}
+        for n in names:
+            st = student_status(latest.get(n), passed, bool(deadline))
+            cells[n][title] = st
+            counts[st["status"]] += 1
+        out_cols.append({"title": title, "deadline": deadline.replace("T", " ")[:16], "counts": counts})
+    rows = [{"name": n, "cells": [cells[n][c["title"]] for c in out_cols],
+             "missing": sum(1 for c in out_cols if cells[n][c["title"]]["status"] == "missing")} for n in names]
+    return {"homeworks": out_cols, "rows": rows}
