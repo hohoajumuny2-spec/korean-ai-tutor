@@ -3,7 +3,8 @@
 계산만 한다(DB · 네트워크 없음). main.py 의 /api/admin/overview 가 부른다.
 """
 import re
-from typing import Dict, Iterable, List, Optional
+from datetime import date, timedelta
+from typing import Callable, Dict, Iterable, List, Optional
 
 SCORED_TYPES = ("모의고사", "타임어택 퀴즈", "과제 제출", "영어 단어 시험")
 
@@ -36,9 +37,83 @@ def score_text(r: dict) -> str:
     return f"{fmt(got)}/{fmt(total)}" if total else f"{fmt(got)}점"
 
 
-def build(students: Iterable[dict], reports: Iterable[dict], attendance: Optional[List[dict]]) -> Dict:
-    """students: [{name, school, grade, class_name, withdrawn}], reports: 그 달 제출 기록,
-    attendance: 홈페이지가 준 학생별 출결(없으면 None)."""
+def week_start(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def _day(value) -> Optional[date]:
+    t = str(value or "").strip().replace("T", " ")[:10]
+    try:
+        return date.fromisoformat(t)
+    except ValueError:
+        return None
+
+
+def homework_items(today: date, homeworks: Iterable[dict], reports: Iterable[dict], names: List[str],
+                   visible: Callable[[dict, str], bool], deadline_passed: Callable[[str], bool],
+                   start: date) -> Dict[str, List[dict]]:
+    """학생마다 start 이후 숙제(과제)와 냈는지. 숙제는 마감일 주에 넣는다(마감이 없으면 낸 날,
+    마감이 아직 멀면 이번 주). 이름은 name_key 로."""
+    import homework_status as hs
+    by_title: Dict[str, List[dict]] = {}
+    for r in reports or []:
+        if r.get("type") == "과제 제출":
+            by_title.setdefault(str(r.get("task_name", "")).strip(), []).append(r)
+    out: Dict[str, List[dict]] = {}
+    for hw in homeworks or []:
+        title = str((hw or {}).get("title") or "").strip()
+        if not title or hw.get("hidden"):
+            continue
+        deadline = str(hw.get("deadline") or "").strip()
+        anchor = _day(deadline) or _day(hw.get("created_at"))
+        if anchor is None or anchor < start:
+            continue
+        anchor = min(anchor, today)
+        passed = bool(deadline) and deadline_passed(deadline)
+        latest = hs.latest_by_student(by_title.get(title, []))
+        for n in names:
+            if not visible(hw, n):
+                continue
+            st = hs.student_status(latest.get(n), passed, bool(deadline))
+            out.setdefault(name_key(n), []).append({"title": title, "deadline": deadline.replace("T", " ")[:16],
+                                                     "day": anchor.isoformat(), **st})
+    for items in out.values():
+        items.sort(key=lambda x: x["day"], reverse=True)
+    return out
+
+
+def weekly(today: date, n_weeks: int, att: Optional[dict], hw: List[dict]) -> List[dict]:
+    """이번 주부터 n주 전까지 주마다 출석 · 지각 · 결석 · 클리닉 · 숙제. 맨 앞이 이번 주."""
+    out = []
+    has_dates = bool(att) and "presentDates" in att
+    for i in range(max(1, n_weeks)):
+        s = week_start(today) - timedelta(weeks=i)
+        e = s + timedelta(days=6)
+        lo, hi = s.isoformat(), e.isoformat()
+        pick = lambda days: [d for d in (days or []) if lo <= str(d) <= hi]
+        w = {"start": lo, "end": hi, "label": f"{s.month}/{s.day}~{e.month}/{e.day}", "this_week": i == 0}
+        if att:
+            w["absent_days"] = pick(att.get("absentDays"))
+            w["absent"] = len(w["absent_days"])
+            if has_dates:
+                w["late_days"] = pick(att.get("lateDates"))
+                w["present"] = len(pick(att.get("presentDates")))
+                w["late"] = len(w["late_days"])
+                w["clinic"] = len(pick(att.get("clinicDates")))
+        items = [h for h in hw or [] if lo <= h["day"] <= hi]
+        counts = {"submitted": 0, "late": 0, "missing": 0, "pending": 0}
+        for h in items:
+            counts[h["status"]] += 1
+        w["homework"] = {"items": items, **counts, "total": len(items)}
+        out.append(w)
+    return out
+
+
+def build(students: Iterable[dict], reports: Iterable[dict], attendance: Optional[List[dict]],
+          today: Optional[date] = None, n_weeks: int = 0,
+          homework: Optional[Dict[str, List[dict]]] = None) -> Dict:
+    """students: [{name, school, grade, class_name, withdrawn}], reports: 그 기간 제출 기록,
+    attendance: 홈페이지가 준 학생별 출결(없으면 None). n_weeks 를 주면 학생마다 주별(weeks)도 붙인다."""
     att = {}
     for a in attendance or []:
         k = name_key(a.get("name"))
@@ -84,6 +159,8 @@ def build(students: Iterable[dict], reports: Iterable[dict], attendance: Optiona
                         "date": str(r.get("submitted_at", ""))[:10]} for r in reps[:4]],
             "attendance": a,
         })
+        if n_weeks and today is not None:
+            rows[-1]["weeks"] = weekly(today, n_weeks, a, (homework or {}).get(k, []))
     rows.sort(key=lambda r: (r["class_name"] or "힣", r["name"]))
     kiosk_only = sorted(a.get("name", "") for k, a in att.items() if k not in matched)
     return {"rows": rows, "kiosk_only": kiosk_only}

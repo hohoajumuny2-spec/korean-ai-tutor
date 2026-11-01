@@ -53,5 +53,39 @@ class RecentScoresTests(unittest.TestCase):
         self.assertEqual(o.recent_scores([], 5), {"scores": [], "avg": None})
 
 
+
+class WeeklyTests(unittest.TestCase):
+    def test_this_week_first_then_past_weeks(self):
+        from datetime import date
+        today = date(2026, 11, 4)                       # 수요일 → 이번 주는 11/2~11/8
+        hws = [{"title": "문법1", "deadline": "2026-11-03T22:00"},
+               {"title": "독서1", "deadline": "2026-10-28"},
+               {"title": "멀리", "deadline": "2026-12-20"},
+               {"title": "다른반", "deadline": "2026-11-03", "target": "x"},
+               {"title": "옛날", "deadline": "2026-09-01"}]
+        reports = [{"student_name": "박서연", "type": "과제 제출", "task_name": "독서1", "submitted_at": "2026-10-27"}]
+        start = date(2026, 10, 26)
+        hw = o.homework_items(today, hws, reports, ["박서연"], lambda h, n: h.get("target") != "x",
+                              lambda d: d[:10] < "2026-11-04", start)
+        self.assertEqual([h["title"] for h in hw["박서연"]], ["멀리", "문법1", "독서1"])
+        att = [{"name": "박서연", "present": 3, "late": 1, "absent": 1, "absentDays": ["2026-10-30"],
+                "presentDates": ["2026-10-27", "2026-11-02", "2026-11-03"], "lateDates": ["2026-11-03"],
+                "clinicDates": ["2026-10-29"]}]
+        out = o.build([{"name": "박서연"}], [], att, today=today, n_weeks=2, homework=hw)
+        w = out["rows"][0]["weeks"]
+        self.assertEqual([x["label"] for x in w], ["11/2~11/8", "10/26~11/1"])
+        self.assertEqual((w[0]["present"], w[0]["late"], w[0]["absent"], w[0]["clinic"]), (2, 1, 0, 0))
+        self.assertEqual((w[1]["present"], w[1]["late"], w[1]["absent"], w[1]["clinic"]), (1, 0, 1, 1))
+        self.assertEqual((w[0]["homework"]["missing"], w[0]["homework"]["pending"], w[0]["homework"]["total"]), (1, 1, 2))
+        self.assertEqual(w[1]["homework"]["submitted"], 1)
+
+    def test_old_site_without_dates_still_counts_absences(self):
+        from datetime import date
+        out = o.build([{"name": "김가"}], [], [{"name": "김가", "absentDays": ["2026-11-02"]}],
+                      today=date(2026, 11, 4), n_weeks=1, homework={})
+        w = out["rows"][0]["weeks"][0]
+        self.assertEqual(w["absent"], 1)
+        self.assertNotIn("present", w)
+
 if __name__ == "__main__":
     unittest.main()
