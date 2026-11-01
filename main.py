@@ -6909,26 +6909,28 @@ def _score_text(r: dict) -> str:
 
 
 @app.get("/api/admin/overview", dependencies=[Depends(verify_admin)])
-async def admin_overview(month: str = ""):
-    """학생 한눈에 보기: 이 달 성적(모의고사 · 퀴즈 · 과제 · 단어시험) + 홈페이지 키오스크 출결.
+async def admin_overview(weeks: int = 8, month: str = ""):
+    """학생 한눈에 보기: 주마다 출결(홈페이지 키오스크) · 숙제(과제 제출) + 최근 성적.
 
+    이번 주가 기본으로 보이고, 학생 줄을 누르면 지난 주들이 펼쳐진다(weeks 주 전까지).
     출결은 홈페이지 서버(logyedu.com)의 /api/notify/attendance 를 NOTIFY_SECRET 으로 불러 온다.
-    그 서버에 못 닿아도 성적은 그대로 보여 주고, 이유를 attendance_error 로 알려 준다."""
+    그 서버에 못 닿아도 성적 · 숙제는 그대로 보여 주고, 이유를 attendance_error 로 알려 준다.
+    (month 는 예전 화면이 보내던 값 — 이제 쓰지 않는다)"""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     import overview as ov
     today = now_kst().date()
-    m = re.fullmatch(r"(\d{4})-(\d{2})", (month or "").strip())
-    y, mo = (int(m.group(1)), int(m.group(2))) if m and 1 <= int(m.group(2)) <= 12 else (today.year, today.month)
-    start = f"{y:04d}-{mo:02d}-01"
-    nxt = f"{y + (mo == 12):04d}-{(mo % 12) + 1:02d}-01"
-    last_day = (datetime(y + (mo == 12), (mo % 12) + 1, 1) - timedelta(days=1)).date()
+    n_weeks = max(1, min(int(weeks or 8), 12))
+    first = ov.week_start(today) - timedelta(weeks=n_weeks - 1)
+    start = first.isoformat()
+    # 숙제는 기간 앞쪽에 낸 것도 있으니 제출 기록은 2주 더 앞에서부터 읽는다
+    reports_from = (first - timedelta(days=14)).isoformat()
 
     def load():
         studs = [{"name": d.id, **(d.to_dict() or {})} for d in db.collection("students").stream()]
-        reps = [r.to_dict() or {} for r in db.collection("reports")
-                .where("submitted_at", ">=", start).where("submitted_at", "<", nxt).stream()]
-        return studs, reps
+        reps = [r.to_dict() or {} for r in db.collection("reports").where("submitted_at", ">=", reports_from).stream()]
+        hws = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+        return studs, reps, hws
 
     def kiosk():
         secret = os.environ.get("NOTIFY_SECRET", "").strip()
@@ -6936,7 +6938,7 @@ async def admin_overview(month: str = ""):
             return None, "출결 연결 설정(NOTIFY_SECRET)이 학생 앱 서버에 없습니다."
         base = (os.environ.get("LOGYEDU_SITE_URL", "").strip() or "https://logyedu.com").rstrip("/")
         try:
-            r = requests.get(f"{base}/api/notify/attendance", params={"from": start, "to": last_day.isoformat()},
+            r = requests.get(f"{base}/api/notify/attendance", params={"from": start, "to": today.isoformat()},
                              headers={"X-Notify-Secret": secret}, timeout=40)
         except Exception:
             return None, "홈페이지 서버(logyedu.com)에 연결하지 못했습니다."
@@ -6953,14 +6955,22 @@ async def admin_overview(month: str = ""):
         return data.get("students") or [], ""
 
     try:
-        (studs, reps), (att, att_err) = await asyncio.gather(asyncio.to_thread(load), asyncio.to_thread(kiosk))
+        (studs, reps, hws), (att, att_err) = await asyncio.gather(asyncio.to_thread(load), asyncio.to_thread(kiosk))
+        infos = {s["name"]: targeting_info_from(s) for s in studs}
+        names = [s["name"] for s in studs if not infos[s["name"]].get("withdrawn")]
+        homework = ov.homework_items(
+            today, hws, reps, names,
+            lambda hw, n: task_visible_to_student("", task_target_classes(hw), n, info=infos.get(n)),
+            deadline_passed, first)
+        built = ov.build(studs, [r for r in reps if str(r.get("submitted_at", "")) >= start], att,
+                         today=today, n_weeks=n_weeks, homework=homework)
     except Exception as e:
         print("[한눈에 보기] 실패:", repr(e))
         return {"success": False, "detail": "기록을 불러오지 못했습니다."}
-    built = ov.build(studs, reps, att)
-    return {"success": True, "month": f"{y:04d}-{mo:02d}", "today": today.isoformat(),
+    return {"success": True, "today": today.isoformat(), "from": start, "weeks": n_weeks,
             "rows": built["rows"], "kiosk_only": built["kiosk_only"],
-            "attendance_ok": att is not None, "attendance_error": att_err}
+            "attendance_ok": att is not None, "attendance_error": att_err,
+            "attendance_by_day": bool(att) and any("presentDates" in a for a in att)}
 
 
 @app.get("/api/notify/student_homework")
