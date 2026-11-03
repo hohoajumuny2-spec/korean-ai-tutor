@@ -14925,3 +14925,25 @@ if db is not None:
                                             check_token=_question_maker_token))
     except Exception as e:
         print("홍보글 공장 연결 실패:", e)
+
+
+# ── 키오스크 클리닉 연결 (clinic.py) ── 시작
+#   키오스크에서 이름을 누르면 클리닉 단계가 이어지는 기능. 코드는 clinic.py에 있고,
+#   여기서는 필요한 함수만 넘겨 연결한다. 혹시 연결에 실패해도 서버 전체는 멈추지 않게 한다.
+try:
+    import clinic as _clinic
+    _g = globals()
+    _clinic.register(app, {
+        **{_k: _g[_k] for _k in ("safe_generate", "add_xp", "save_report", "verify_admin", "student_targeting_info",
+                                  "send_push_to_student", "send_telegram_message", "is_preview", "save_bytes",
+                                  "sanitize_doc_id", "normalize_subject", "normalize_grade") if _k in _g},
+        "db": lambda: db,
+        "qna_coll": _g.get("QNA_COLL", "qna_posts"),
+    })
+except Exception as _e:
+    print("키오스크 클리닉 연결 실패:", _e)
+    try:
+        send_telegram_message(f"⚠️ [클리닉] 키오스크 클리닉 기능을 켜지 못했습니다: {_e}")
+    except Exception:
+        pass
+# ── 키오스크 클리닉 연결 (clinic.py) ── 끝
