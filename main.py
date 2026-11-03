@@ -3365,11 +3365,13 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
 
 [반드시 지킬 것]
 - 오직 JSON만 출력하세요. 설명, 인사말, 코드블록 표시(```)를 절대 붙이지 마세요.
-- 형식: {"answers": {"1": 3, "2": 5}, "explanations": {"1": "...", "2": "..."}}
-- answers 의 키는 문항 번호를 큰따옴표로 감싼 문자열, 값은 1~5 사이의 정수입니다.
-- ①②③④⑤ 같은 원문자는 1,2,3,4,5로 바꿔서 적으세요.
+- 형식: {"answers": {"1": 3, "2": 5, "3": "3/4", "4": "2x+1"}, "explanations": {"1": "...", "2": "..."}}
+- answers 의 키는 문항 번호를 큰따옴표로 감싼 문자열입니다.
+- 객관식(①~⑤ 중 고르는 문항)의 값은 1~5 사이의 정수입니다. ①②③④⑤ 같은 원문자는 1,2,3,4,5로 바꾸세요.
+- 단답형(숫자 · 분수 · 식 · 낱말을 쓰는 문항)의 값은 문자열로 그대로 적으세요.
+  분수는 "3/4", 대분수는 "1 1/2", 소수는 "0.75", 음수는 "-2", 식은 "2x+1", 거듭제곱은 "x^2", 제곱근은 "√3" 처럼 적으세요.
+  답이 여러 개인 단답형은 "x=1, x=3" 처럼 쉼표로 이으세요.
 - 이미지에 보이지 않는 문항은 아예 넣지 마세요. 추측해서 채우지 마세요.
-- 주관식이거나 번호로 읽을 수 없는 문항은 answers 에서 건너뛰세요.
 - explanations 에는 이미지에 실제로 적혀 있는 해설 문장을 그대로 옮겨 적으세요.
   해설이 없는 문항은 넣지 마세요. 없는 해설을 지어내지 마세요.
 - 해설은 문항당 400자를 넘기지 말고, 넘치면 핵심만 간추리세요.
@@ -3393,14 +3395,25 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
 
     raw_answers = parsed.get("answers", parsed) or {}
     answers = {}
-    for k, v in raw_answers.items():
+    for k, v in (raw_answers.items() if isinstance(raw_answers, dict) else []):
         try:
             num = int(str(k).strip())
-            val = int(str(v).strip())
         except (TypeError, ValueError):
             continue
-        if num >= 1 and 1 <= val <= 5:
-            answers[str(num)] = val
+        if num < 1:
+            continue
+        text_v = str(v if v is not None else "").strip()
+        for i, ch in enumerate("①②③④⑤"):
+            text_v = text_v.replace(ch, str(i + 1))
+        if not text_v:
+            continue
+        # 객관식 번호는 정수로, 분수 · 식 · 낱말은 글자 그대로(최대 길이만 자른다).
+        # 분수 3/4 가 '3번 또는 4번'으로 읽히지 않게 '=' 를 붙여 둔다(is_choice_combo).
+        if text_v in ("1", "2", "3", "4", "5"):
+            answers[str(num)] = int(text_v)
+        else:
+            text_v = text_v[:ANSWER_MAX_CHARS]
+            answers[str(num)] = ("=" + text_v) if is_choice_combo(text_v) else text_v
 
     explanations = parse_explanation_map(parsed.get("explanations"))
 
@@ -8750,12 +8763,36 @@ def homework_late_fields(hw: dict, prev: Optional[dict]) -> dict:
     return {}
 
 
+def is_choice_combo(key_slot) -> bool:
+    """'3/5' · '2+4' · '1+2/3+4' 처럼 '/'와 '+'로 이은 것이 전부 보기 번호(1~5)인지.
+
+    💡 수학 정답 '3/4'(분수)나 '2x+1'(식)에도 '/'와 '+'가 들어간다. 예전에는 그것도
+       '3번 또는 4번'으로 읽어 분수 답이 전부 틀리게 채점됐다. 보기 번호로만 이뤄졌을 때만
+       복수 정답으로 보고, 그 밖에는 글자 그대로의 단답형 정답이다."""
+    raw = str(key_slot or "").strip()
+    # 💡 '=3/4' 처럼 앞에 '='를 붙이면 "글자 그대로의 답(분수 3/4)"이다. 1/2 · 3/4 같은 분수는
+    #    보기 번호와 구별이 안 되므로 이 표시로 가른다(사진으로 읽은 단답형에는 서버가 자동으로 붙인다).
+    if not raw or raw.startswith("=") or ("/" not in raw and "+" not in raw):
+        return False
+    parts = [p.strip() for p in re.split(r"[/+]", raw)]
+    return all(p in ("1", "2", "3", "4", "5") for p in parts)
+
+
+def literal_answer(key_slot) -> str:
+    """'=3/4' 의 '=' 표시를 뗀, 사람에게 보여 줄 정답 글자."""
+    raw = str(key_slot or "").strip()
+    return raw[1:].strip() if raw.startswith("=") else raw
+
+
 def answer_slots(key_slot) -> list:
     """정답 한 자리에 슬래시(/)로 여러 보기가 적혀 있으면 인정하는 보기 목록으로 나눈다.
-    문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리."""
+    문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리.
+    분수 '3/4'처럼 보기 번호가 아닌 것은 나누지 않는다(is_choice_combo)."""
     raw = str(key_slot or "").strip()
     if not raw:
         return []
+    if not is_choice_combo(raw):
+        return [raw]
     return [p.strip() for p in raw.split("/") if p.strip()]
 
 
@@ -8766,8 +8803,14 @@ def answer_picks(one_slot) -> list:
       3/5   — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
       3+5   — 원래 답이 둘인 문항. 3과 5를 모두 골라야 맞다 (여기)
     섞어서도 쓴다. 1+2/3+4 = {1,2} 이거나 {3,4}.
+    'x+2' 같은 식은 보기 번호가 아니므로 나누지 않는다.
     """
-    return [p.strip() for p in str(one_slot or "").split("+") if p.strip()]
+    raw = str(one_slot or "").strip()
+    if not raw:
+        return []
+    if not is_choice_combo(raw):
+        return [raw]
+    return [p.strip() for p in raw.split("+") if p.strip()]
 
 
 def _answer_key_sets(key_slot) -> list:
@@ -8777,8 +8820,38 @@ def _answer_key_sets(key_slot) -> list:
 
 
 def _norm_answer_text(s) -> str:
-    """단답형 비교용 — 대소문자·띄어쓰기 차이는 봐준다. 숫자 답에는 영향이 없다."""
-    return re.sub(r"\s+", "", str(s or "")).casefold()
+    """단답형 비교용 — 대소문자·띄어쓰기 차이는 봐준다. 숫자 답에는 영향이 없다.
+    수학 기호는 한 가지로 맞춘다: '−'(긴 빼기) → '-', '⁄' → '/', '×' → '*', '÷' → '/'."""
+    t = literal_answer(s)
+    for a, b in (("−", "-"), ("–", "-"), ("⁄", "/"), ("∕", "/"), ("×", "*"), ("·", "*"), ("÷", "/"),
+                 ("²", "^2"), ("³", "^3"), ("루트", "√"), ("sqrt", "√"), ("root", "√"), ("파이", "π"), ("pi", "π")):
+        t = t.replace(a, b)
+    t = re.sub(r"\s+", "", t).casefold()
+    t = re.sub(r"√\((\d+)\)", r"√\1", t)          # √(3) → √3
+    t = re.sub(r"(?<=\d)\*(?=√|π|[a-z])", "", t)     # 2*√3 → 2√3, 2*x → 2x
+    return t
+
+
+def _as_number(s):
+    """'3/4' · '0.75' · '-2' · '1 1/2'(대분수) 를 수로. 수가 아니면 None."""
+    t = _norm_answer_text(s)
+    if not t:
+        return None
+    try:
+        from fractions import Fraction
+        m = re.fullmatch(r"([-+]?)(\d+)[_ ]?(\d+)/(\d+)", str(s or "").strip().replace("−", "-"))
+        if m:   # 대분수 '1 1/2' · '1_1/2'
+            whole, num, den = int(m.group(2)), int(m.group(3)), int(m.group(4))
+            v = Fraction(whole) + Fraction(num, den)
+            return -v if m.group(1) == "-" else v
+        if re.fullmatch(r"[-+]?(\d+(\.\d+)?|\.\d+)(/\d+(\.\d+)?)?", t):
+            if "/" in t:
+                a, b = t.split("/")
+                return Fraction(a) / Fraction(b)
+            return Fraction(t)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return None
 
 
 def answer_matches(mine, key_slot) -> bool:
@@ -8793,15 +8866,21 @@ def answer_matches(mine, key_slot) -> bool:
     mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
     if not mine_set:
         return False
-    return mine_set in _answer_key_sets(key_slot)
+    if mine_set in _answer_key_sets(key_slot):
+        return True
+    # 💡 수학 단답형: 정답이 '3/4'이면 학생이 '0.75'나 '6/8'로 써도 같은 수이므로 맞다.
+    if not is_choice_combo(key_slot) and not is_choice_combo(mine):
+        a, b = _as_number(mine), _as_number(key_slot)
+        return a is not None and b is not None and a == b
+    return False
 
 
 def answer_label(key_slot) -> str:
     """정답을 사람이 읽기 좋은 문구로.
     3/5 → '3번 또는 5번',  3+5 → '3번과 5번',  1+2/3+4 → '1번과 2번 또는 3번과 4번'."""
     parts = answer_slots(key_slot)
-    if not parts:
-        return str(key_slot or "").strip()
+    if not parts or not is_choice_combo(key_slot):
+        return literal_answer(key_slot)
     return " 또는 ".join("과 ".join(f"{x}번" for x in answer_picks(p)) for p in parts)
 
 
