@@ -9,6 +9,21 @@ from typing import Callable, Dict, Iterable, List, Optional
 SCORED_TYPES = ("모의고사", "타임어택 퀴즈", "과제 제출", "영어 단어 시험")
 
 
+def student_class_label(s: dict) -> str:
+    """명단 한 줄의 반 표시: 과목별 반(국어 · 수학 · 영어)을 ' · '로 잇고, 없으면 옛 한 칸(class_name).
+
+    💡 예전엔 옛 한 칸만 읽어서 수학반 · 영어반에만 넣은 학생이 한눈에 보기에서 반 없음('-')으로 나왔다."""
+    names = s.get("class_names") or {}
+    picked = []
+    for key in ("korean", "math", "english"):
+        v = str(names.get(key, "") or "").strip()
+        if not v and key == "korean":
+            v = str(s.get("class_name", "") or "").strip()
+        if v and v not in picked:
+            picked.append(v)
+    return " · ".join(picked)
+
+
 def name_key(name) -> str:
     """'박서연(고2)', ' 박 서연 ' 처럼 적혀도 같은 학생으로 맞춘다."""
     n = re.sub(r"\(.*?\)|\[.*?\]", "", str(name or ""))
@@ -151,7 +166,7 @@ def build(students: Iterable[dict], reports: Iterable[dict], attendance: Optiona
             "name": name,
             "school": s.get("school", "") or "",
             "grade": s.get("grade", "") or "",
-            "class_name": s.get("class_name", "") or "",
+            "class_name": student_class_label(s),
             "tests": len(reps),
             "avg": round(sum(pcts) / len(pcts), 1) if pcts else None,
             "recent": [{"title": str(r.get("task_name", "")), "type": r.get("type", ""), "score": score_text(r),

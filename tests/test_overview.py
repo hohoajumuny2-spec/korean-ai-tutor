@@ -89,3 +89,17 @@ class WeeklyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClassLabelTests(unittest.TestCase):
+    """과목별 반에만 넣은 학생도 한눈에 보기에 반이 보여야 한다."""
+
+    def test_subject_classes_joined(self):
+        s = {"class_name": "", "class_names": {"korean": "고2 국어", "math": "고2 수학"}}
+        self.assertEqual(o.student_class_label(s), "고2 국어 · 고2 수학")
+
+    def test_legacy_only(self):
+        self.assertEqual(o.student_class_label({"class_name": "중3 국어"}), "중3 국어")
+
+    def test_math_only_not_blank(self):
+        self.assertEqual(o.student_class_label({"class_names": {"math": "고1 수학"}}), "고1 수학")

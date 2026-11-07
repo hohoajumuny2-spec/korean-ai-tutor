@@ -1973,9 +1973,25 @@ def upsert_class(req: ClassUpsertReq, _: bool = Depends(verify_admin)):
     # 반 이름을 바꾼 경우 — 예전 반 문서를 지우고, 그 반에 속한 학생들도 새 이름으로 옮겨준다
     if old_name and old_name != name:
         db.collection("classes").document(sanitize_doc_id(old_name)).delete()
-        for d in db.collection("students").where("class_name", "==", old_name).stream():
-            d.reference.set({"class_name": name}, merge=True)
+        _move_students_class(old_name, name)
     return {"success": True}
+
+
+def _move_students_class(old_name: str, new_name: str) -> int:
+    """old_name 반에 든 학생을 전부 new_name 반으로 옮긴다(new_name이 비면 '미배정').
+
+    💡 예전에는 옛 한 칸(class_name)만 바꿔서, 과목별 반 칸(class_names.korean/math/english)에
+       든 학생은 반 이름을 바꾸거나 지운 뒤에도 옛 이름을 그대로 들고 있었다. 그 학생은 반 목록에
+       없는 반 이름을 갖게 되어 명단에서 '반 미배정'으로 떨어졌다. 이제 모든 칸을 같이 고친다."""
+    moved = set()
+    for d in db.collection("students").where("class_name", "==", old_name).stream():
+        d.reference.set({"class_name": new_name}, merge=True)
+        moved.add(d.id)
+    for key in SUBJECTS:
+        for d in db.collection("students").where(f"class_names.{key}", "==", old_name).stream():
+            d.reference.set({"class_names": {key: new_name}}, merge=True)
+            moved.add(d.id)
+    return len(moved)
 
 
 class ClassDeleteReq(BaseModel):
@@ -1991,10 +2007,7 @@ def delete_class(req: ClassDeleteReq, _: bool = Depends(verify_admin)):
     if not name:
         return {"success": False, "detail": "반 이름이 비어 있습니다."}
     db.collection("classes").document(sanitize_doc_id(name)).delete()
-    moved = 0
-    for d in db.collection("students").where("class_name", "==", name).stream():
-        d.reference.set({"class_name": ""}, merge=True)
-        moved += 1
+    moved = _move_students_class(name, "")
     return {"success": True, "unassigned": moved}
 
 
@@ -12172,7 +12185,9 @@ def save_counsel_profile(req: ProfileSaveReq):
     if req.grade.strip():
         student_patch["grade"] = req.grade.strip()
     if req.create or req.class_name:
+        # 상담 카드의 '반'은 국어반 칸이다. 과목별 칸(class_names.korean)이 있으면 그쪽이 우선이므로 같이 맞춘다.
         student_patch["class_name"] = req.class_name.strip()
+        student_patch["class_names"] = {"korean": req.class_name.strip()}
     if student_patch or req.create:
         s_ref.set(student_patch, merge=True)
 
