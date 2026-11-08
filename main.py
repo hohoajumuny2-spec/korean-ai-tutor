@@ -2853,6 +2853,12 @@ def board_visible_to_student(row: dict, student_name: str, info=_NO_INFO) -> boo
     return bool(classes) and task_visible_to_student("", classes, student_name, info=info)
 
 
+def homework_visible_to_student(hw: dict, student_name: str, info=_NO_INFO) -> bool:
+    """이 과제가 이 학생에게 보이는지 — 공지와 같은 규칙.
+    💡 2026-11-08: 과제도 특정 학생에게만 낼 수 있게. target_students 가 비면 지금까지처럼 반만 본다."""
+    return board_visible_to_student(hw, student_name, info=info)
+
+
 def task_visibility_denied_reason(subject: str, target_class, student_name: str) -> str:
     """💡 예전에는 응시가 막힌 이유를 "응시할 수 없는 시험입니다"로만 뭉뚱그려서,
     과목 미등록 때문인지 반이 달라서인지 학생도 원장님도 알 수 없었다. 어느
@@ -6986,7 +6992,7 @@ async def admin_overview(weeks: int = 8, month: str = ""):
         names = [s["name"] for s in studs if not infos[s["name"]].get("withdrawn")]
         homework = ov.homework_items(
             today, hws, reps, names,
-            lambda hw, n: task_visible_to_student("", task_target_classes(hw), n, info=infos.get(n)),
+            lambda hw, n: homework_visible_to_student(hw, n, info=infos.get(n)),
             deadline_passed, first)
         built = ov.build(studs, [r for r in reps if str(r.get("submitted_at", "")) >= start], att,
                          today=today, n_weeks=n_weeks, homework=homework)
@@ -7022,7 +7028,7 @@ def notify_student_homework(name: str = "", x_notify_secret: Optional[str] = Hea
         mine = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", who)
                 .where("type", "==", "과제 제출").stream()]
         rows = hs.for_student(now_kst().date(), homeworks, mine,
-                              lambda hw: task_visible_to_student("", task_target_classes(hw), who, info=info),
+                              lambda hw: homework_visible_to_student(hw, who, info=info),
                               deadline_passed)
         return {"success": True, "homeworks": rows, "known": True}
     except Exception as e:
@@ -8644,8 +8650,7 @@ def get_homeworks(student_name: str = "", x_admin_token: Optional[str] = Header(
     if student_name:
         # 💡 대상 반을 고른 과제는 그 반 학생에게만 보인다. 대상을 안 고른
         #    과제(예전에 올린 것 포함)는 지금까지처럼 모두에게 보인다.
-        rows = [h for h in rows
-                if task_visible_to_student("", task_target_classes(h), student_name)]
+        rows = [h for h in rows if homework_visible_to_student(h, student_name)]
         # 💡 정답표가 그대로 응답에 실려 있어, 화면 대신 API를 직접 열어봐도
         #    정답이 보이던 문제를 막는다 — 문항이 객관식/단답형인지만 남긴다.
         rows = [strip_homework_answers(h) for h in rows]
@@ -8777,7 +8782,9 @@ def homework_late_fields(hw: dict, prev: Optional[dict]) -> dict:
 
 
 def is_choice_combo(key_slot) -> bool:
-    """'3/5' · '2+4' · '1+2/3+4' 처럼 '/'와 '+'로 이은 것이 전부 보기 번호(1~5)인지.
+    """'3/5' · '2+4' · '1+2|3+4' 처럼 '/' '+' '|'로 이은 것이 전부 보기 번호(1~5)인지.
+
+    💡 2026-11-08: 복수 정답(3/5 · 3+5)은 "둘 다 골라야 맞음"이다. 둘 중 아무거나 인정(이의 제기)은 '3|5'.
 
     💡 수학 정답 '3/4'(분수)나 '2x+1'(식)에도 '/'와 '+'가 들어간다. 예전에는 그것도
        '3번 또는 4번'으로 읽어 분수 답이 전부 틀리게 채점됐다. 보기 번호로만 이뤄졌을 때만
@@ -8785,9 +8792,9 @@ def is_choice_combo(key_slot) -> bool:
     raw = str(key_slot or "").strip()
     # 💡 '=3/4' 처럼 앞에 '='를 붙이면 "글자 그대로의 답(분수 3/4)"이다. 1/2 · 3/4 같은 분수는
     #    보기 번호와 구별이 안 되므로 이 표시로 가른다(사진으로 읽은 단답형에는 서버가 자동으로 붙인다).
-    if not raw or raw.startswith("=") or ("/" not in raw and "+" not in raw):
+    if not raw or raw.startswith("=") or not any(ch in raw for ch in "/+|"):
         return False
-    parts = [p.strip() for p in re.split(r"[/+]", raw)]
+    parts = [p.strip() for p in re.split(r"[/+|]", raw)]
     return all(p in ("1", "2", "3", "4", "5") for p in parts)
 
 
@@ -8798,24 +8805,24 @@ def literal_answer(key_slot) -> str:
 
 
 def answer_slots(key_slot) -> list:
-    """정답 한 자리에 슬래시(/)로 여러 보기가 적혀 있으면 인정하는 보기 목록으로 나눈다.
-    문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리.
+    """정답 한 자리에 세로줄(|)로 여러 답이 적혀 있으면 '인정하는 답' 목록으로 나눈다.
+    문항에 결함이 있어 둘 중 아무거나 맞다고 인정해야 할 때 쓴다('3|5'). 없으면 목록 하나짜리.
     분수 '3/4'처럼 보기 번호가 아닌 것은 나누지 않는다(is_choice_combo)."""
     raw = str(key_slot or "").strip()
     if not raw:
         return []
     if not is_choice_combo(raw):
         return [raw]
-    return [p.strip() for p in raw.split("/") if p.strip()]
+    return [p.strip() for p in raw.split("|") if p.strip()]
 
 
 def answer_picks(one_slot) -> list:
     """한 가지 정답 안에서 '둘 다 골라야 하는' 보기들을 나눈다.
 
     두 가지를 구분해서 적는다.
-      3/5   — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
-      3+5   — 원래 답이 둘인 문항. 3과 5를 모두 골라야 맞다 (여기)
-    섞어서도 쓴다. 1+2/3+4 = {1,2} 이거나 {3,4}.
+      3/5 · 3+5 — 답이 둘인 문항(복수 정답). 3과 5를 모두 골라야 맞다 (여기)
+      3|5       — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
+    섞어서도 쓴다. 1+2|3+4 = {1,2} 이거나 {3,4}.
     'x+2' 같은 식은 보기 번호가 아니므로 나누지 않는다.
     """
     raw = str(one_slot or "").strip()
@@ -8823,7 +8830,7 @@ def answer_picks(one_slot) -> list:
         return []
     if not is_choice_combo(raw):
         return [raw]
-    return [p.strip() for p in raw.split("+") if p.strip()]
+    return [p.strip() for p in re.split(r"[/+]", raw) if p.strip()]
 
 
 def _answer_key_sets(key_slot) -> list:
@@ -8870,27 +8877,26 @@ def _as_number(s):
 def answer_matches(mine, key_slot) -> bool:
     """학생이 낸 답이 정답으로 인정되는지.
 
-    답이 둘인 문항(3+5)은 학생도 '3+5' 처럼 두 개를 내고, 순서는 상관없이
-    묶음이 똑같아야 맞다. 하나만 내면 틀린다.
+    답이 둘인 문항(3/5 · 3+5)은 학생도 '3+5' 처럼 두 개를 내고, 순서는 상관없이
+    묶음이 똑같아야 맞다. 하나만 내면 틀린다. '3|5'는 둘 중 하나만 내도 맞다.
     띄어쓰기·대소문자는 무시한다(단답형을 너그럽게 채점하려고)."""
     mine = str(mine or "").strip()
     if not mine:
         return False
-    mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
-    if not mine_set:
-        return False
-    if mine_set in _answer_key_sets(key_slot):
-        return True
-    # 💡 수학 단답형: 정답이 '3/4'이면 학생이 '0.75'나 '6/8'로 써도 같은 수이므로 맞다.
-    if not is_choice_combo(key_slot) and not is_choice_combo(mine):
+    if not is_choice_combo(key_slot):
+        # 단답형(분수 · 식 · 글자): 학생 답은 글자 그대로 본다 — '3/4'를 보기 번호로 쪼개지 않는다
+        if _norm_answer_text(mine) == _norm_answer_text(key_slot):
+            return True
+        # 💡 수학 단답형: 정답이 '3/4'이면 학생이 '0.75'나 '6/8'로 써도 같은 수이므로 맞다.
         a, b = _as_number(mine), _as_number(key_slot)
         return a is not None and b is not None and a == b
-    return False
+    mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
+    return bool(mine_set) and mine_set in _answer_key_sets(key_slot)
 
 
 def answer_label(key_slot) -> str:
     """정답을 사람이 읽기 좋은 문구로.
-    3/5 → '3번 또는 5번',  3+5 → '3번과 5번',  1+2/3+4 → '1번과 2번 또는 3번과 4번'."""
+    3/5 · 3+5 → '3번과 5번',  3|5 → '3번 또는 5번',  1+2|3+4 → '1번과 2번 또는 3번과 4번'."""
     parts = answer_slots(key_slot)
     if not parts or not is_choice_combo(key_slot):
         return literal_answer(key_slot)
@@ -8971,10 +8977,10 @@ _CIRCLED = "①②③④⑤"
 
 
 def multi_choice_slot(text: str) -> str:
-    """'③⑤' · '3,5' · '3 5' · '3·5' 처럼 보기 번호가 여럿 적힌 한 칸 → '3/5'.
-    '/'(둘 중 아무거나) · '+'(둘 다) 를 직접 적은 것과 단답형 글자는 그대로 둔다."""
+    """'③⑤' · '3,5' · '3 5' · '3·5' 처럼 보기 번호가 여럿 적힌 한 칸 → '3/5'(둘 다 골라야 맞음).
+    '/' · '+'(둘 다) · '|'(둘 중 아무거나) 를 직접 적은 것과 단답형 글자는 그대로 둔다."""
     t = str(text or "").strip()
-    if "/" in t or "+" in t:
+    if "/" in t or "+" in t or "|" in t:
         return t
     for i, ch in enumerate(_CIRCLED):
         t = t.replace(ch, f" {i + 1} ")
@@ -9092,6 +9098,8 @@ async def create_homework(
     old_title: str = Form(""),
     # 💡 여러 반을 고를 수 있다. 쉼표로 이어 보낸다. 비우면 전체 대상.
     target_classes: str = Form(""),
+    # 💡 학생을 골라 그 학생에게만 내는 과제. 쉼표로 이어 보낸다. 반과 같이 고르면 그 반 학생에게도 보인다.
+    target_students: str = Form(""),
     # 💡 제출 기한 ('2026-10-05T18:00'). 비우면 기한 없음. 지나도 낼 수는 있고 '기한 후 제출'로 남는다.
     deadline: str = Form(""),
     # 💡 묶음 이름 ('10월 4일 과제'). 같은 날 낸 과제 여러 개를 학생 화면에서 게시물 하나로 모은다.
@@ -9139,6 +9147,7 @@ async def create_homework(
                 "desc": desc,
                 "kind": kind_norm,
                 "target_classes": normalize_target_classes(target_classes),
+                "target_students": normalize_target_students(target_students),
                 "answer_text": answer_text,
                 "answer_file": ans_url,
                 # 정답을 넣어두면 학생이 OMR로 답만 마킹해도 그 자리에서 채점된다
@@ -9170,11 +9179,20 @@ async def create_homework(
             body = (f"'{group}'에 '{title}' 과제가 더 올라왔어요.{due} 확인해보세요!" if siblings
                     else f"'{group}' 과제가 올라왔어요.{due} 확인해보세요!")
         if push:
-            await asyncio.to_thread(
-                send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
-                body, "/#prog-classroom", "homework")
-            kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
-                           "", normalize_target_classes(target_classes))
+            tstudents = normalize_target_students(target_students)
+            if tstudents:
+                # 고른 학생(+ 함께 고른 반 학생)에게만 알린다
+                row = {"target_classes": normalize_target_classes(target_classes), "target_students": tstudents}
+                names = await asyncio.to_thread(board_audience_names, row)
+                await asyncio.to_thread(send_push_to_names, names, f"새 {kind_label}", body, "/#prog-classroom", "homework")
+                kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
+                               "", [], names=names)
+            else:
+                await asyncio.to_thread(
+                    send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
+                    body, "/#prog-classroom", "homework")
+                kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
+                               "", normalize_target_classes(target_classes))
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
@@ -9399,7 +9417,10 @@ def omr_roster(kind: str, title: str):
     rows = []
     for d in db.collection("students").stream():
         data = d.to_dict() or {}
-        if not task_visible_to_student(subject, targets, d.id, info=targeting_info_from(data)):
+        info = targeting_info_from(data)
+        visible = (homework_visible_to_student(meta, d.id, info=info) if kind != "exam"
+                   else task_visible_to_student(subject, targets, d.id, info=info))
+        if not visible:
             continue
         rows.append({"name": d.id, "school": data.get("school", ""), "grade": data.get("grade", ""),
                      "done": d.id in done})
@@ -9797,7 +9818,7 @@ def student_todo(student_name: str):
         title = h.get("title", "")
         if not title or title in done["과제 제출"] or h.get("hidden"):
             continue
-        if not task_visible_to_student("", task_target_classes(h), name, info):
+        if not homework_visible_to_student(h, name, info):
             continue
         due = _deadline_dt(h.get("deadline"))
         if due is not None:

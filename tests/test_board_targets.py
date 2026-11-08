@@ -51,3 +51,21 @@ class BoardTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeworkTargetTests(unittest.TestCase):
+    """과제도 학생을 골라 낼 수 있다 — 공지와 같은 규칙을 그대로 쓴다."""
+
+    def test_homework_picked_students(self):
+        hw = {"title": "문법 과제", "target_classes": [], "target_students": ["김하나"]}
+        self.assertTrue(visible(hw, "김하나", info("A반")))
+        self.assertFalse(visible(hw, "이두리", info("A반")))
+
+    def test_homework_without_students_keeps_class_rule(self):
+        hw = {"title": "문법 과제", "target_classes": ["A반"]}
+        self.assertTrue(visible(hw, "김하나", info("A반")))
+        self.assertFalse(visible(hw, "이두리", info("B반")))
+
+    def test_homework_visible_helper_is_same_rule(self):
+        self.assertIn("def homework_visible_to_student(hw: dict, student_name: str, info=_NO_INFO)", _SRC)
+        self.assertIn("return board_visible_to_student(hw, student_name, info=info)", _SRC)
