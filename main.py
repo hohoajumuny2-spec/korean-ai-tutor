@@ -10122,9 +10122,12 @@ def _qna_video(v) -> str:
 
 
 def _qna_can_see(p: dict, student_name: str, is_admin: bool) -> bool:
-    if is_admin or not p.get("private"):
+    """'선생님께만' 질문은 질문한 학생 · 원장님 · 원장님이 공유한 학생(shared_with)만 본다.
+    원장님이 '모두에게 공개'(shared_all)로 바꾸면 모두가 본다."""
+    if is_admin or not p.get("private") or p.get("shared_all"):
         return True
-    return bool(student_name) and p.get("author") == student_name.strip()
+    me = (student_name or "").strip()
+    return bool(me) and (p.get("author") == me or me in (p.get("shared_with") or []))
 
 
 async def _qna_save_images(files) -> list:
@@ -10156,6 +10159,7 @@ def _qna_public(p: dict, pid: str) -> dict:
             "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
             "topic": p.get("topic", ""), "task_title": p.get("task_title", ""), "qnum": p.get("qnum", ""),
             "private": bool(p.get("private")),
+            "shared_with": p.get("shared_with") or [], "shared_all": bool(p.get("shared_all")),
             "teacher_answered": any(a.get("is_admin") for a in answers),
             "answers": answers, "answer_count": len(answers)}
 
@@ -10267,6 +10271,41 @@ def _qna_answer_to_homework(post: dict, text: str, video: str) -> str:
     if upd:
         ref.set(upd, merge=True)
     return f"{title} {no}번"
+
+
+class QnaShareReq(BaseModel):
+    students: list = []          # 함께 볼 학생 이름
+    all: bool = False            # 모두에게 공개
+    task_audience: bool = False  # 이 과제를 받은 학생 모두에게
+
+
+@app.post("/api/qna/{post_id}/share", dependencies=[Depends(verify_admin)])
+def qna_share(post_id: str, req: QnaShareReq):
+    """원장님이 '선생님께만' 질문(과 그 해설)을 고른 학생에게도 보이게 한다.
+    새로 공유된 학생에게는 앱 알림을 보낸다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    post = doc.to_dict() or {}
+    names = normalize_target_students(req.students)
+    if req.task_audience and post.get("task_title"):
+        hw = homework_doc(post["task_title"])
+        if hw:
+            names += [d.id for d in db.collection("students").stream()
+                      if homework_visible_to_student(hw, d.id, info=targeting_info_from(d.to_dict() or {}))]
+    author = post.get("author", "")
+    names = [n for n in dict.fromkeys(names) if n and n != author][:500]
+    before = set(post.get("shared_with") or [])
+    ref.update({"shared_with": names, "shared_all": bool(req.all)})
+    new = [n for n in names if n not in before]
+    if new:
+        about = (post.get("task_title") or "") + (f" {post['qnum']}번" if post.get("qnum") else "")
+        send_push_to_names(new, "선생님 해설이 공유됐어요", (about or "질문 게시판") + " — 선생님이 해설을 보여 주셨어요.",
+                           "/#prog-qna", "qna")
+    return {"success": True, "shared_with": names, "shared_all": bool(req.all), "notified": len(new)}
 
 
 class QnaOwnerReq(BaseModel):

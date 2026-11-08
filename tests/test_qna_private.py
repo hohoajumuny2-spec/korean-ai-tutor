@@ -28,6 +28,12 @@ class QnaPrivateTests(unittest.TestCase):
         self.assertFalse(can_see(p, "", False))
         self.assertTrue(can_see(p, "", True))
 
+    def test_shared_students_can_see(self):
+        p = {"author": "김하나", "private": True, "shared_with": ["박세나"]}
+        self.assertTrue(can_see(p, "박세나", False))
+        self.assertFalse(can_see(p, "이두리", False))
+        self.assertTrue(can_see({**p, "shared_all": True}, "이두리", False))
+
     def test_video_link_must_be_web_address(self):
         self.assertEqual(video("https://youtu.be/abc"), "https://youtu.be/abc")
         self.assertEqual(video("javascript:alert(1)"), "")
