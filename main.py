@@ -10110,6 +10110,24 @@ QNA_COLL = "qna_posts"
 QNA_MAX_IMAGES = 4
 QNA_TEXT_MAX = 2000
 QNA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif"}
+# 💡 2026-11-08: 과제 · 클리닉 질문 — 어느 과제 몇 번인지 달고, '선생님께만'으로 올리면
+#    질문한 학생과 원장님만 본다. 원장님은 글 · 사진 · 영상 링크로 답하고,
+#    그 답을 과제 해설에도 넣어 다른 학생도 보게 할 수 있다.
+QNA_TOPICS = {"homework": "과제", "clinic": "클리닉"}
+
+
+def _qna_video(v) -> str:
+    v = str(v or "").strip()[:300]
+    return v if re.match(r"^https?://", v) else ""
+
+
+def _qna_can_see(p: dict, student_name: str, is_admin: bool) -> bool:
+    """'선생님께만' 질문은 질문한 학생 · 원장님 · 원장님이 공유한 학생(shared_with)만 본다.
+    원장님이 '모두에게 공개'(shared_all)로 바꾸면 모두가 본다."""
+    if is_admin or not p.get("private") or p.get("shared_all"):
+        return True
+    me = (student_name or "").strip()
+    return bool(me) and (p.get("author") == me or me in (p.get("shared_with") or []))
 
 
 async def _qna_save_images(files) -> list:
@@ -10139,22 +10157,32 @@ def _qna_public(p: dict, pid: str) -> dict:
             "school": p.get("school", ""), "grade": p.get("grade", ""),
             "subject": p.get("subject", ""), "text": p.get("text", ""), "images": p.get("images") or [],
             "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
+            "topic": p.get("topic", ""), "task_title": p.get("task_title", ""), "qnum": p.get("qnum", ""),
+            "private": bool(p.get("private")),
+            "shared_with": p.get("shared_with") or [], "shared_all": bool(p.get("shared_all")),
+            "teacher_answered": any(a.get("is_admin") for a in answers),
             "answers": answers, "answer_count": len(answers)}
 
 
 @app.get("/api/qna")
-def qna_list(limit: int = 60):
+def qna_list(limit: int = 60, student_name: str = "", x_admin_token: Optional[str] = Header(None)):
+    """질문 목록. '선생님께만' 질문은 질문한 학생(student_name)과 원장님에게만 보인다."""
     if db is None:
         return {"success": False, "posts": []}
+    is_admin = bool(x_admin_token and _resolve_admin_token(x_admin_token))
     rows = [_qna_public(d.to_dict() or {}, d.id) for d in
             db.collection(QNA_COLL).order_by("created_at", direction=firestore.Query.DESCENDING)
-            .limit(max(1, min(int(limit or 60), 200))).stream()]
-    return {"success": True, "posts": rows}
+            .limit(max(1, min(int(limit or 60), 200) * 2)).stream()
+            if _qna_can_see(d.to_dict() or {}, student_name, is_admin)]
+    return {"success": True, "posts": rows[:max(1, min(int(limit or 60), 200))]}
 
 
 @app.post("/api/qna")
 async def qna_create(student_name: str = Form(""), school: str = Form(""), grade: str = Form(""),
                      subject: str = Form(""), text: str = Form(""),
+                     # 과제 · 클리닉 질문: 무엇에 대한 질문인지와 '선생님께만' 여부
+                     topic: str = Form(""), task_title: str = Form(""), qnum: str = Form(""),
+                     private: str = Form(""),
                      images: List[UploadFile] = File(None),
                      x_admin_token: Optional[str] = Header(None)):
     if db is None:
@@ -10168,16 +10196,26 @@ async def qna_create(student_name: str = Form(""), school: str = Form(""), grade
         return {"success": False, "detail": "질문 내용이나 사진을 넣어주세요."}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ref = db.collection(QNA_COLL).document()
+    topic = topic if topic in QNA_TOPICS else ""
+    qnum = re.sub(r"[^0-9]", "", str(qnum or ""))[:3]
     row = {**who, "school": school, "grade": grade, "subject": (subject or "").strip()[:20],
-           "text": text, "images": urls, "solved": False, "answers": [], "created_at": now}
+           "text": text, "images": urls, "solved": False, "answers": [], "created_at": now,
+           "topic": topic, "task_title": (task_title or "").strip()[:80], "qnum": qnum,
+           "private": str(private).strip().lower() in ("1", "true", "yes", "on")}
     await asyncio.to_thread(ref.set, row)
     if not who["is_admin"]:
-        send_telegram_message(f"❓ [질문 게시판]\n{who['author']} 학생이 질문을 올렸습니다.\n{text[:80]}")
+        about = ""
+        if topic:
+            about = f"[{QNA_TOPICS[topic]}{(' ' + row['task_title']) if row['task_title'] else ''}{(' ' + qnum + '번') if qnum else ''}] "
+        to = "선생님께 " if row["private"] else ""
+        send_telegram_message(f"❓ [질문 게시판] {about}\n{who['author']} 학생이 {to}질문을 올렸습니다.\n{text[:80]}")
     return {"success": True, "post": _qna_public(row, ref.id)}
 
 
 @app.post("/api/qna/{post_id}/answer")
 async def qna_answer(post_id: str, student_name: str = Form(""), text: str = Form(""),
+                     # 원장님 답: 해설 영상 링크(유튜브 등), 그리고 이 답을 과제 해설에도 넣을지
+                     video_url: str = Form(""), also_explain: str = Form(""),
                      images: List[UploadFile] = File(None),
                      x_admin_token: Optional[str] = Header(None)):
     if db is None:
@@ -10190,18 +10228,84 @@ async def qna_answer(post_id: str, student_name: str = Form(""), text: str = For
     doc = await asyncio.to_thread(ref.get)
     if not doc.exists:
         return {"success": False, "detail": "지워진 질문입니다."}
+    post = doc.to_dict() or {}
+    if not _qna_can_see(post, who["author"], who["is_admin"]):
+        return {"success": False, "detail": "선생님께 보낸 질문이라 답할 수 없습니다."}
+    video = _qna_video(video_url) if who["is_admin"] else ""
     urls = await _qna_save_images(images)
-    if not text and not urls:
-        return {"success": False, "detail": "답 내용이나 사진을 넣어주세요."}
-    ans = {**who, "id": uuid.uuid4().hex[:12], "text": text, "images": urls,
+    if not text and not urls and not video:
+        return {"success": False, "detail": "답 내용이나 사진, 영상 링크를 넣어주세요."}
+    ans = {**who, "id": uuid.uuid4().hex[:12], "text": text, "images": urls, "video_url": video,
            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     await asyncio.to_thread(ref.update, {"answers": firestore.ArrayUnion([ans])})
-    asker = (doc.to_dict() or {}).get("author", "")
+    saved_to = ""
+    if who["is_admin"] and str(also_explain).strip().lower() in ("1", "true", "yes", "on"):
+        saved_to = await asyncio.to_thread(_qna_answer_to_homework, post, text, video)
+    asker = post.get("author", "")
     if asker and asker != who["author"]:
         label = "원장님" if who["is_admin"] else who["author"]
         await asyncio.to_thread(send_push_to_student, asker, "내 질문에 답이 달렸어요",
-                                f"{label}: {(text or '사진')[:80]}", "/#prog-qna", "qna")
-    return {"success": True, "answer": ans}
+                                f"{label}: {(text or ('해설 영상' if video else '사진'))[:80]}", "/#prog-qna", "qna")
+    return {"success": True, "answer": ans, "saved_to": saved_to}
+
+
+def _qna_answer_to_homework(post: dict, text: str, video: str) -> str:
+    """원장님 답을 그 과제의 문항 해설(글)과 해설 영상에 넣는다. 넣은 곳을 '과제명 n번'으로 돌려준다.
+    이미 해설이 있으면 그 아래에 '질문 답변'으로 덧붙인다(지우지 않는다)."""
+    title, no = str(post.get("task_title") or "").strip(), str(post.get("qnum") or "").strip()
+    if db is None or not title or not no or (not text and not video):
+        return ""
+    ref = db.collection("homeworks").document(sanitize_doc_id(title))
+    doc = ref.get()
+    if not doc.exists:
+        return ""
+    data = doc.to_dict() or {}
+    upd = {}
+    if text:
+        expl = dict(data.get("explanations") or {})
+        old = str(expl.get(no) or "").strip()
+        expl[no] = (old + "\n\n[질문 답변] " + text) if old and text not in old else (old or text)
+        upd["explanations"] = expl
+    if video:
+        upd["qmeta"] = study_extras.merge_meta(study_extras.parse_meta_map(data.get("qmeta")), {no: {"video": video}})
+    if upd:
+        ref.set(upd, merge=True)
+    return f"{title} {no}번"
+
+
+class QnaShareReq(BaseModel):
+    students: list = []          # 함께 볼 학생 이름
+    all: bool = False            # 모두에게 공개
+    task_audience: bool = False  # 이 과제를 받은 학생 모두에게
+
+
+@app.post("/api/qna/{post_id}/share", dependencies=[Depends(verify_admin)])
+def qna_share(post_id: str, req: QnaShareReq):
+    """원장님이 '선생님께만' 질문(과 그 해설)을 고른 학생에게도 보이게 한다.
+    새로 공유된 학생에게는 앱 알림을 보낸다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    ref = db.collection(QNA_COLL).document(sanitize_doc_id(post_id))
+    doc = ref.get()
+    if not doc.exists:
+        return {"success": False, "detail": "지워진 질문입니다."}
+    post = doc.to_dict() or {}
+    names = normalize_target_students(req.students)
+    if req.task_audience and post.get("task_title"):
+        hw = homework_doc(post["task_title"])
+        if hw:
+            names += [d.id for d in db.collection("students").stream()
+                      if homework_visible_to_student(hw, d.id, info=targeting_info_from(d.to_dict() or {}))]
+    author = post.get("author", "")
+    names = [n for n in dict.fromkeys(names) if n and n != author][:500]
+    before = set(post.get("shared_with") or [])
+    ref.update({"shared_with": names, "shared_all": bool(req.all)})
+    new = [n for n in names if n not in before]
+    if new:
+        about = (post.get("task_title") or "") + (f" {post['qnum']}번" if post.get("qnum") else "")
+        send_push_to_names(new, "선생님 해설이 공유됐어요", (about or "질문 게시판") + " — 선생님이 해설을 보여 주셨어요.",
+                           "/#prog-qna", "qna")
+    return {"success": True, "shared_with": names, "shared_all": bool(req.all), "notified": len(new)}
 
 
 class QnaOwnerReq(BaseModel):
