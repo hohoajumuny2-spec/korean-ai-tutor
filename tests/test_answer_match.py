@@ -18,18 +18,33 @@ slots, picks = _ns["answer_slots"], _ns["answer_picks"]
 
 
 class AnswerMatchTests(unittest.TestCase):
-    def test_choice_combos_still_work(self):
-        self.assertEqual(slots("3/5"), ["3", "5"])
+    def test_multi_answer_needs_all_picks(self):
+        # 💡 2026-11-08: 복수 정답(3/5 · 3+5)은 둘 다 골라야 맞다. 하나만 고르면 틀린다.
+        self.assertEqual(slots("3/5"), ["3/5"])
+        self.assertEqual(picks("3/5"), ["3", "5"])
         self.assertEqual(picks("2+4"), ["2", "4"])
-        self.assertTrue(matches("5", "3/5"))
+        self.assertFalse(matches("5", "3/5"))
+        self.assertTrue(matches("3+5", "3/5"))
+        self.assertTrue(matches("5+3", "3/5"))
         self.assertTrue(matches("4+2", "2+4"))
         self.assertFalse(matches("2", "2+4"))
-        self.assertEqual(label("1+2/3+4"), "1번과 2번 또는 3번과 4번")
-        self.assertEqual(kind("3/5"), "choice")
+        self.assertEqual(kind("3/5"), "multi2")
         self.assertEqual(kind("2+4"), "multi2")
+        self.assertEqual(label("3/5"), "3번과 5번")
+
+    def test_either_one_accepted_with_bar(self):
+        # 이의 제기로 둘 중 아무거나 인정할 때는 '3|5'
+        self.assertEqual(slots("3|5"), ["3", "5"])
+        self.assertTrue(matches("3", "3|5"))
+        self.assertTrue(matches("5", "3|5"))
+        self.assertFalse(matches("2", "3|5"))
+        self.assertEqual(kind("3|5"), "choice")
+        self.assertEqual(label("3|5"), "3번 또는 5번")
+        self.assertEqual(label("1+2|3+4"), "1번과 2번 또는 3번과 4번")
+        self.assertTrue(matches("2+1", "1+2|3+4"))
 
     def test_fraction_marked_with_equals_is_one_short_answer(self):
-        self.assertEqual(slots("3/4"), ["3", "4"])       # 표시가 없으면 예전처럼 '3번 또는 4번'
+        self.assertEqual(picks("3/4"), ["3", "4"])       # 표시가 없으면 '3번과 4번 둘 다'로 읽는다
         self.assertEqual(slots("=3/4"), ["=3/4"])        # '=' 를 붙이면 분수 3/4 그대로
         self.assertEqual(slots("7/8"), ["7/8"])          # 보기 번호(1~5)가 아니면 표시 없이도 분수
         self.assertEqual(picks("2x+1"), ["2x+1"])

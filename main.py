@@ -8782,7 +8782,9 @@ def homework_late_fields(hw: dict, prev: Optional[dict]) -> dict:
 
 
 def is_choice_combo(key_slot) -> bool:
-    """'3/5' · '2+4' · '1+2/3+4' 처럼 '/'와 '+'로 이은 것이 전부 보기 번호(1~5)인지.
+    """'3/5' · '2+4' · '1+2|3+4' 처럼 '/' '+' '|'로 이은 것이 전부 보기 번호(1~5)인지.
+
+    💡 2026-11-08: 복수 정답(3/5 · 3+5)은 "둘 다 골라야 맞음"이다. 둘 중 아무거나 인정(이의 제기)은 '3|5'.
 
     💡 수학 정답 '3/4'(분수)나 '2x+1'(식)에도 '/'와 '+'가 들어간다. 예전에는 그것도
        '3번 또는 4번'으로 읽어 분수 답이 전부 틀리게 채점됐다. 보기 번호로만 이뤄졌을 때만
@@ -8790,9 +8792,9 @@ def is_choice_combo(key_slot) -> bool:
     raw = str(key_slot or "").strip()
     # 💡 '=3/4' 처럼 앞에 '='를 붙이면 "글자 그대로의 답(분수 3/4)"이다. 1/2 · 3/4 같은 분수는
     #    보기 번호와 구별이 안 되므로 이 표시로 가른다(사진으로 읽은 단답형에는 서버가 자동으로 붙인다).
-    if not raw or raw.startswith("=") or ("/" not in raw and "+" not in raw):
+    if not raw or raw.startswith("=") or not any(ch in raw for ch in "/+|"):
         return False
-    parts = [p.strip() for p in re.split(r"[/+]", raw)]
+    parts = [p.strip() for p in re.split(r"[/+|]", raw)]
     return all(p in ("1", "2", "3", "4", "5") for p in parts)
 
 
@@ -8803,24 +8805,24 @@ def literal_answer(key_slot) -> str:
 
 
 def answer_slots(key_slot) -> list:
-    """정답 한 자리에 슬래시(/)로 여러 보기가 적혀 있으면 인정하는 보기 목록으로 나눈다.
-    문항에 결함이 있어 복수 정답을 인정해야 할 때 쓴다. 슬래시가 없으면 목록 하나짜리.
+    """정답 한 자리에 세로줄(|)로 여러 답이 적혀 있으면 '인정하는 답' 목록으로 나눈다.
+    문항에 결함이 있어 둘 중 아무거나 맞다고 인정해야 할 때 쓴다('3|5'). 없으면 목록 하나짜리.
     분수 '3/4'처럼 보기 번호가 아닌 것은 나누지 않는다(is_choice_combo)."""
     raw = str(key_slot or "").strip()
     if not raw:
         return []
     if not is_choice_combo(raw):
         return [raw]
-    return [p.strip() for p in raw.split("/") if p.strip()]
+    return [p.strip() for p in raw.split("|") if p.strip()]
 
 
 def answer_picks(one_slot) -> list:
     """한 가지 정답 안에서 '둘 다 골라야 하는' 보기들을 나눈다.
 
     두 가지를 구분해서 적는다.
-      3/5   — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
-      3+5   — 원래 답이 둘인 문항. 3과 5를 모두 골라야 맞다 (여기)
-    섞어서도 쓴다. 1+2/3+4 = {1,2} 이거나 {3,4}.
+      3/5 · 3+5 — 답이 둘인 문항(복수 정답). 3과 5를 모두 골라야 맞다 (여기)
+      3|5       — 문항에 결함이 있어 둘 중 아무거나 맞다고 인정 (answer_slots)
+    섞어서도 쓴다. 1+2|3+4 = {1,2} 이거나 {3,4}.
     'x+2' 같은 식은 보기 번호가 아니므로 나누지 않는다.
     """
     raw = str(one_slot or "").strip()
@@ -8828,7 +8830,7 @@ def answer_picks(one_slot) -> list:
         return []
     if not is_choice_combo(raw):
         return [raw]
-    return [p.strip() for p in raw.split("+") if p.strip()]
+    return [p.strip() for p in re.split(r"[/+]", raw) if p.strip()]
 
 
 def _answer_key_sets(key_slot) -> list:
@@ -8875,27 +8877,26 @@ def _as_number(s):
 def answer_matches(mine, key_slot) -> bool:
     """학생이 낸 답이 정답으로 인정되는지.
 
-    답이 둘인 문항(3+5)은 학생도 '3+5' 처럼 두 개를 내고, 순서는 상관없이
-    묶음이 똑같아야 맞다. 하나만 내면 틀린다.
+    답이 둘인 문항(3/5 · 3+5)은 학생도 '3+5' 처럼 두 개를 내고, 순서는 상관없이
+    묶음이 똑같아야 맞다. 하나만 내면 틀린다. '3|5'는 둘 중 하나만 내도 맞다.
     띄어쓰기·대소문자는 무시한다(단답형을 너그럽게 채점하려고)."""
     mine = str(mine or "").strip()
     if not mine:
         return False
-    mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
-    if not mine_set:
-        return False
-    if mine_set in _answer_key_sets(key_slot):
-        return True
-    # 💡 수학 단답형: 정답이 '3/4'이면 학생이 '0.75'나 '6/8'로 써도 같은 수이므로 맞다.
-    if not is_choice_combo(key_slot) and not is_choice_combo(mine):
+    if not is_choice_combo(key_slot):
+        # 단답형(분수 · 식 · 글자): 학생 답은 글자 그대로 본다 — '3/4'를 보기 번호로 쪼개지 않는다
+        if _norm_answer_text(mine) == _norm_answer_text(key_slot):
+            return True
+        # 💡 수학 단답형: 정답이 '3/4'이면 학생이 '0.75'나 '6/8'로 써도 같은 수이므로 맞다.
         a, b = _as_number(mine), _as_number(key_slot)
         return a is not None and b is not None and a == b
-    return False
+    mine_set = tuple(sorted(_norm_answer_text(x) for x in answer_picks(mine)))
+    return bool(mine_set) and mine_set in _answer_key_sets(key_slot)
 
 
 def answer_label(key_slot) -> str:
     """정답을 사람이 읽기 좋은 문구로.
-    3/5 → '3번 또는 5번',  3+5 → '3번과 5번',  1+2/3+4 → '1번과 2번 또는 3번과 4번'."""
+    3/5 · 3+5 → '3번과 5번',  3|5 → '3번 또는 5번',  1+2|3+4 → '1번과 2번 또는 3번과 4번'."""
     parts = answer_slots(key_slot)
     if not parts or not is_choice_combo(key_slot):
         return literal_answer(key_slot)
@@ -8976,10 +8977,10 @@ _CIRCLED = "①②③④⑤"
 
 
 def multi_choice_slot(text: str) -> str:
-    """'③⑤' · '3,5' · '3 5' · '3·5' 처럼 보기 번호가 여럿 적힌 한 칸 → '3/5'.
-    '/'(둘 중 아무거나) · '+'(둘 다) 를 직접 적은 것과 단답형 글자는 그대로 둔다."""
+    """'③⑤' · '3,5' · '3 5' · '3·5' 처럼 보기 번호가 여럿 적힌 한 칸 → '3/5'(둘 다 골라야 맞음).
+    '/' · '+'(둘 다) · '|'(둘 중 아무거나) 를 직접 적은 것과 단답형 글자는 그대로 둔다."""
     t = str(text or "").strip()
-    if "/" in t or "+" in t:
+    if "/" in t or "+" in t or "|" in t:
         return t
     for i, ch in enumerate(_CIRCLED):
         t = t.replace(ch, f" {i + 1} ")
