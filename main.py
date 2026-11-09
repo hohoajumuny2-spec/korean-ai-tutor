@@ -6728,6 +6728,21 @@ def audience_names(subject: str, target_class) -> list:
     return out
 
 
+@app.post("/api/admin/site_token")
+def admin_site_token(x_notify_secret: Optional[str] = Header(None)):
+    """홈페이지(logyedu.com) 관리자 화면이 원장님 대신 관리자 토큰을 받아 간다.
+
+    💡 2026-11-09: 상담 · 학생 공지 · 출제 · 영어 단어 시험 관리를 logyedu.com 관리자 화면(알림·소식)으로
+       옮기면서, 그 화면 안에 이 앱을 틀(iframe)로 열어 쓴다. 원장님이 다시 로그인하지 않게
+       두 서버가 같이 아는 NOTIFY_SECRET 이 맞을 때만 원장님 토큰을 내준다(홈페이지는 원장님 계정에만 건넨다)."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or not x_notify_secret or not secrets.compare_digest(secret, x_notify_secret.strip()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    return {"success": True, "admin_token": issue_admin_token("원장님"), "admin_name": "원장님", "is_owner": True}
+
+
 @app.get("/api/notice/homework_status")
 def notice_homework_status(date: str = "", x_notify_secret: Optional[str] = Header(None)):
     """홈페이지(logyedu.com) 알림장이 묻는다: 수업일 즈음 과제를 누가 냈고 누가 안 냈는지.
