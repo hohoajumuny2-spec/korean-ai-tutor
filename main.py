@@ -2608,6 +2608,161 @@ def answer_clinic_poll(req: ClinicPollAnswerReq):
     return {"success": True, "count": len(chosen)}
 
 
+# ─────────────────────────────────────────────────────────
+# 설문조사 — 2026-11-09. 원장님이 질문을 만들어 반 · 학생에게 보내고, 학생은 바탕화면 맨 위에서 답한다.
+#   계산은 survey.py. 대상 규칙은 공지와 같다(반 · 학생 지정, 비우면 전체).
+# ─────────────────────────────────────────────────────────
+class SurveyReq(BaseModel):
+    id: str = ""
+    title: str = ""
+    note: str = ""
+    questions: list = []
+    target_classes: list = []
+    target_students: list = []
+    deadline: str = ""
+    anonymous: bool = False
+    open: bool = True
+    push: bool = True
+
+
+class SurveyAnswerReq(BaseModel):
+    survey_id: str
+    student_name: str
+    answers: dict = {}
+
+
+def _survey_answer_id(sid: str, name: str) -> str:
+    return sanitize_doc_id(f"{sid}__{name}")
+
+
+def _survey_open(sv_row: dict) -> bool:
+    if not sv_row.get("open"):
+        return False
+    dl = str(sv_row.get("deadline") or "").strip()
+    return not (dl and deadline_passed(dl))
+
+
+@app.post("/api/admin/survey", dependencies=[Depends(verify_admin)])
+def save_survey(req: SurveyReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import survey as sv
+    title = (req.title or "").strip()[:80]
+    if not title:
+        return {"success": False, "detail": "설문 제목을 넣어 주세요."}
+    qs = sv.normalize_questions(req.questions)
+    if not qs:
+        return {"success": False, "detail": "질문을 하나 이상 넣어 주세요. (고르기 질문은 보기가 2개 이상이어야 합니다)"}
+    row = {"title": title, "note": (req.note or "").strip()[:500], "questions": qs,
+           "target_classes": normalize_target_classes(req.target_classes),
+           "target_students": normalize_target_students(req.target_students),
+           "deadline": str(req.deadline or "").strip().replace(" ", "T")[:16],
+           "anonymous": bool(req.anonymous), "open": bool(req.open),
+           "updated_at": now_kst().strftime("%Y-%m-%d %H:%M")}
+    if req.id:
+        ref = db.collection("surveys").document(sanitize_doc_id(req.id))
+        if not ref.get().exists:
+            return {"success": False, "detail": "설문을 찾지 못했습니다."}
+        ref.set(row, merge=True)
+        return {"success": True, "id": ref.id}
+    row["created_at"] = row["updated_at"]
+    ref = db.collection("surveys").document()
+    ref.set(row)
+    if req.push and row["open"]:
+        names = board_audience_names(row)
+        send_push_to_names(names, "📝 설문에 답해 주세요", title[:120], "/#dashboard", "survey")
+    return {"success": True, "id": ref.id}
+
+
+@app.get("/api/admin/surveys", dependencies=[Depends(verify_admin)])
+def list_surveys():
+    if db is None:
+        return {"success": False, "surveys": []}
+    out = []
+    for d in db.collection("surveys").stream():
+        r = d.to_dict() or {}
+        n = sum(1 for _ in db.collection("survey_answers").where("survey_id", "==", d.id).stream())
+        out.append({"id": d.id, "title": r.get("title", ""), "open": _survey_open(r), "closed_by_hand": not r.get("open"),
+                    "deadline": str(r.get("deadline") or "").replace("T", " "), "answered": n,
+                    "question_count": len(r.get("questions") or []), "created_at": r.get("created_at", "")})
+    out.sort(key=lambda x: str(x["created_at"]), reverse=True)
+    return {"success": True, "surveys": out}
+
+
+@app.get("/api/admin/survey", dependencies=[Depends(verify_admin)])
+def get_survey(id: str = ""):
+    if db is None or not id:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    import survey as sv
+    doc = db.collection("surveys").document(sanitize_doc_id(id)).get()
+    if not doc.exists:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    r = doc.to_dict() or {}
+    rows = [a.to_dict() or {} for a in db.collection("survey_answers").where("survey_id", "==", doc.id).stream()]
+    result = sv.summary(r.get("questions") or [], rows, board_audience_names(r), bool(r.get("anonymous")))
+    return {"success": True, "survey": {"id": doc.id, **r, "is_open": _survey_open(r)}, "result": result}
+
+
+@app.post("/api/admin/survey/delete", dependencies=[Depends(verify_admin)])
+def delete_survey(req: SurveyReq):
+    if db is None or not req.id:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    sid = sanitize_doc_id(req.id)
+    for a in db.collection("survey_answers").where("survey_id", "==", sid).stream():
+        a.reference.delete()
+    db.collection("surveys").document(sid).delete()
+    return {"success": True}
+
+
+@app.get("/api/student/surveys")
+def student_surveys(student_name: str = ""):
+    """학생 화면: 나에게 온 열린 설문과 내 답."""
+    name = urllib.parse.unquote(student_name or "").strip()
+    if db is None or not name:
+        return {"success": False, "surveys": []}
+    sdoc = db.collection("students").document(name).get()
+    info = targeting_info_from(sdoc.to_dict() or {}) if sdoc.exists else None
+    out = []
+    for d in db.collection("surveys").stream():
+        r = d.to_dict() or {}
+        if not _survey_open(r) or not board_visible_to_student(r, name, info=info):
+            continue
+        adoc = db.collection("survey_answers").document(_survey_answer_id(d.id, name)).get()
+        mine = (adoc.to_dict() or {}) if adoc.exists else {}
+        out.append({"id": d.id, "title": r.get("title", ""), "note": r.get("note", ""), "questions": r.get("questions") or [],
+                    "deadline": str(r.get("deadline") or "").replace("T", " ")[:16], "anonymous": bool(r.get("anonymous")),
+                    "my_answers": mine.get("answers") or {}, "answered": bool(mine.get("updated_at")),
+                    "created_at": r.get("created_at", "")})
+    out.sort(key=lambda x: str(x["created_at"]), reverse=True)
+    return {"success": True, "surveys": out}
+
+
+@app.post("/api/student/survey/answer")
+def answer_survey(req: SurveyAnswerReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import survey as sv
+    name = req.student_name.strip()
+    if not name or is_preview(name):
+        return {"success": False, "detail": "이름이 없습니다."}
+    doc = db.collection("surveys").document(sanitize_doc_id(req.survey_id)).get()
+    if not doc.exists:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    r = doc.to_dict() or {}
+    if not board_visible_to_student(r, name):
+        return {"success": False, "detail": "이 설문 대상이 아닙니다."}
+    if not _survey_open(r):
+        return {"success": False, "detail": "설문이 마감되었습니다."}
+    qs = r.get("questions") or []
+    answers = sv.clean_answers(qs, req.answers)
+    miss = sv.missing_required(qs, answers)
+    if miss:
+        return {"success": False, "detail": f"{', '.join(map(str, miss))}번 질문에 답해 주세요."}
+    db.collection("survey_answers").document(_survey_answer_id(doc.id, name)).set(
+        {"survey_id": doc.id, "student_name": name, "answers": answers, "updated_at": now_kst().strftime("%Y-%m-%d %H:%M")})
+    return {"success": True}
+
+
 @app.get("/api/admin/reports")
 def get_reports(_: bool = Depends(verify_admin)):
     if db is None:
