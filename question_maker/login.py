@@ -66,6 +66,11 @@ def install_login(app: FastAPI, *, realm: str, password: str = "",
 
         if await token_ok(request.cookies.get(COOKIE, "")):
             return await call_next(request)
+        # 💡 2026-11-09: 문제지 만들기(다른 주소의 화면)에서 부를 때 — 관리자 토큰을 머리글로 받는다
+        if await token_ok(request.headers.get("x-admin-token", "").strip()):
+            return await call_next(request)
+        if request.method == "OPTIONS":      # 브라우저가 먼저 묻는 확인(CORS)은 막지 않는다
+            return await call_next(request)
 
         ok = False
         auth = request.headers.get("authorization", "")
