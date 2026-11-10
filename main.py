@@ -2400,6 +2400,52 @@ def homework_grid(class_name: str = "", limit: int = 10, kind: str = ""):
     return {"success": True, "class_name": cls, "kind": want_kind, **grid}
 
 
+@app.get("/api/admin/homework_by_grade", dependencies=[Depends(verify_admin)])
+def homework_by_grade(grade: str = "", kind: str = "", limit: int = 15):
+    """학년을 고르면 그 학년에 나간 최근 과제 · 클리닉마다 정답이 올라갔는지와 낸 학생 · 안 낸 학생.
+    grade 를 비우면 학년 목록(학생 수)만 준다. kind: 'class' · 'clinic' · 비우면 둘 다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import homework_status as hs
+    want = urllib.parse.unquote(grade or "").strip()
+    students = []
+    for d in db.collection("students").stream():
+        data = d.to_dict() or {}
+        if is_withdrawn(data):
+            continue
+        students.append((d.id, hs.grade_key(data.get("school"), data.get("grade")), targeting_info_from(data)))
+    counts = {}
+    for _, g, _ in students:
+        counts[g] = counts.get(g, 0) + 1
+    grades = [{"grade": g, "students": n} for g, n in sorted(counts.items(), key=lambda x: (hs.grade_rank(x[0]), x[0]))]
+    if not want:
+        return {"success": True, "grades": grades, "homeworks": []}
+    mine = sorted([(n, info) for n, g, info in students if g == want], key=lambda x: x[0])
+    names = [n for n, _ in mine]
+    infos = dict(mine)
+    want_kind = normalize_homework_kind(kind) if str(kind or "").strip() else ""
+    homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+    if want_kind:
+        homeworks = [h for h in homeworks if normalize_homework_kind(h.get("kind")) == want_kind]
+
+    class Reports(dict):
+        def get(self, title, default=None):
+            if title not in self:
+                rows = (db.collection("reports").where("task_name", "==", title)
+                        .where("type", "==", "과제 제출").stream())
+                self[title] = [r.to_dict() or {} for r in rows]
+            return dict.get(self, title, default)
+
+    try:
+        board = hs.grade_board(now_kst().date(), homeworks, names, Reports(),
+                               lambda hw, n: homework_visible_to_student(hw, n, info=infos.get(n)),
+                               deadline_passed, max(1, min(int(limit or 15), 30)))
+    except Exception as e:
+        print("[학년별 과제] 실패:", repr(e))
+        return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
+    return {"success": True, "grades": grades, "grade": want, "students": len(names), "kind": want_kind, "homeworks": board}
+
+
 # ─────────────────────────────────────────────────────────
 # 클리닉 시간 신청 — 원장님이 매주 시간들을 열면, 학생은 가능한 시간을 모두 고르고,
 # 원장님이 학생마다 하나를 확정한다(확정하면 '매주 고정 클리닉'으로 들어간다).

@@ -181,3 +181,82 @@ def class_grid(today: date, homeworks: Iterable[dict], names: List[str],
     rows = [{"name": n, "cells": [cells[n][c["title"]] for c in out_cols],
              "missing": sum(1 for c in out_cols if cells[n][c["title"]]["status"] == "missing")} for n in names]
     return {"homeworks": out_cols, "rows": rows}
+
+
+# ─────────────────────────────────────────────────────────
+# 학년별 과제 · 클리닉 보기 (2026-11-10)
+#   원장님이 학년을 누르면 그 학년에 나간 최근 과제마다 정답이 올라가 있는지와
+#   낸 학생 · 안 낸 학생을 바로 본다. 학생마다 그 과제가 보이는지(반 · 학생 지정)를 따로 본다.
+# ─────────────────────────────────────────────────────────
+import re as _re
+
+
+def grade_key(school, grade) -> str:
+    """학생 명단의 학년 칸 → '고2' · '중3' · '재수·N수' (관리자 화면 학생 명단과 같은 규칙)."""
+    g, sc = str(grade or "").strip(), str(school or "").strip()
+    if _re.search(r"재수|반수|N수|n수|졸업|삼수", g + " " + sc):
+        return "재수·N수"
+    m = _re.search(r"[1-6]", g)
+    if "초" in g:
+        lvl = "초"
+    elif "중" in g:
+        lvl = "중"
+    elif "고" in g:
+        lvl = "고"
+    elif _re.search(r"초등|초$", sc):
+        lvl = "초"
+    elif _re.search(r"중학|중$", sc):
+        lvl = "중"
+    elif _re.search(r"고등|고$|고교", sc):
+        lvl = "고"
+    else:
+        lvl = ""
+    return (lvl + m.group(0)) if m else (g or "학년 미입력")
+
+
+def grade_rank(k: str) -> int:
+    m = _re.match(r"^(초|중|고)?(\d)$", k or "")
+    if m:
+        return {"초": 0, "": 10, "중": 20, "고": 30}[m.group(1) or ""] + int(m.group(2))
+    return 40 if k == "재수·N수" else 50
+
+
+def grade_board(today: date, homeworks: Iterable[dict], names: List[str],
+                reports_by_title, visible: Callable[[dict, str], bool],
+                deadline_passed: Callable[[str], bool], limit: int = 15) -> List[dict]:
+    """그 학년 학생(names)에게 나간 최근 과제 → [{title, kind, deadline, question_count, has_answer_file,
+    submitted: [{name, percent, late}], missing: [...], pending: [...], audience}] 최근 것부터."""
+    cols = []
+    for hw in homeworks or []:
+        title = str((hw or {}).get("title") or "").strip()
+        if not title or hw.get("hidden"):
+            continue
+        anchor = parse_day(hw.get("deadline")) or parse_day(hw.get("created_at"))
+        if anchor is None or anchor < today - timedelta(days=STUDENT_DAYS):
+            continue
+        aud = [n for n in names if visible(hw, n)]
+        if aud:
+            cols.append((anchor, hw, aud))
+    cols.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for _, hw, aud in cols[:limit]:
+        title = str(hw.get("title")).strip()
+        deadline = str(hw.get("deadline") or "").strip()
+        passed = bool(deadline) and deadline_passed(deadline)
+        latest = latest_by_student(reports_by_title.get(title) or [])
+        sub, miss, pend = [], [], []
+        for n in aud:
+            st = student_status(latest.get(n), passed, bool(deadline))
+            if st["status"] in ("submitted", "late"):
+                sub.append({"name": n, "percent": st.get("percent"), "late": st["status"] == "late"})
+            elif st["status"] == "missing":
+                miss.append(n)
+            else:
+                pend.append(n)
+        answers = hw.get("answers") or []
+        out.append({"title": title, "kind": "clinic" if str(hw.get("kind") or "") in ("clinic", "클리닉", "클리닉 과제") else "class",
+                    "deadline": deadline.replace("T", " ")[:16], "created_at": str(hw.get("created_at") or "")[:16],
+                    "question_count": len([a for a in answers if str(a).strip()]) if isinstance(answers, list) else 0,
+                    "has_answer_file": bool(hw.get("answer_file")),
+                    "audience": len(aud), "submitted": sub, "missing": miss, "pending": pend})
+    return out
