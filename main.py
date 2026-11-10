@@ -43,6 +43,7 @@ if hasattr(time, "tzset"):      # 윈도우에는 없다 — 윈도우 PC는 원
 import fitz
 import omr_sheet
 import study_extras
+import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
 from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
 import imageio_ffmpeg
@@ -2397,6 +2398,52 @@ def homework_grid(class_name: str = "", limit: int = 10, kind: str = ""):
         print("[반별 과제표] 실패:", repr(e))
         return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
     return {"success": True, "class_name": cls, "kind": want_kind, **grid}
+
+
+@app.get("/api/admin/homework_by_grade", dependencies=[Depends(verify_admin)])
+def homework_by_grade(grade: str = "", kind: str = "", limit: int = 15):
+    """학년을 고르면 그 학년에 나간 최근 과제 · 클리닉마다 정답이 올라갔는지와 낸 학생 · 안 낸 학생.
+    grade 를 비우면 학년 목록(학생 수)만 준다. kind: 'class' · 'clinic' · 비우면 둘 다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    import homework_status as hs
+    want = urllib.parse.unquote(grade or "").strip()
+    students = []
+    for d in db.collection("students").stream():
+        data = d.to_dict() or {}
+        if is_withdrawn(data):
+            continue
+        students.append((d.id, hs.grade_key(data.get("school"), data.get("grade")), targeting_info_from(data)))
+    counts = {}
+    for _, g, _ in students:
+        counts[g] = counts.get(g, 0) + 1
+    grades = [{"grade": g, "students": n} for g, n in sorted(counts.items(), key=lambda x: (hs.grade_rank(x[0]), x[0]))]
+    if not want:
+        return {"success": True, "grades": grades, "homeworks": []}
+    mine = sorted([(n, info) for n, g, info in students if g == want], key=lambda x: x[0])
+    names = [n for n, _ in mine]
+    infos = dict(mine)
+    want_kind = normalize_homework_kind(kind) if str(kind or "").strip() else ""
+    homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+    if want_kind:
+        homeworks = [h for h in homeworks if normalize_homework_kind(h.get("kind")) == want_kind]
+
+    class Reports(dict):
+        def get(self, title, default=None):
+            if title not in self:
+                rows = (db.collection("reports").where("task_name", "==", title)
+                        .where("type", "==", "과제 제출").stream())
+                self[title] = [r.to_dict() or {} for r in rows]
+            return dict.get(self, title, default)
+
+    try:
+        board = hs.grade_board(now_kst().date(), homeworks, names, Reports(),
+                               lambda hw, n: homework_visible_to_student(hw, n, info=infos.get(n)),
+                               deadline_passed, max(1, min(int(limit or 15), 30)))
+    except Exception as e:
+        print("[학년별 과제] 실패:", repr(e))
+        return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
+    return {"success": True, "grades": grades, "grade": want, "students": len(names), "kind": want_kind, "homeworks": board}
 
 
 # ─────────────────────────────────────────────────────────
@@ -7739,6 +7786,10 @@ async def retry_info(req: RetryInfoReq):
         # 💡 해설에는 정답이 그대로 적혀 있다. 다시 풀기 전에 보내면 답을 보고 고치는
         #    꼴이라 아예 보내지 않는다. 해설은 제출한 뒤 마이페이지에서 본다.
         "has_explanation": any(expl.get(str(n), "") for n in wrongs),
+        # 💡 한 문항은 2번까지만 고칠 수 있다(과제 OMR 다시 내기와 같은 횟수를 나눠 쓴다)
+        "q_edits": edit_limits.dump_counts(edit_limits.load_counts(rep)),
+        "max_edits": edit_limits.MAX_EDITS,
+        "locked": [n for n in edit_limits.locked_list(edit_limits.load_counts(rep)) if n in wrongs],
     }
 
 
@@ -7778,6 +7829,16 @@ async def retry_submit(req: RetrySubmitReq):
         still = set(was_wrong)
         fixed = set()
 
+    # 💡 한 문항은 2번까지만 다시 낼 수 있다. 낸 문항마다 한 번씩 센다.
+    tried = []
+    for raw_no, raw_val in (req.answers or {}).items():
+        n0 = _num(raw_no)
+        if n0 is not None and int(n0) in was_wrong and 1 <= int(n0) <= len(key) and str(raw_val or "").strip():
+            tried.append(int(n0))
+    allowed, q_counts, blocked = edit_limits.take_retry(sorted(set(tried)), edit_limits.load_counts(rep))
+    if tried and not allowed:
+        return {"success": False, "locked": blocked, "detail": edit_limits.LOCKED_MESSAGE.replace("이 문항은", f"{', '.join(map(str, blocked))}번은")}
+
     graded, unsure = [], []
     for raw_no, raw_val in (req.answers or {}).items():
         no = _num(raw_no)
@@ -7786,6 +7847,8 @@ async def retry_submit(req: RetrySubmitReq):
         no = int(no)
         if no not in was_wrong or not (1 <= no <= len(key)):
             continue          # 원래 틀렸던 문항만 다시 풀 수 있다
+        if no not in allowed:
+            continue          # 이미 2번 고친 문항
         want = str(key[no - 1]).strip()
         got = str(raw_val or "").strip()
         for i, ch in enumerate("①②③④⑤"):
@@ -7822,7 +7885,7 @@ async def retry_submit(req: RetrySubmitReq):
             lambda: add_xp(name, XP_REWARD_RETRY_CLEAR))
 
     await asyncio.to_thread(
-        lambda: db.collection("reports").document(rid).set({"retry": retry_doc}, merge=True))
+        lambda: db.collection("reports").document(rid).set({"retry": retry_doc, "q_edits": edit_limits.dump_counts(q_counts)}, merge=True))
 
     return {
         "success": True,
@@ -7833,6 +7896,8 @@ async def retry_submit(req: RetrySubmitReq):
         "wrong_total": len(was_wrong),
         "retry_count": retry_doc["count"],
         "all_fixed": bool(was_wrong) and not still,
+        "q_edits": edit_limits.dump_counts(q_counts), "max_edits": edit_limits.MAX_EDITS,
+        "locked": [n for n in edit_limits.locked_list(q_counts) if n in was_wrong], "blocked": blocked,
         "xp_gain": xp_gain,
         "level_up": lvl_up,
         # 과제는 정답을 보여주지 않는다 (해설만)
@@ -9501,6 +9566,13 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     #    예전에는 parse_answer_list 를 써서, 한 문항만 비워도 그 뒤가 전부 밀려
     #    엉뚱하게 채점됐다.
     mine = parse_answer_slots(req.answers or [])
+    # 💡 2026-11-10: 다시 낼 때 한 문항은 2번까지만 고칠 수 있다(edit_limits). 그 뒤로 바꾼 답은
+    #    받지 않고 앞의 답 그대로 채점한다 — 수업이나 질문 게시판에서 해결하게 한다.
+    import edit_limits as el
+    q_counts = el.load_counts(prev) if prev_id else {}
+    blocked = []
+    if prev_id and not is_preview(name) and "mine" in prev:
+        mine, q_counts, _changed, blocked = el.apply_resubmit(list(prev.get("mine") or []), list(mine), q_counts)
     wrongs, unsure, correct, scored = [], [], 0, 0
     for i, ans in enumerate(key):
         if is_skip_slot(ans):            # 답을 안 내도 되는 문항은 통째로 건너뛴다
@@ -9534,6 +9606,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
         upd.update(late_info)
         upd["updated_at"] = now
         upd["edit_count"] = int(prev.get("edit_count") or 0) + 1
+        upd["q_edits"] = el.dump_counts(q_counts)
         if "first_score" not in prev:
             upd["first_score"] = prev.get("score", "")
             upd["first_percent"] = prev.get("percent", "")
@@ -9567,6 +9640,10 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     #    틀린 번호만 주고 해설은 마감 뒤에 연다.
     return {"success": True, "correct": correct, "total": total, "score": score,
             "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
+            # 문항마다 고친 횟수 · 더 못 고치는 문항 · 이번에 바꾸려다 막힌 문항
+            "q_edits": el.dump_counts(q_counts), "max_edits": el.MAX_EDITS,
+            "locked": el.locked_list(q_counts), "blocked": blocked,
+            "locked_message": el.LOCKED_MESSAGE if blocked else "",
             "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
