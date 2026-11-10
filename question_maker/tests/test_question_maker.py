@@ -244,3 +244,19 @@ def test_import_exam_reads_pdf_into_worksheet_text(tmp_path):
     assert bad.status_code == 400
     none = TestClient(create_app(str(tmp_path / "u.db"), ai=None, start_scheduler=False))
     assert none.post("/api/import-exam", files=[("files", ("a.pdf", b"%PDF", "application/pdf"))]).status_code == 400
+
+
+def test_publish_answers_from_set():
+    from question_maker.publish import homework_answers, unique_title
+    data = {"questions": [
+        {"kind": "mcq", "answer": 3, "explanation": "셋째가 맞다"},
+        {"kind": "ox", "answer": "○"},
+        {"kind": "short", "answer": "  허생 ", "accept": ["허 생", "허생"], "explanation": ""},
+        {"kind": "blank", "answer": ""},
+    ]}
+    ans, expl = homework_answers(data)
+    assert ans == ["3", "O", "허생|허 생", "-"]
+    assert expl == {"1": "셋째가 맞다"}
+    taken = {"길 (윤동주)", "길 (윤동주) (2)"}
+    assert unique_title("길 (윤동주)", taken.__contains__) == "길 (윤동주) (3)"
+    assert unique_title("새 과제", taken.__contains__) == "새 과제"
