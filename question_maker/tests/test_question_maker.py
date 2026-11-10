@@ -222,3 +222,25 @@ def test_mounted_with_admin_login_and_tick(tmp_path):
     assert c.get("/qm/", auth=("원장님", "pw")).status_code == 200
     # 깨우기 주소는 로그인 없이 열린다
     assert c.get("/qm/api/daily/tick").json()["ok"]
+
+
+def test_import_exam_reads_pdf_into_worksheet_text(tmp_path):
+    """기존 시험지 불러오기: PDF · 사진만 받고, 문제지 만들기 글 모양과 문항 수를 돌려준다."""
+    seen = {}
+
+    class ExamAI(FakeAI):
+        def read_exam(self, files):
+            seen["files"] = [(len(d), m) for d, m in files]
+            return "```\n[1~2] 다음 글을 읽고 물음에 답하시오.\n[지문]\n글\n[/지문]\n\n1. 첫째?\n① 가\n② 나\n정답: 1\n\n2. 둘째?\n① 가\n② 나\n```"
+
+    c = TestClient(create_app(str(tmp_path / "t.db"), ai=ExamAI(), start_scheduler=False))
+    r = c.post("/api/import-exam", files=[("files", ("시험.pdf", b"%PDF-1.4 x", "application/pdf")),
+                                          ("files", ("p2.jpg", b"\xff\xd8jpg", "image/jpeg"))])
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["count"] == 2 and d["text"].startswith("[1~2]") and "```" not in d["text"]
+    assert seen["files"] == [(10, "application/pdf"), (5, "image/jpeg")]
+    bad = c.post("/api/import-exam", files=[("files", ("a.docx", b"x", "application/msword"))])
+    assert bad.status_code == 400
+    none = TestClient(create_app(str(tmp_path / "u.db"), ai=None, start_scheduler=False))
+    assert none.post("/api/import-exam", files=[("files", ("a.pdf", b"%PDF", "application/pdf"))]).status_code == 400
