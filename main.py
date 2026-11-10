@@ -22,7 +22,7 @@ from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form, WebSocket,
     WebSocketDisconnect, Response, Request, Header, Depends
 )
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -9456,10 +9456,20 @@ async def create_homework(
                 "group": group,
                 # 고치기로 저장해도 숨겨 둔 과제는 계속 숨긴다
                 "hidden": bool(prev_data.get("hidden", False)),
+                # 문제 공장에서 낸 과제의 문제지(homework_papers) — 고쳐도 이어진다
+                "has_paper": bool(prev_data.get("has_paper", False)),
                 "created_at": created_at,
             }
         )
     )
+    if prev_data.get("has_paper") and old_title and sanitize_doc_id(old_title) != safe_title:
+        def _move_paper():
+            src = db.collection("homework_papers").document(sanitize_doc_id(old_title))
+            d = src.get()
+            if d.exists:
+                db.collection("homework_papers").document(safe_title).set(d.to_dict() or {})
+                src.delete()
+        await asyncio.to_thread(_move_paper)
     if is_new:
         kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
         due = f" 마감 {deadline_label(deadline_str)}." if deadline_str else ""
@@ -15333,6 +15343,52 @@ def _question_maker_token(token: str) -> bool:
     return bool(_resolve_admin_token(token))
 
 
+@app.get("/api/homework/paper")
+def homework_paper(title: str = ""):
+    """문제 공장에서 낸 과제의 문제지(정답 · 해설 없이). 학생 과제 카드의 [📄 문제지 보기]."""
+    if db is None or not title:
+        return HTMLResponse("<p>문제지를 찾지 못했습니다.</p>", status_code=404)
+    d = db.collection("homework_papers").document(sanitize_doc_id(title)).get()
+    if not d.exists:
+        return HTMLResponse("<p>이 과제에는 문제지가 없습니다.</p>", status_code=404)
+    from question_maker.render import render_paper
+    p = d.to_dict() or {}
+    return HTMLResponse(render_paper(p.get("sets") or [], p.get("style") or {}, "paper"))
+
+
+class _HomeworkBridge:
+    """문제 공장(/qm) · 텔레그램 봇에서 만든 문제 세트를 학생 앱 과제 · 클리닉으로 낸다 (2026-11-10)."""
+
+    def classes(self) -> list:
+        if db is None:
+            return []
+        docs = [_class_doc(d) for d in db.collection("classes").stream()]
+        docs.sort(key=_class_sort_key)
+        return [c.get("name") for c in docs if c.get("name")]
+
+    def publish(self, row: dict, style: dict, kind: str, target_class: str) -> dict:
+        from question_maker.publish import homework_answers, unique_title
+        if db is None:
+            raise RuntimeError("DB 연결 오류")
+        answers, expl = homework_answers(row.get("data") or {})
+        title = unique_title(row.get("title") or "",
+                             lambda t: db.collection("homeworks").document(sanitize_doc_id(t)).get().exists)
+        res = asyncio.run(create_homework(
+            title=title, desc="문제 공장에서 만든 문제예요. [📄 문제지 보기]로 문제를 보고 OMR로 답을 내세요.",
+            answer_text="", kind=kind, answers=json.dumps(answers, ensure_ascii=False),
+            explanations=json.dumps(expl, ensure_ascii=False), old_title="",
+            target_classes=target_class, target_students="", deadline="", group="", answer_file=None, _=True))
+        if not res.get("success"):
+            raise RuntimeError("과제를 저장하지 못했습니다.")
+        safe = sanitize_doc_id(title)
+        db.collection("homework_papers").document(safe).set({
+            "title": title, "sets": [{"title": row.get("title") or title, "data": row.get("data") or {}}],
+            "style": style or {}, "qm_set_id": row.get("id"), "created_at": now_kst().strftime("%Y-%m-%d %H:%M")})
+        db.collection("homeworks").document(safe).set({"has_paper": True, "source": "문제 공장"}, merge=True)
+        aud = audience_names("", normalize_target_classes(target_class)) if target_class else audience_names("", [])
+        return {"title": title, "question_count": res.get("question_count", len(answers)), "audience": len(aud)}
+
+
 if db is not None:
     try:
         from question_maker.app import create_app as _create_question_maker
@@ -15349,7 +15405,7 @@ if db is not None:
         app.mount("/qm", _create_question_maker(store=_QMFirestoreStore(db),
                                                 check_login=_question_maker_login,
                                                 check_token=_question_maker_token,
-                                                public_url=_qm_public))
+                                                public_url=_qm_public, homework=_HomeworkBridge()))
     except Exception as e:
         print("문제 공장 연결 실패:", e)
 

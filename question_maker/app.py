@@ -113,9 +113,11 @@ class DailyReq(BaseModel):
 def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool = True,
                store=None, check_login: Optional[Callable[[str, str], bool]] = None,
                telegram="auto", public_url: Optional[str] = None,
-               check_token: Optional[Callable[[str], bool]] = None) -> FastAPI:
+               check_token: Optional[Callable[[str], bool]] = None, homework=None) -> FastAPI:
     """store: 저장소(없으면 SQLite 파일). check_login(이름, 비밀번호): 학원 서버에 붙일 때
-    관리자 계정으로 들어오게 하는 함수. 없으면 QM_PASSWORD 환경 변수로 막는다."""
+    관리자 계정으로 들어오게 하는 함수. 없으면 QM_PASSWORD 환경 변수로 막는다.
+    homework: 학생 앱 과제로 내는 다리(학원 서버가 넘겨 준다). classes() → 반 이름 목록,
+              publish(row, style, kind, target_class) → {title, question_count, audience}. 없으면 과제로 내기를 숨긴다."""
     if store is None:
         store = Store(db_path or os.environ.get("QM_DB", str(Path.cwd() / "question_maker.db")))
     if ai == "auto":
@@ -290,8 +292,22 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
                  or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat = (os.environ.get("QM_TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
         telegram = TelegramBot(token, chat, None) if token and chat else None
+    def publish_set(set_id: int, kind: str, target_class: str) -> dict:
+        """만든 문제 세트를 학생 앱 과제 · 클리닉으로 낸다 (2026-11-10)."""
+        if not homework:
+            raise GenerationError("이 서버에는 학생 앱과 잇는 길이 없습니다.")
+        row = store.get_set(set_id)
+        if not row:
+            raise GenerationError("없는 문제 세트입니다.")
+        if row["status"] != "done" or not (row.get("data") or {}).get("questions"):
+            raise GenerationError("출제가 끝난 세트만 과제로 낼 수 있습니다.")
+        return homework.publish(row, style_for(row["style_id"]), "clinic" if kind == "clinic" else "class",
+                                (target_class or "").strip())
+
     if telegram:
         telegram.h = types.SimpleNamespace(
+            publish=publish_set if homework else None,
+            homework_classes=(lambda: homework.classes()) if homework else None,
             store=store, extract=extract_from_bytes, create_set=bot_create_set, revise=do_revise,
             regenerate=bot_regenerate, render=bot_render,
             default_recipe=lambda: normalize_recipe(
@@ -458,6 +474,17 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
         set_id = store.create_set(title, subject, text, recipe, recipe.get("style_id"), pid, "manual")
         threading.Thread(target=run_set, args=(set_id,), daemon=True).start()
         return {"set_id": set_id}
+
+    @app.get("/api/homework-classes")
+    def homework_classes():
+        return {"enabled": bool(homework), "classes": homework.classes() if homework else []}
+
+    @app.post("/api/sets/{set_id}/publish")
+    def publish_api(set_id: int, req: dict):
+        try:
+            return publish_set(set_id, str(req.get("kind") or "class"), str(req.get("target_class") or ""))
+        except GenerationError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/api/sets")
     def list_sets():

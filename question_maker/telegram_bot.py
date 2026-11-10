@@ -336,6 +336,12 @@ class TelegramBot:
             self.send("취소했어요.")
         elif data.startswith("file:"):
             self.send_paper(int(data[5:]))
+        elif data.startswith("hw:"):
+            _, sid, kind = data.split(":")
+            self._ask_class(int(sid), kind)
+        elif data.startswith("hwc:"):
+            _, sid, kind, idx = data.split(":")
+            self._publish(int(sid), kind, int(idx))
         elif data.startswith("regen:"):
             sid = int(data[6:])
             self.send("🔁 같은 지문·구성으로 다시 출제하는 중이에요... (1~2분)")
@@ -348,6 +354,33 @@ class TelegramBot:
         self.send(f"✏️ 출제하는 중이에요... ({recipe_text(r)})\n보통 1~2분 걸려요.")
         sid = self.h.create_set(pending["title"], pending["text"], recipe)
         self.send_set(sid)
+
+    # ── 학생 앱 과제 · 클리닉으로 내기 (2026-11-10) ─────────
+    def _ask_class(self, set_id, kind):
+        if not getattr(self.h, "publish", None):
+            self.send("이 봇은 아직 학생 앱과 이어져 있지 않아요.")
+            return
+        classes = (self.h.homework_classes() or [])[:24]
+        label = "클리닉" if kind == "clinic" else "과제"
+        rows = [[("👥 전체 학생", f"hwc:{set_id}:{kind}:-1")]]
+        for i in range(0, len(classes), 2):
+            rows.append([(c[:28], f"hwc:{set_id}:{kind}:{i + j}") for j, c in enumerate(classes[i:i + 2])])
+        self.send(f"어느 반에 {label}로 낼까요?\n(정답 · 해설이 함께 들어가 학생이 OMR로 내면 바로 채점돼요. "
+                  f"마감 · 학생 지정은 학생 앱 관리자 화면에서 고칠 수 있어요)", buttons=rows)
+
+    def _publish(self, set_id, kind, idx):
+        classes = self.h.homework_classes() or []
+        target = classes[idx] if 0 <= idx < len(classes) else ""
+        try:
+            r = self.h.publish(set_id, kind, target)
+        except Exception as e:
+            self.send(f"⚠️ 내지 못했어요: {_h(str(e))[:300]}")
+            return
+        label = "클리닉 과제" if kind == "clinic" else "수업 과제"
+        who = f"{_h(target)} 반" if target else "전체 학생"
+        self.send(f"✅ <b>{_h(r.get('title', ''))}</b>을(를) {who}에게 {label}로 냈어요.\n"
+                  f"정답 {r.get('question_count', 0)}문항 · 학생 {r.get('audience', 0)}명에게 앱 알림을 보냈어요.\n"
+                  f"학생은 과제 카드의 [📄 문제지 보기]로 문제를 보고 OMR로 답을 내요.")
 
     def _revise(self, set_id, instruction):
         targets = [int(n) for n in re.findall(r"(\d{1,2})\s*번", instruction)]
@@ -381,8 +414,11 @@ class TelegramBot:
             self.send(m)
         notes = row["data"].get("notes") or []
         tail = f"\n\n<i>{_h(' / '.join(notes)[:300])}</i>" if notes else ""
-        self.send(f"이 문제를 고치려면 그냥 말로 보내세요. 예) <code>3번 더 어렵게</code>{tail}",
-                  buttons=[[("🖨 시험지 파일 받기", f"file:{set_id}"), ("🔁 다시 출제", f"regen:{set_id}")]])
+        rows = [[("🖨 시험지 파일 받기", f"file:{set_id}"), ("🔁 다시 출제", f"regen:{set_id}")]]
+        if getattr(self.h, "publish", None):
+            # 💡 2026-11-10: 만든 문제를 바로 학생 앱(logyedu.co.kr) 과제 · 클리닉으로
+            rows.append([("📚 과제로 내기", f"hw:{set_id}:class"), ("🩺 클리닉으로 내기", f"hw:{set_id}:clinic")])
+        self.send(f"이 문제를 고치려면 그냥 말로 보내세요. 예) <code>3번 더 어렵게</code>{tail}", buttons=rows)
 
     def send_paper(self, set_id):
         html_text = self.h.render(set_id)

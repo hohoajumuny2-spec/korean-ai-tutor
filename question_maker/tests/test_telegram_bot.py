@@ -153,3 +153,50 @@ def test_webhook_route_checks_secret():
                headers={"X-Telegram-Bot-Api-Secret-Token": bot.secret})
     assert r.status_code == 200
     assert c.get("/api/meta").json()["telegram"] is True
+
+
+class FakeHomework:
+    def __init__(self):
+        self.calls = []
+
+    def classes(self):
+        return ["고2 국어", "중3 국어"]
+
+    def publish(self, row, style, kind, target_class):
+        self.calls.append((row["title"], len(row["data"]["questions"]), kind, target_class))
+        return {"title": row["title"], "question_count": len(row["data"]["questions"]), "audience": 7}
+
+
+def test_bot_publishes_set_as_homework_with_class_choice():
+    http, hw = FakeHTTP(), FakeHomework()
+    bot = TelegramBot("TOKEN", OWNER, None, http=http)
+    app = create_app(store=FirestoreStore(FakeFirestore()), ai=FakeAI(), start_scheduler=False,
+                     telegram=bot, public_url="https://example.com/qm", homework=hw)
+    bot.handle(msg(PASSAGE))
+    bot.handle({"update_id": 9001, "callback_query": {"id": "c1", "data": "gen", "message": {"chat": {"id": int(OWNER)}}}})
+    sid = bot.h.store.get_setting("tg_current_set")
+    marks = [c[1].get("reply_markup") for c in http.calls if c[0] == "sendMessage" and c[1].get("reply_markup")]
+    datas = [b["callback_data"] for m in marks for row in m["inline_keyboard"] for b in row]
+    assert f"hw:{sid}:class" in datas and f"hw:{sid}:clinic" in datas
+    http.clear()
+    bot.handle({"update_id": 9002, "callback_query": {"id": "c2", "data": f"hw:{sid}:clinic", "message": {"chat": {"id": int(OWNER)}}}})
+    kb = [c[1]["reply_markup"]["inline_keyboard"] for c in http.calls if c[0] == "sendMessage" and c[1].get("reply_markup")][-1]
+    labels = [b["text"] for row in kb for b in row]
+    assert labels == ["👥 전체 학생", "고2 국어", "중3 국어"]
+    bot.handle({"update_id": 9003, "callback_query": {"id": "c3", "data": f"hwc:{sid}:clinic:1", "message": {"chat": {"id": int(OWNER)}}}})
+    assert hw.calls and hw.calls[0][2:] == ("clinic", "중3 국어")
+    assert any("클리닉 과제로 냈어요" in t and "중3 국어" in t for t in http.texts())
+    # 화면(API)에서도 낼 수 있다
+    c = TestClient(app)
+    assert c.get("/api/homework-classes").json() == {"enabled": True, "classes": ["고2 국어", "중3 국어"]}
+    r = c.post(f"/api/sets/{sid}/publish", json={"kind": "class", "target_class": ""})
+    assert r.status_code == 200 and hw.calls[-1][2:] == ("class", "")
+
+
+def test_bot_hides_homework_buttons_without_bridge():
+    app, bot, http = make()
+    bot.handle(msg(PASSAGE))
+    bot.handle({"update_id": 9101, "callback_query": {"id": "d1", "data": "gen", "message": {"chat": {"id": int(OWNER)}}}})
+    datas = [b["callback_data"] for c in http.calls if c[0] == "sendMessage" and c[1].get("reply_markup")
+             for row in c[1]["reply_markup"]["inline_keyboard"] for b in row]
+    assert not any(d.startswith("hw:") for d in datas)
