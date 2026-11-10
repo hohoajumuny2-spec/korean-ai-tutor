@@ -6,6 +6,7 @@
 import asyncio
 import os
 import random
+import re
 import secrets
 import threading
 import time
@@ -404,6 +405,37 @@ def create_app(db_path: Optional[str] = None, ai="auto", start_scheduler: bool =
             except ValueError as e:
                 raise HTTPException(400, str(e))
         return {"text": "\n\n".join(t.strip() for t in texts if t and t.strip())}
+
+    @app.post("/api/import-exam")
+    async def import_exam(files: List[UploadFile] = File(...)):
+        """기존 시험지(PDF · 사진 여러 장)를 AI가 읽어 '문제지 만들기' 글 모양으로 옮긴다 (2026-11-10).
+        지문 · 문제 · 선택지 · <보기> · (있으면) 정답 · 해설까지. 문제지 만들기가 이 글을 그대로 편집한다."""
+        if not app.state.ai:
+            raise HTTPException(400, "AI 키가 없습니다. README의 'AI 키 넣기'를 따라 해주세요.")
+        parts, total = [], 0
+        for f in files:
+            data = await f.read()
+            total += len(data)
+            name, ctype = (f.filename or "").lower(), (f.content_type or "")
+            if name.endswith(".pdf") or ctype == "application/pdf":
+                parts.append((data, "application/pdf"))
+            elif ctype.startswith("image/") or name.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                parts.append((data, ctype if ctype.startswith("image/") else "image/jpeg"))
+            else:
+                raise HTTPException(400, f"{f.filename or '파일'}: PDF나 사진 파일만 읽을 수 있습니다.")
+        if not parts:
+            raise HTTPException(400, "시험지 파일을 골라 주세요.")
+        if total > 40 * 1024 * 1024:
+            raise HTTPException(400, "파일이 너무 큽니다(40MB 넘음). 몇 쪽씩 나눠서 올려 주세요.")
+        try:
+            text = await asyncio.to_thread(app.state.ai.read_exam, parts)
+        except AIError as e:
+            raise HTTPException(400, str(e))
+        text = re.sub(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$", "", text or "").strip()
+        if not text.strip():
+            raise HTTPException(400, "시험지에서 글을 찾지 못했습니다. 더 선명한 파일로 다시 해 주세요.")
+        count = len(re.findall(r"(?m)^\s*\d{1,3}\s*[.．]\s", text))
+        return {"text": text, "count": count}
 
     # ── 문제 세트 ─────────────────────────────────────
     @app.post("/api/sets")

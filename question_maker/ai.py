@@ -13,6 +13,41 @@ QUALITY_MODELS = ["gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-1.5-pro-la
 FAST_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
 
 
+# ── 기존 시험지 불러오기 (2026-11-10) ───────────────────────
+# 시험지 PDF · 사진을 읽어 '문제지 만들기'의 글 모양으로 옮겨 적게 한다.
+# 문제지 만들기는 이 글을 그대로 읽어 자동으로 편집(2단 · 번호 · 선택지 · 정답 모아 보기)한다.
+EXAM_IMPORT_PROMPT = """첨부한 시험지(문제지)를 읽고, 아래 '글 모양'에 맞춰 처음부터 끝까지 옮겨 적으세요.
+요약하거나 고치거나 새로 만들지 말고, 시험지에 있는 글자 그대로 옮기세요.
+
+[읽는 순서]
+- 2단으로 된 쪽은 왼쪽 단을 위에서 아래로 다 읽은 뒤 오른쪽 단을 읽습니다.
+- 머리말 · 꼬리말 · 쪽 번호 · 로고 · 교재 코드(예: 1410-141-…) · 저작권 안내는 옮기지 않습니다.
+
+[글 모양]
+1) 여러 문제가 함께 보는 글(지문)은 이렇게 적습니다. 범위는 그 지문을 보는 문제 번호입니다.
+[1~2] 다음 글을 읽고 물음에 답하시오.
+[지문]
+(지문 글을 문단 그대로. 문단 사이는 빈 줄 하나)
+[/지문]
+   - 한 문제만 보는 지문이면 [3~3] 처럼 적습니다.
+   - 같은 지문이 시험지에 여러 번 나오면, 나온 대로 다시 적습니다.
+   - 지문 옆에 [A] · [B] 같은 표시가 붙은 부분은 그 부분 맨 앞에 [A] 를 적습니다.
+2) 문제는 번호와 점을 찍고 한 줄로 시작합니다.  예) 3. [A]를 이해한 내용으로 가장 적절한 것은?
+3) 선택지는 한 줄에 하나씩 ① ② ③ ④ ⑤ 로 시작합니다. (원문에 동그라미 숫자가 안 보여도 차례대로 붙이세요)
+4) 문제 안의 <보기> 상자는
+<보기>
+(보기 글)
+[/보기]
+5) 정답 · 해설이 시험지 어딘가(보통 뒤쪽 '정답 및 해설')에 있으면 각 문제 바로 아래에 붙입니다.
+정답: 3
+해설: (그 문제의 해설 글. '오답 point' · '오답 파헤치기'처럼 나뉘어 있으면 한 문단으로 이어 적어도 됩니다)
+   정답 · 해설이 없으면 이 두 줄은 적지 않습니다. 정답 및 해설 쪽 자체는 따로 옮기지 않습니다.
+6) 밑줄 친 글은 __밑줄__, 굵은 글은 **굵게** 로 감쌉니다. ㉠ ⓐ (가) 같은 표시와 한자는 그대로 둡니다.
+7) 서술형 · 단답형 문제는 '서술형 1.' 처럼 적고 그 뒤에 문제 글을 적습니다.
+
+옮긴 글 말고 다른 말(설명 · 인사 · ``` 표시)은 쓰지 마세요."""
+
+
 class AIError(Exception):
     pass
 
@@ -95,6 +130,18 @@ class GeminiAI:
             raise AIError(friendly_error(e))
         return parse_json_text(text)
 
+    def read_exam(self, files: list) -> str:
+        """시험지 PDF · 사진(여러 장)을 문제지 만들기의 글 모양으로 옮긴다. files: [(bytes, mime), …]"""
+        model = self._model(True, False)
+        parts = [EXAM_IMPORT_PROMPT] + [{"mime_type": mime, "data": data} for data, mime in files]
+        try:
+            resp = model.generate_content(parts, generation_config={"temperature": 0.1, "max_output_tokens": 65536},
+                                          request_options={"timeout": 900})
+            text = (resp.text or "").strip()
+        except Exception as e:
+            raise AIError(friendly_error(e))
+        return re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+
     def transcribe(self, data: bytes, mime: str) -> str:
         model = self._model(False, False)
         prompt = ("첨부된 자료에 적힌 글을 하나도 빠뜨리지 말고 그대로 옮겨 적으세요. 요약하거나 고치지 마세요. "
@@ -154,6 +201,10 @@ class FakeAI:
             data["summary"] = f"연습용 AI: {len(targets)}개 문항에 '(고친 문항)' 표시만 붙였습니다."
             return data
         raise AIError("알 수 없는 요청입니다.")
+
+    def read_exam(self, files: list) -> str:
+        return ("[1~1] 다음 글을 읽고 물음에 답하시오.\n[지문]\n연습용 AI는 시험지를 실제로 읽지 않습니다. AI 키를 넣으면 올린 시험지를 그대로 옮겨 적습니다.\n[/지문]\n\n"
+                "1. 연습 문제입니다. 알맞은 것은?\n① 하나\n② 둘\n③ 셋\n④ 넷\n⑤ 다섯\n정답: 1\n해설: 연습용 해설입니다.")
 
     def transcribe(self, data: bytes, mime: str) -> str:
         return "(연습용 AI는 사진의 글을 읽지 못합니다. 실제 API 키를 넣으면 사진 속 글을 옮겨 적습니다.)"
