@@ -2623,6 +2623,10 @@ class SurveyReq(BaseModel):
     anonymous: bool = False
     open: bool = True
     push: bool = True
+    # 💡 올릴 때 학생 카톡(알림톡)으로도 알린다 — 공지와 같은 '새 글 알림' 틀
+    kakao: bool = False
+    # 다시 보내기(/api/admin/survey/kakao): 아직 답하지 않은 학생에게만
+    only_missing: bool = True
 
 
 class SurveyAnswerReq(BaseModel):
@@ -2668,10 +2672,45 @@ def save_survey(req: SurveyReq):
     row["created_at"] = row["updated_at"]
     ref = db.collection("surveys").document()
     ref.set(row)
-    if req.push and row["open"]:
+    out = {"success": True, "id": ref.id}
+    if row["open"] and (req.push or req.kakao):
         names = board_audience_names(row)
-        send_push_to_names(names, "📝 설문에 답해 주세요", title[:120], "/#dashboard", "survey")
-    return {"success": True, "id": ref.id}
+        if req.push:
+            send_push_to_names(names, "📝 설문에 답해 주세요", title[:120], "/#dashboard", "survey")
+        if req.kakao:
+            out["kakao"] = _survey_kakao(title, row["deadline"], names)
+    return out
+
+
+def _survey_kakao(title: str, deadline: str, names: list) -> dict:
+    """설문 카톡(새 글 알림 틀, 종류 '설문조사'). 결과는 관리자 화면에 그대로 보여 준다."""
+    try:
+        return kakao_new_post_now("설문조사", title, deadline_label(deadline) if deadline else "", names)
+    except Exception as e:
+        print(f"[카톡 설문 알림] 실패: {e}")
+        return {"sent": 0, "no_phone": [], "unknown": [], "error": "카톡을 보내는 중 오류가 났습니다."}
+
+
+@app.post("/api/admin/survey/kakao", dependencies=[Depends(verify_admin)])
+def survey_kakao(req: SurveyReq):
+    """이미 올린 설문을 카톡으로 (다시) 알린다. only_missing 이면 아직 답하지 않은 학생에게만."""
+    if db is None or not req.id:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    doc = db.collection("surveys").document(sanitize_doc_id(req.id)).get()
+    if not doc.exists:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    r = doc.to_dict() or {}
+    if not _survey_open(r):
+        return {"success": False, "detail": "마감된 설문입니다. '다시 받기'를 누른 뒤 보내 주세요."}
+    names = board_audience_names(r)
+    if req.only_missing:
+        done = {str((a.to_dict() or {}).get("student_name") or "").strip()
+                for a in db.collection("survey_answers").where("survey_id", "==", doc.id).stream()}
+        names = [n for n in names if n not in done]
+    if not names:
+        return {"success": False, "detail": "보낼 학생이 없습니다. (모두 답했어요)" if req.only_missing else "보낼 학생이 없습니다."}
+    return {"success": True, "count": len(names),
+            "kakao": _survey_kakao(r.get("title", ""), str(r.get("deadline") or ""), names)}
 
 
 @app.get("/api/admin/surveys", dependencies=[Depends(verify_admin)])
