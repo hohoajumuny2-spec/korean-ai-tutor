@@ -2363,7 +2363,8 @@ def class_roster(class_name: str) -> list:
 
 
 @app.get("/api/admin/homework_grid", dependencies=[Depends(verify_admin)])
-def homework_grid(class_name: str = "", limit: int = 10):
+def homework_grid(class_name: str = "", limit: int = 10, kind: str = ""):
+    """kind: 'class'(수업 과제) · 'clinic'(클리닉 과제) · 비우면 둘 다."""
     if db is None:
         return {"success": False, "detail": "DB 연결 오류"}
     import homework_status as hs
@@ -2372,6 +2373,9 @@ def homework_grid(class_name: str = "", limit: int = 10):
         return {"success": False, "detail": "반을 골라 주세요."}
     names = class_roster(cls)
     homeworks = [{"title": d.id, **(d.to_dict() or {})} for d in db.collection("homeworks").stream()]
+    want_kind = normalize_homework_kind(kind) if str(kind or "").strip() else ""
+    if want_kind:
+        homeworks = [h for h in homeworks if normalize_homework_kind(h.get("kind")) == want_kind]
 
     class Reports(dict):
         # 표에 들어가는 과제만 그때그때 읽는다
@@ -2392,7 +2396,7 @@ def homework_grid(class_name: str = "", limit: int = 10):
     except Exception as e:
         print("[반별 과제표] 실패:", repr(e))
         return {"success": False, "detail": "과제 기록을 불러오지 못했습니다."}
-    return {"success": True, "class_name": cls, **grid}
+    return {"success": True, "class_name": cls, "kind": want_kind, **grid}
 
 
 # ─────────────────────────────────────────────────────────
@@ -2623,6 +2627,10 @@ class SurveyReq(BaseModel):
     anonymous: bool = False
     open: bool = True
     push: bool = True
+    # 💡 올릴 때 학생 카톡(알림톡)으로도 알린다 — 공지와 같은 '새 글 알림' 틀
+    kakao: bool = False
+    # 다시 보내기(/api/admin/survey/kakao): 아직 답하지 않은 학생에게만
+    only_missing: bool = True
 
 
 class SurveyAnswerReq(BaseModel):
@@ -2668,10 +2676,45 @@ def save_survey(req: SurveyReq):
     row["created_at"] = row["updated_at"]
     ref = db.collection("surveys").document()
     ref.set(row)
-    if req.push and row["open"]:
+    out = {"success": True, "id": ref.id}
+    if row["open"] and (req.push or req.kakao):
         names = board_audience_names(row)
-        send_push_to_names(names, "📝 설문에 답해 주세요", title[:120], "/#dashboard", "survey")
-    return {"success": True, "id": ref.id}
+        if req.push:
+            send_push_to_names(names, "📝 설문에 답해 주세요", title[:120], "/#dashboard", "survey")
+        if req.kakao:
+            out["kakao"] = _survey_kakao(title, row["deadline"], names)
+    return out
+
+
+def _survey_kakao(title: str, deadline: str, names: list) -> dict:
+    """설문 카톡(새 글 알림 틀, 종류 '설문조사'). 결과는 관리자 화면에 그대로 보여 준다."""
+    try:
+        return kakao_new_post_now("설문조사", title, deadline_label(deadline) if deadline else "", names)
+    except Exception as e:
+        print(f"[카톡 설문 알림] 실패: {e}")
+        return {"sent": 0, "no_phone": [], "unknown": [], "error": "카톡을 보내는 중 오류가 났습니다."}
+
+
+@app.post("/api/admin/survey/kakao", dependencies=[Depends(verify_admin)])
+def survey_kakao(req: SurveyReq):
+    """이미 올린 설문을 카톡으로 (다시) 알린다. only_missing 이면 아직 답하지 않은 학생에게만."""
+    if db is None or not req.id:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    doc = db.collection("surveys").document(sanitize_doc_id(req.id)).get()
+    if not doc.exists:
+        return {"success": False, "detail": "설문을 찾지 못했습니다."}
+    r = doc.to_dict() or {}
+    if not _survey_open(r):
+        return {"success": False, "detail": "마감된 설문입니다. '다시 받기'를 누른 뒤 보내 주세요."}
+    names = board_audience_names(r)
+    if req.only_missing:
+        done = {str((a.to_dict() or {}).get("student_name") or "").strip()
+                for a in db.collection("survey_answers").where("survey_id", "==", doc.id).stream()}
+        names = [n for n in names if n not in done]
+    if not names:
+        return {"success": False, "detail": "보낼 학생이 없습니다. (모두 답했어요)" if req.only_missing else "보낼 학생이 없습니다."}
+    return {"success": True, "count": len(names),
+            "kakao": _survey_kakao(r.get("title", ""), str(r.get("deadline") or ""), names)}
 
 
 @app.get("/api/admin/surveys", dependencies=[Depends(verify_admin)])
@@ -8432,7 +8475,7 @@ def admin_reason_overview():
 
 
 @app.get("/api/admin/activity", dependencies=[Depends(verify_admin)])
-def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", title: str = ""):
+def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", title: str = "", hw_kind: str = ""):
     """누가 무엇을 하고 몇 점을 받았는지 최근 순으로 모아 준다.
 
     💡 탭마다 '내가 만든 것'만 보이고 '학생들이 그걸 해서 몇 점을 받았는지'는
@@ -8485,12 +8528,28 @@ def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", t
         print("현황 불러오기 실패:", e)
         return {"success": False, "detail": "기록을 불러오지 못했습니다."}
 
+    # 💡 과제 제출은 수업 과제 · 클리닉 과제로 나눠 본다(hw_kind). 옛 기록은 과제 목록의 종류로 채운다.
+    want_hw = normalize_homework_kind(hw_kind) if str(hw_kind or "").strip() else ""
+    hw_kinds = {}
+    if want == "homework":
+        try:
+            hw_kinds = {h.id: normalize_homework_kind((h.to_dict() or {}).get("kind"))
+                        for h in db.collection("homeworks").stream()}
+        except Exception as e:
+            print("과제 종류 불러오기 실패:", e)
+
     rows = []
     for d in docs:
         r = d.to_dict() or {}
         t = str(r.get("type", ""))
         if t not in types_wanted:
             continue
+        rk = ""
+        if t == "과제 제출":
+            tn = str(r.get("task_name", ""))
+            rk = hw_kinds.get(tn) or normalize_homework_kind(r.get("homework_kind"))
+            if want_hw and rk != want_hw:
+                continue
         who = str(r.get("student_name", "")).strip()
         if student_name and who != student_name.strip():
             continue
@@ -8509,6 +8568,7 @@ def activity_feed(kind: str = "all", limit: int = 120, student_name: str = "", t
             "submitted_at": str(r.get("submitted_at", "")),
             "wrong_count": len(wrongs),
             "unsure_count": len(unsure),
+            "hw_kind": rk,
         })
         if len(rows) >= max(1, min(500, limit)):
             break
