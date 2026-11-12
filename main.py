@@ -44,9 +44,8 @@ import fitz
 import omr_sheet
 import study_extras
 import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
+import explain_video  # 해설 영상: 사람 같은 목소리 + 움직이는 화면
 from PIL import Image, ImageDraw, ImageFont
-from gtts import gTTS
-import imageio_ffmpeg
 
 # ─────────────────────────────────────────────────────────
 # 디렉토리 생성
@@ -5583,7 +5582,9 @@ async def run_video_job(job_id: str, params: dict):
         if not res.get("success"):
             update_job(job_id, status="error", detail=res.get("detail", "")[:500], progress="실패")
             return
-        update_job(job_id, status="done", progress=f"장면 {res.get('scene_count', 0)}개로 완성",
+        # 💡 Gemini 음성이 막혀(한도 · 키 문제) 무료 기계 목소리로 만들어졌으면 알려준다
+        voice_note = " (기계 목소리로 대신 만듦)" if res.get("voice") == "gtts" else ""
+        update_job(job_id, status="done", progress=f"장면 {res.get('scene_count', 0)}개로 완성{voice_note}",
                    result=res.get("url", ""), meta={"title": res.get("title", ""), "video_id": res.get("id", "")},
                    done_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
@@ -6203,164 +6204,7 @@ async def generate_explainer(
 #   촬영/편집하지 않아도, 방금 만든 해설 자료를 그대로 붙여넣기만 하면
 #   학생에게 바로 배포할 수 있는 영상이 나온다.
 # ─────────────────────────────────────────────────────────
-VIDEO_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "NotoSansKR.ttf")
-VIDEO_W, VIDEO_H = 1080, 1920
-VIDEO_MAX_SCENES = 25
-_video_font_cache = {}
-
-
-def _video_font(size: int, bold: bool = False):
-    key = (size, bold)
-    if key not in _video_font_cache:
-        f = ImageFont.truetype(VIDEO_FONT_PATH, size)
-        if bold:
-            try:
-                f.set_variation_by_axes([700])
-            except Exception:
-                pass
-        _video_font_cache[key] = f
-    return _video_font_cache[key]
-
-
-def _video_wrap_lines(draw, text: str, font, max_width: int) -> list:
-    """한글은 어절보다 글자 단위로 줄바꿈해야 슬라이드 폭에 안전하게 맞는다."""
-    lines = []
-    for para in text.split("\n"):
-        cur = ""
-        for ch in para:
-            test = cur + ch
-            if draw.textbbox((0, 0), test, font=font)[2] > max_width and cur:
-                lines.append(cur)
-                cur = ch
-            else:
-                cur = test
-        lines.append(cur)
-    return lines
-
-
-def _video_make_slide(text: str, out_path: str):
-    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
-    d = ImageDraw.Draw(img)
-    font = _video_font(64, bold=True)
-    lines = _video_wrap_lines(d, text, font, VIDEO_W - 160)
-    line_h = font.size + 26
-    total_h = line_h * len(lines)
-    y = (VIDEO_H - total_h) // 2
-    for line in lines:
-        bbox = d.textbbox((0, 0), line, font=font)
-        w = bbox[2] - bbox[0]
-        d.text(((VIDEO_W - w) / 2, y), line, font=font, fill=(255, 255, 255))
-        y += line_h
-    brand_font = _video_font(34)
-    brand = "로지에듀"
-    bbox = d.textbbox((0, 0), brand, font=brand_font)
-    d.text(((VIDEO_W - (bbox[2] - bbox[0])) / 2, VIDEO_H - 110), brand, font=brand_font, fill=(150, 155, 170))
-    img.save(out_path)
-
-
-def _video_make_intro_slide(out_path: str):
-    """모든 문항별 영상 맨 앞에 붙는 브랜드 인트로 카드."""
-    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (12, 14, 22))
-    d = ImageDraw.Draw(img)
-    brand_font = _video_font(96, bold=True)
-    sub_font = _video_font(54, bold=True)
-    brand, sub = "로지에듀", "최준용 국어"
-    bbox = d.textbbox((0, 0), brand, font=brand_font)
-    d.text(((VIDEO_W - (bbox[2] - bbox[0])) / 2, VIDEO_H / 2 - 130), brand, font=brand_font, fill=(255, 255, 255))
-    bbox2 = d.textbbox((0, 0), sub, font=sub_font)
-    d.text(((VIDEO_W - (bbox2[2] - bbox2[0])) / 2, VIDEO_H / 2 + 10), sub, font=sub_font, fill=(196, 176, 255))
-    img.save(out_path)
-
-
-def _video_make_passage_slide(excerpt: str, highlight_span, out_path: str):
-    """지문 발췌문을 보여주고, 정답의 근거가 되는 부분만 노란 형광펜처럼 강조한다."""
-    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
-    d = ImageDraw.Draw(img)
-    # 💡 이모지(📖 등)는 Noto Sans KR에 글리프가 없어 네모 깨짐(tofu)으로 나온다 —
-    # 직접 그린 네모 배지로 대신한다.
-    d.rectangle([80, 96, 108, 124], fill=(250, 204, 21))
-    d.text((124, 92), "지문 근거", font=_video_font(38, bold=True), fill=(250, 204, 21))
-
-    body_font = _video_font(46)
-    max_w = VIDEO_W - 160
-    lines, cur, cur_w = [], [], 0
-    for char_idx, ch in enumerate(excerpt):
-        if ch == "\n":
-            lines.append(cur); cur, cur_w = [], 0
-            continue
-        w = d.textlength(ch, font=body_font)
-        if cur_w + w > max_w and cur:
-            lines.append(cur); cur, cur_w = [], 0
-        is_hi = bool(highlight_span and highlight_span[0] <= char_idx < highlight_span[1])
-        cur.append((ch, is_hi)); cur_w += w
-    if cur:
-        lines.append(cur)
-
-    line_h = body_font.size + 24
-    total_h = line_h * len(lines)
-    y = max(260, (VIDEO_H - total_h) // 2)
-    for line in lines:
-        text = "".join(c for c, _ in line)
-        w = d.textbbox((0, 0), text, font=body_font)[2]
-        x = (VIDEO_W - w) / 2
-        cx = x
-        for ch, is_hi in line:
-            cw = d.textlength(ch, font=body_font)
-            if is_hi:
-                d.rectangle([cx - 2, y - 4, cx + cw + 2, y + body_font.size + 10], fill=(122, 95, 8))
-            cx += cw
-        cx = x
-        for ch, is_hi in line:
-            cw = d.textlength(ch, font=body_font)
-            d.text((cx, y), ch, font=body_font, fill=(255, 241, 191) if is_hi else (220, 222, 230))
-            cx += cw
-        y += line_h
-    img.save(out_path)
-
-
-def _video_make_options_slide(stem: str, options: list, correct_idx: int, wrong_reasons: dict, out_path: str):
-    """5개 선택지를 그대로 보여주면서, 정답은 초록 체크로, 오답은 빨간 X와 함께
-    왜 틀렸는지 짧은 이유를 바로 아래에 덧붙여 보여준다."""
-    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (17, 20, 28))
-    d = ImageDraw.Draw(img)
-    d.rectangle([80, 86, 108, 114], fill=(250, 204, 21))
-    d.text((124, 82), "선택지 분석", font=_video_font(38, bold=True), fill=(250, 204, 21))
-
-    y = 180
-    if stem:
-        stem_font = _video_font(38)
-        for line in _video_wrap_lines(d, stem, stem_font, VIDEO_W - 160):
-            d.text((80, y), line, font=stem_font, fill=(180, 184, 200))
-            y += stem_font.size + 14
-        y += 24
-
-    opt_font = _video_font(42, bold=True)
-    reason_font = _video_font(30)
-    for i, opt_text in enumerate(options, start=1):
-        is_correct = (i == correct_idx)
-        color = (110, 231, 150) if is_correct else (248, 113, 113)
-        # 💡 체크/엑스 표시는 폰트 글리프(✔✘ 등)에 기대지 않고 직접 그린다 —
-        # Noto Sans KR에 이 기호들의 글리프가 없어 네모 깨짐으로 나왔었다.
-        r = opt_font.size * 0.34
-        cx, cy = 80 + r, y + opt_font.size * 0.5
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=4)
-        if is_correct:
-            d.line([cx - r * 0.5, cy, cx - r * 0.1, cy + r * 0.45], fill=color, width=5)
-            d.line([cx - r * 0.1, cy + r * 0.45, cx + r * 0.55, cy - r * 0.4], fill=color, width=5)
-        else:
-            d.line([cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy + r * 0.5], fill=color, width=5)
-            d.line([cx - r * 0.5, cy + r * 0.5, cx + r * 0.5, cy - r * 0.5], fill=color, width=5)
-        lines = _video_wrap_lines(d, opt_text, opt_font, VIDEO_W - 220)
-        for line in lines:
-            d.text((140, y), line, font=opt_font, fill=(255, 255, 255) if is_correct else (215, 217, 225))
-            y += opt_font.size + 12
-        reason = wrong_reasons.get(str(i))
-        if not is_correct and reason:
-            for rline in _video_wrap_lines(d, f"→ {reason}", reason_font, VIDEO_W - 260):
-                d.text((160, y), rline, font=reason_font, fill=(252, 165, 165))
-                y += reason_font.size + 8
-        y += 28
-    img.save(out_path)
+VIDEO_MAX_SCENES = explain_video.MAX_LINES
 
 
 _OPTION_MARKERS = ["①", "②", "③", "④", "⑤"]
@@ -6450,92 +6294,24 @@ async def analyze_question_for_video(preamble: str, problem_text: str, explanati
 
 
 def render_question_video(question_no: int, preamble: str, problem_text: str,
-                           explanation_text: str, answer_text: str, analysis: dict) -> bytes:
+                           explanation_text: str, answer_text: str, analysis: dict):
     """블로킹 작업이므로 asyncio.to_thread로 감싸서 호출한다.
-    인트로 → 문항 안내 → 지문 근거(하이라이트) → 선택지 분석, 4개 장면으로 구성된다."""
+    인트로 → 지문 근거(형광펜) → 선택지 분석(O/X) → 끝 화면. 그리기는 explain_video.py."""
     stem, options = _split_question_options(problem_text)
     correct_idx = _extract_option_number(answer_text)
-    excerpt, span = _evidence_excerpt(preamble, analysis.get("evidence_quote", ""))
+    # 💡 화면이 넓어져 근거 앞뒤 맥락을 예전보다 넉넉히 보여준다 (글자 크기는 알아서 맞춘다)
+    excerpt, span = _evidence_excerpt(preamble, analysis.get("evidence_quote", ""), radius=150)
     narration = analysis.get("narration") or _fallback_split_scenes(explanation_text or problem_text)
-    wrong_reasons = analysis.get("wrong_reasons", {})
     half = max(1, len(narration) // 2) if narration else 0
-    passage_narr = " ".join(narration[:half]) or "지문에서 근거를 먼저 확인해봅시다."
-    options_narr = " ".join(narration[half:]) or "선택지를 하나씩 살펴보겠습니다."
-
-    with tempfile.TemporaryDirectory(prefix="explain_video_") as workdir:
-        clip_paths = []
-
-        def add_clip(narr_text: str, slide_path: str):
-            i = len(clip_paths)
-            mp3_path = os.path.join(workdir, f"audio_{i}.mp3")
-            clip_path = os.path.join(workdir, f"clip_{i}.mp4")
-            gTTS(narr_text, lang="ko").save(mp3_path)
-            _video_make_scene_clip(slide_path, mp3_path, clip_path)
-            clip_paths.append(clip_path)
-
-        intro_path = os.path.join(workdir, "intro.png")
-        _video_make_intro_slide(intro_path)
-        add_clip("안녕하세요. 로지에듀 최준용 국어입니다.", intro_path)
-
-        title_path = os.path.join(workdir, "title.png")
-        _video_make_slide(f"{question_no}번 문항 해설", title_path)
-        add_clip(f"{question_no}번 문항 해설입니다.", title_path)
-
-        passage_path = os.path.join(workdir, "passage.png")
-        _video_make_passage_slide(excerpt, span, passage_path)
-        add_clip(passage_narr, passage_path)
-
-        options_path = os.path.join(workdir, "options.png")
-        _video_make_options_slide(stem, options, correct_idx, wrong_reasons, options_path)
-        add_clip(options_narr, options_path)
-
-        final_path = os.path.join(workdir, "final.mp4")
-        _video_concat_clips(clip_paths, final_path, workdir)
-        with open(final_path, "rb") as f:
-            return f.read()
+    return explain_video.render_question_video(
+        question_no, excerpt, span, stem, options, correct_idx, analysis.get("wrong_reasons", {}),
+        narration[:half], narration[half:],
+    )
 
 
-def _video_run_ffmpeg(args: list):
-    r = subprocess.run(args, capture_output=True, encoding="utf-8", errors="replace")
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr or "").strip()[-1500:] or "ffmpeg 처리 중 알 수 없는 오류")
-
-
-def _video_make_scene_clip(image_path: str, audio_path: str, out_path: str):
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    _video_run_ffmpeg([
-        ffmpeg, "-y", "-loop", "1", "-i", image_path, "-i", audio_path,
-        "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "128k",
-        "-pix_fmt", "yuv420p", "-shortest", "-vf", f"scale={VIDEO_W}:{VIDEO_H}",
-        out_path,
-    ])
-
-
-def _video_concat_clips(clip_paths: list, out_path: str, workdir: str):
-    list_path = os.path.join(workdir, "concat_list.txt")
-    with open(list_path, "w", encoding="utf-8") as f:
-        for p in clip_paths:
-            f.write(f"file '{p}'\n")
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    _video_run_ffmpeg([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path])
-
-
-def render_explain_video(scenes: list) -> bytes:
-    """블로킹 작업(TTS 네트워크 호출 + ffmpeg 렌더링)이므로 asyncio.to_thread로 감싸서 호출한다."""
-    with tempfile.TemporaryDirectory(prefix="explain_video_") as workdir:
-        clip_paths = []
-        for i, scene_text in enumerate(scenes):
-            img_path = os.path.join(workdir, f"slide_{i}.png")
-            mp3_path = os.path.join(workdir, f"audio_{i}.mp3")
-            clip_path = os.path.join(workdir, f"clip_{i}.mp4")
-            _video_make_slide(scene_text, img_path)
-            gTTS(scene_text, lang="ko").save(mp3_path)
-            _video_make_scene_clip(img_path, mp3_path, clip_path)
-            clip_paths.append(clip_path)
-        final_path = os.path.join(workdir, "final.mp4")
-        _video_concat_clips(clip_paths, final_path, workdir)
-        with open(final_path, "rb") as f:
-            return f.read()
+def render_explain_video(scenes: list, title: str = ""):
+    """블로킹 작업(음성 만들기 + 영상 그리기)이므로 asyncio.to_thread로 감싸서 호출한다."""
+    return explain_video.render_caption_video(scenes, title=title)
 
 
 def _fallback_split_scenes(text: str) -> list:
@@ -6717,7 +6493,7 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
         if used_ai:
             analysis = await analyze_question_for_video(preamble, problem_text, explanation_text)
         try:
-            video_bytes = await asyncio.to_thread(
+            rendered = await asyncio.to_thread(
                 render_question_video, question_no, preamble, problem_text, explanation_text, answer_text, analysis,
             )
         except Exception as e:
@@ -6731,24 +6507,26 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
         if not scenes:
             return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
         try:
-            video_bytes = await asyncio.to_thread(render_explain_video, scenes)
+            rendered = await asyncio.to_thread(render_explain_video, scenes, title.strip())
         except Exception as e:
             return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
         scene_count = len(scenes)
         safe_title = (title.strip() or "해설영상")[:60]
 
-    url = save_bytes(video_bytes, f"{safe_title}.mp4", "explain_videos", "video/mp4")
+    url = save_bytes(rendered.video, f"{safe_title}.mp4", "explain_videos", "video/mp4")
+    # 💡 voice: "gemini"(사람 같은 목소리) / "gtts"(Gemini 음성이 막혀 무료 기계 목소리로 대신함)
+    voice, seconds = rendered.voice, round(rendered.seconds, 1)
 
     doc_id = uuid.uuid4().hex
     if db is not None:
         await asyncio.to_thread(lambda: db.collection("explain_videos").document(doc_id).set({
             "title": safe_title, "url": url, "scene_count": scene_count, "question_no": question_no,
-            "used_ai": used_ai,
+            "used_ai": used_ai, "voice": voice, "seconds": seconds,
             "source_text": source_text[:2000],
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }))
     return {"success": True, "id": doc_id, "title": safe_title, "url": url,
-            "scene_count": scene_count, "used_ai": used_ai}
+            "scene_count": scene_count, "used_ai": used_ai, "voice": voice, "seconds": seconds}
 
 
 UNSURE_REPORT_MAX_ROWS = 400      # 한 번에 훑어볼 제출 기록 수
