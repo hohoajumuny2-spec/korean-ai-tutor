@@ -15,8 +15,6 @@ import threading
 import mimetypes
 import urllib.parse
 import asyncio
-import subprocess
-import tempfile
 from collections import defaultdict
 from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form, WebSocket,
@@ -45,7 +43,8 @@ import omr_sheet
 import study_extras
 import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
 import explain_video  # 해설 영상: 사람 같은 목소리 + 움직이는 화면
-from PIL import Image, ImageDraw, ImageFont
+import video_diagrams  # 해설 영상: 내용에 맞춘 도표 장면
+from PIL import Image
 
 # ─────────────────────────────────────────────────────────
 # 디렉토리 생성
@@ -6265,7 +6264,11 @@ async def analyze_question_for_video(preamble: str, problem_text: str, explanati
 - evidence_quote: 정답의 근거가 되는 부분을 아래 [지문]에서 한 글자도 바꾸지 말고 문장부호까지 정확히 그대로 옮겨줘. 통째로 길게 옮기지 말고, 핵심 문장 하나(또는 이어지는 두 문장) 정도로 짧게.
 - wrong_reasons: 정답이 아닌 선택지 번호(1~5 중 정답 제외)마다, 왜 틀렸는지 12자 안팎으로 아주 짧게. 정답 선택지 번호는 넣지 마세요.
 - narration: 학생에게 소리 내어 설명하듯 자연스러운 구어체 문장 4~6개로, 지문 근거 설명 → 정답인 이유 → 오답인 이유 순서로 짧게짧게 나눠줘. 한 문장은 20~50자 정도로.
-- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력해: {{"evidence_quote": "...", "wrong_reasons": {{"1": "...", "2": "..."}}, "narration": ["...", "..."]}}
+- diagram: 지문 내용을 한눈에 정리해 주는 도표 장면 하나. 지문의 흐름 · 대비 · 관계 · 핵심 개념을 정리하면 문제 풀이에 도움이 될 때만 넣고, 아니면 null.
+  아래 [화면 모양] 중 keyword · list · timeline · compare · relation 하나를 골라. 그 lines 는 narration 과 겹치지 않게 지문 정리만 2~4문장.
+- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력해: {{"evidence_quote": "...", "wrong_reasons": {{"1": "...", "2": "..."}}, "narration": ["...", "..."], "diagram": {{...}} 또는 null}}
+
+{video_diagrams.STORYBOARD_GUIDE}
 
 [지문]
 {preamble}
@@ -6278,16 +6281,15 @@ async def analyze_question_for_video(preamble: str, problem_text: str, explanati
     try:
         model = get_best_model()
         resp = await asyncio.to_thread(model.generate_content, prompt)
-        raw = (resp.text or "").strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw.strip())
+        # 💡 답이 길어져(도표까지) 끝 쉼표 · 앞뒤 군말이 섞이기 쉽다 — 너그럽게 읽는다
+        data = video_diagrams.parse_json_reply(resp.text or "")
+        if not isinstance(data, dict):
+            raise ValueError("JSON 아님")
         return {
             "evidence_quote": str(data.get("evidence_quote", "")).strip(),
             "wrong_reasons": {str(k): str(v).strip() for k, v in (data.get("wrong_reasons") or {}).items()},
             "narration": [str(s).strip() for s in (data.get("narration") or []) if str(s).strip()],
+            "diagram": _clean_question_diagram(data.get("diagram")),
         }
     except Exception:
         return {"evidence_quote": "", "wrong_reasons": {}, "narration": []}
@@ -6303,15 +6305,27 @@ def render_question_video(question_no: int, preamble: str, problem_text: str,
     excerpt, span = _evidence_excerpt(preamble, analysis.get("evidence_quote", ""), radius=150)
     narration = analysis.get("narration") or _fallback_split_scenes(explanation_text or problem_text)
     half = max(1, len(narration) // 2) if narration else 0
+    diagram = _clean_question_diagram(analysis.get("diagram"))
+    extra = [video_diagrams.build_scene(diagram)] if diagram else []
     return explain_video.render_question_video(
         question_no, excerpt, span, stem, options, correct_idx, analysis.get("wrong_reasons", {}),
-        narration[:half], narration[half:],
+        narration[:half], narration[half:], extra_scenes=extra,
     )
 
 
-def render_explain_video(scenes: list, title: str = ""):
-    """블로킹 작업(음성 만들기 + 영상 그리기)이므로 asyncio.to_thread로 감싸서 호출한다."""
-    return explain_video.render_caption_video(scenes, title=title)
+def _clean_question_diagram(diagram):
+    """문항 영상에 끼울 지문 정리 도표. 제목 · 원문 장면은 이미 따로 있으므로 받지 않는다."""
+    sc = video_diagrams.clean_scene(diagram) if diagram else None
+    if not sc or sc["type"] not in ("keyword", "list", "timeline", "compare", "relation"):
+        return None
+    sc["lines"] = sc["lines"][:6]
+    return sc
+
+
+def render_explain_video(storyboard: list, title: str = ""):
+    """블로킹 작업(음성 만들기 + 영상 그리기)이므로 asyncio.to_thread로 감싸서 호출한다.
+    storyboard: make_video_storyboard 가 만든 장면 설계도 (장면마다 내용에 맞는 도표)."""
+    return video_diagrams.render_storyboard_video(storyboard, title=title)
 
 
 def _fallback_split_scenes(text: str) -> list:
@@ -6329,34 +6343,19 @@ def _fallback_split_scenes(text: str) -> list:
     return scenes[:VIDEO_MAX_SCENES] or [text[:200]]
 
 
-async def split_video_scenes(text: str) -> list:
-    """해설 텍스트를 AI가 짧은 구어체 장면들로 나눈다. 실패하면 기계적 분리로 대체한다."""
-    prompt = f"""아래 해설/설명 글을 학생들이 짧은 세로형 영상(쇼츠)으로 보기 좋게, 성우가 소리 내어 읽을 자연스러운 구어체 대사로 나눠줘.
-
-[규칙]
-- 원문의 내용과 의미를 절대 바꾸지 말고, 말하듯이 자연스러운 문장으로 다듬어서 전달해.
-- 한 장면은 대략 20~60자 정도로, 소리 내어 읽었을 때 4~8초 안팎이 되도록 짧게 끊어줘.
-- 전체 장면 수는 {VIDEO_MAX_SCENES}개를 넘기지 마세요.
-- 마크다운이나 *, #, <, > 같은 기호 없이 순수한 문장으로만 작성해.
-- 다른 설명 없이, 장면 순서대로 문자열만 담은 JSON 배열로만 출력해. 예: ["첫 번째 장면입니다.", "두 번째 장면입니다."]
-
-[원문]
-{text}"""
+async def make_video_storyboard(text: str) -> list:
+    """해설 글을 AI가 '장면 설계도'로 바꾼다 — 장면마다 내용에 맞는 화면(연표 · 비교표 ·
+    관계도 · 핵심 개념 · 원문 형광펜 …)과 읽을 문장. 실패하면 문장만 크게 보여주는 장면 하나로."""
     try:
         model = get_best_model()
-        resp = await asyncio.to_thread(model.generate_content, prompt)
-        raw = (resp.text or "").strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-        scenes = json.loads(raw.strip())
-        scenes = [str(s).strip() for s in scenes if str(s).strip()]
-        if scenes:
-            return scenes[:VIDEO_MAX_SCENES]
-    except Exception:
-        pass
-    return _fallback_split_scenes(text)
+        resp = await asyncio.to_thread(model.generate_content,
+                                       video_diagrams.storyboard_prompt(text, VIDEO_MAX_SCENES))
+        storyboard = video_diagrams.parse_storyboard(resp.text or "", VIDEO_MAX_SCENES)
+        if storyboard:
+            return storyboard
+    except Exception as e:
+        print(f"[해설영상] 장면 설계 실패 → 문장 나누기로 대신합니다: {e}")
+    return [{"type": "caption", "lines": _fallback_split_scenes(text)}]
 
 
 @app.post("/api/admin/ai_status")
@@ -6419,12 +6418,14 @@ def parse_manual_script(script: str, question_no: int) -> dict:
             "evidence_quote": str(data.get("evidence_quote", "")).strip(),
             "wrong_reasons": reasons,
             "narration": narration[:VIDEO_MAX_SCENES],
+            "diagram": _clean_question_diagram(data.get("diagram")),
         }
         # 하나라도 채워져 있어야 손수 만든 대본으로 인정한다
-        return out if (out["evidence_quote"] or out["wrong_reasons"] or out["narration"]) else {}
+        return out if (out["evidence_quote"] or out["wrong_reasons"] or out["narration"] or out["diagram"]) else {}
 
-    scenes = [str(x).strip() for x in (data.get("scenes") or []) if str(x).strip()]
-    return {"scenes": scenes[:VIDEO_MAX_SCENES]} if scenes else {}
+    # 💡 문장 목록(["...", ...])도, 장면 설계도([{"type": "list", ...}, ...])도 받는다
+    storyboard = video_diagrams.parse_storyboard(data.get("scenes") or [], VIDEO_MAX_SCENES)
+    return {"scenes": storyboard} if storyboard else {}
 
 
 @app.post("/api/admin/video_draft")
@@ -6498,19 +6499,19 @@ async def generate_video(text: str = Form(...), title: str = Form(""), question_
             )
         except Exception as e:
             return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
-        scene_count = 4
+        scene_count = 5 if analysis.get("diagram") else 4
         safe_title = (title.strip() or f"{question_no}번 문항 해설영상")[:60]
     else:
         manual = parse_manual_script(script, 0)
         used_ai = not manual
-        scenes = manual.get("scenes") if manual else await split_video_scenes(source_text)
+        scenes = manual.get("scenes") if manual else await make_video_storyboard(source_text)
         if not scenes:
             return {"success": False, "detail": "장면을 나누지 못했습니다. 내용을 조금 더 자세히 입력해주세요."}
         try:
             rendered = await asyncio.to_thread(render_explain_video, scenes, title.strip())
         except Exception as e:
             return {"success": False, "detail": f"영상 생성에 실패했습니다: {e}"}
-        scene_count = len(scenes)
+        scene_count = len(scenes)       # 장면(화면) 수
         safe_title = (title.strip() or "해설영상")[:60]
 
     url = save_bytes(rendered.video, f"{safe_title}.mp4", "explain_videos", "video/mp4")

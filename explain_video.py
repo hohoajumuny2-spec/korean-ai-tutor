@@ -495,6 +495,8 @@ class IntroScene(Scene):
 class PassageScene(Scene):
     """지문 발췌를 보여주고, 근거 문장에 형광펜을 왼쪽부터 쭉 긋는다."""
     SWEEP = 28
+    badge = "지문 근거"
+    SIZES = (48, 46, 44, 42, 40, 38, 36, 34, 32, 30)
 
     def __init__(self, lines, excerpt: str, span):
         super().__init__(lines)
@@ -502,10 +504,12 @@ class PassageScene(Scene):
         self.span = span
 
     def prepare(self):
-        self.box = (MARGIN - 20, CONTENT_TOP, W - MARGIN + 20, CONTENT_BOTTOM)
         self.fnt, self.wrapped, self.lh = fit_wrap(
-            self.excerpt, W - 2 * MARGIN - 40, CONTENT_BOTTOM - CONTENT_TOP - 100,
-            (48, 46, 44, 42, 40, 38, 36, 34, 32, 30))
+            self.excerpt, W - 2 * MARGIN - 40, CONTENT_BOTTOM - CONTENT_TOP - 100, self.SIZES)
+        # 상자는 글 높이에 맞춰 가운데에 (짧은 시구가 큰 빈 상자에 떠 있지 않게)
+        text_h = self.lh * len(self.wrapped)
+        top = max(CONTENT_TOP, (CONTENT_TOP + CONTENT_BOTTOM - text_h) / 2 - 60)
+        self.box = (MARGIN - 20, top, W - MARGIN + 20, min(CONTENT_BOTTOM, top + text_h + 110))
         # 형광펜은 첫 문장을 읽기 시작하고 조금 뒤에 긋는다
         self.sweep_from = 0.6
         self.sweep_len = 1.6
@@ -517,14 +521,13 @@ class PassageScene(Scene):
 
     def draw(self, img, st, t):
         d = ImageDraw.Draw(img)
-        draw_badge(d, "지문 근거")
+        draw_badge(d, self.badge)
         d.rounded_rectangle(self.box, radius=32, fill=CARD)
         hi = None
         if self.span and st[0] > 0:
             a, b = self.span
             hi = (a, a + int(round((b - a) * st[0] / self.SWEEP)))
-        text_h = self.lh * len(self.wrapped)
-        y = CONTENT_TOP + max(50, (CONTENT_BOTTOM - CONTENT_TOP - text_h) / 2)
+        y = self.box[1] + 55
         draw_lines(d, self.wrapped, self.fnt, MARGIN + 10, y, self.lh, SOFT, highlight=hi)
 
 
@@ -769,11 +772,13 @@ def build_video(scenes: list, chip: str = "", tts=None) -> VideoResult:
 
 def render_question_video(question_no: int, excerpt: str, span, stem: str, options: list,
                           correct: int, wrong_reasons: dict, passage_lines: list, option_lines: list,
-                          tts=None) -> VideoResult:
-    """문항 하나: 인트로 → 지문 근거(형광펜) → 선택지 분석(O/X) → 끝 화면."""
+                          extra_scenes=None, tts=None) -> VideoResult:
+    """문항 하나: 인트로 → 지문 근거(형광펜) → (지문 정리 도표) → 선택지 분석(O/X) → 끝 화면.
+    extra_scenes: video_diagrams 가 만든 도표 장면들 — 지문 근거 다음에 끼운다."""
     scenes = [IntroScene([f"안녕하세요. {BRAND} {TEACHER}입니다.", f"{question_no}번 문항 해설입니다."],
                          pill=f"{question_no}번 문항 해설")]
     scenes.append(PassageScene(passage_lines or ["지문에서 근거를 먼저 확인해봅시다."], excerpt, span))
+    scenes.extend(extra_scenes or [])
     if options:
         scenes.append(OptionsScene(option_lines or ["선택지를 하나씩 살펴보겠습니다."],
                                    stem, options, correct, wrong_reasons))
