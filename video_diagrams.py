@@ -339,10 +339,20 @@ class KeywordScene(ev.Scene):
 class ListScene(DiagramScene):
     def __init__(self, lines, heading, items):
         super().__init__(lines)
-        self.head, self.items = heading, items
+        self.head = heading
+        # 💡 '⑤ 가설 검정…'처럼 선지 번호로 시작하는 항목은 동그라미에 그 번호를 쓰고
+        #    글에서는 뺀다 — 안 그러면 ⑤ 옆에 '4'가 붙어 헷갈린다(오답 정리 화면)
+        marks = [it[0] if it[:1] and it[0] in ev.OPTION_MARKERS else "" for it in items]
+        if all(marks):
+            self.nums = [str(ev.OPTION_MARKERS.index(m) + 1) for m in marks]
+            self.items = [it[1:].strip() for it in items]
+        else:
+            self.nums = [str(k + 1) for k in range(len(items))]
+            self.items = items
+        self.speech_items = items     # 문장 맞추기는 번호까지 넣어서 ('1번은…')
 
     def item_texts(self):
-        return self.items
+        return self.speech_items
 
     def layout(self):
         avail = CONTENT_BOTTOM - (CONTENT_TOP + 150)
@@ -373,7 +383,7 @@ class ListScene(DiagramScene):
                 cx, cy = MARGIN + 60 + dx, y + h / 2
                 d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=lerp(BG_TOP, ACCENT, a))
                 nf = font(int(self.f.size * 0.8), True)
-                num = str(k + 1)
+                num = self.nums[k]
                 d.text((cx - nf.getlength(num) / 2, cy - nf.size * 0.68), num, font=nf, fill=BG_BOTTOM)
                 ty = y + (h - len(rows) * int(self.f.size * 1.35)) / 2 - 4
                 draw_lines(d, rows, self.f, MARGIN + 60 + r * 2 + 10 + dx, ty, int(self.f.size * 1.35), lerp(BG_TOP, TEXT, a))
