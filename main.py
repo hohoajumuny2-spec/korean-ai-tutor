@@ -1455,6 +1455,7 @@ def view_result(student_name: str, title: str, kind: str,
     expl = explanations_for(k, task, for_student=hide)
     meta = qmeta_for(k, task, for_student=hide)
     reasons = rep.get("reasons") or {}
+    marks = understood_map(rep)
     hw_for_lock = homework_doc(task) if (hide and k == "과제 제출") else {}
     expl_locked = bool(hw_for_lock) and homework_expl_locked(hw_for_lock)
     wrongs = {int(w) for w in (rep.get("wrongs") or []) if _num(w) is not None}
@@ -1478,6 +1479,7 @@ def view_result(student_name: str, title: str, kind: str,
             **meta_fields(meta, no),
             "reason": str(reasons.get(str(no), "") or ""),
             "is_wrong": no in wrongs, "is_unsure": no in unsure,
+            "understood": marks.get(str(no)),
         })
 
     return {
@@ -1541,6 +1543,7 @@ def get_wrong_questions(student_name: str, limit: int = 30):
         expl = explanations_for(kind, title, for_student=True)
         meta = qmeta_for(kind, title, for_student=True)
         reasons = r.get("reasons") or {}
+        marks = understood_map(r)
         # 💡 전부 맞힌 시험도 해설이 있으면 남겨 둔다 — 찍어서 맞힌 걸 되짚어 보려면
         #    다 맞은 시험이야말로 확인이 필요하다. 볼 것이 아무것도 없을 때만 건너뛴다.
         if not wrongs and not expl:
@@ -1557,7 +1560,8 @@ def get_wrong_questions(student_name: str, limit: int = 30):
                     **meta_fields(meta, no),
                     "reason": str(reasons.get(str(no), "") or ""),
                     "is_wrong": no in wrongs,
-                    "is_unsure": no in unsure}
+                    "is_unsure": no in unsure,
+                    "understood": marks.get(str(no))}
 
         items = [make_item(no) for no in sorted(wrongs)]
         # 💡 맞힌 문제도 해설을 보고 싶다는 요청이 있었다. 찍어서 맞힌 것도 있으니
@@ -8104,6 +8108,55 @@ async def set_wrong_reason(req: WrongReasonReq):
     return {"success": True, "reason": reason, "feedback": fb, "tag": tag}
 
 
+class UnderstoodReq(BaseModel):
+    student_name: str
+    kind: str
+    title: str
+    no: int
+    understood: Optional[int] = None   # 1 = 해설 보고 이해함 · 0 = 그래도 모르겠음 · None = 지움
+
+
+def understood_map(rep: dict) -> dict:
+    """reports 의 understood 칸 → {"3": 1, "5": 0}."""
+    out = {}
+    for k, v in (rep.get("understood") or {}).items():
+        if _num(k) is not None and v in (0, 1):
+            out[str(int(_num(k)))] = int(v)
+    return out
+
+
+@app.post("/api/student/understood")
+async def set_understood(req: UnderstoodReq):
+    """틀리거나 '모름'으로 낸 문항의 해설을 보고 이해했는지(1/0) 학생이 표시한다.
+    💡 2026-11-13: 해설만 띄워 두면 학생이 정말 이해했는지 알 수 없다는 이야기.
+       0(아직 모르겠어요)을 고르면 화면에서 '선생님께 질문하기'로 이어지고,
+       원장님은 학생 답안지에서 '해설 보고도 모름' 문항을 따로 볼 수 있다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name, kind, title = (req.student_name or "").strip(), (req.kind or "").strip(), (req.title or "").strip()
+    if kind not in REASON_KINDS or not name or not title or req.no < 1:
+        return {"success": False, "detail": "어느 문항인지 알 수 없습니다."}
+    if req.understood not in (None, 0, 1):
+        return {"success": False, "detail": "이해했어요(1) 또는 아직 모르겠어요(0)만 고를 수 있어요."}
+    if is_preview(name):           # 원장님 체험: 저장하지 않는다
+        return {"success": True, "understood": req.understood}
+    rid, rep = await asyncio.to_thread(find_report, name, title, kind)
+    if not rid:
+        return {"success": False, "detail": "이 항목을 제출한 기록이 없습니다."}
+    targets = {int(w) for w in list(rep.get("wrongs") or []) + list(rep.get("unsure") or []) if _num(w) is not None}
+    if req.no not in targets:
+        return {"success": False, "detail": "틀렸거나 '모름'으로 낸 문항에만 표시할 수 있어요."}
+    marks = understood_map(rep)
+    if req.understood is None:
+        marks.pop(str(req.no), None)
+    else:
+        marks[str(req.no)] = int(req.understood)
+    await asyncio.to_thread(lambda: db.collection("reports").document(rid).update({"understood": marks}))
+    if req.understood == 0:
+        send_telegram_message(f"🙋 [해설 보고도 모름]\n{name} 학생 · '{title}' {req.no}번")
+    return {"success": True, "understood": req.understood, "marks": marks}
+
+
 @app.get("/api/student/reason_options")
 def reason_options():
     return {"success": True, "reasons": study_extras.REASONS}
@@ -9161,6 +9214,18 @@ async def extract_from_bank(content: str = Form(...), _: bool = Depends(verify_a
     }
 
 
+def homework_qmeta_with(old, raw: str) -> dict:
+    """과제를 배포 · 고칠 때 보낸 요약 해설 · 유형을 있던 것에 얹는다(안 보내면 그대로)."""
+    old_map = study_extras.parse_meta_map(old or {})
+    try:
+        incoming = json.loads(raw) if (raw or "").strip() else None
+    except ValueError:
+        incoming = None
+    if not isinstance(incoming, dict) or not incoming:
+        return old_map
+    return study_extras.merge_meta(old_map, incoming, False)
+
+
 @app.post("/api/admin/homework")
 async def create_homework(
     title: str = Form(...),
@@ -9179,6 +9244,8 @@ async def create_homework(
     # 💡 묶음 이름 ('10월 4일 과제'). 같은 날 낸 과제 여러 개를 학생 화면에서 게시물 하나로 모은다.
     #    비우면 지금처럼 과제 하나가 게시물 하나.
     group: str = Form(""),
+    # 💡 2026-11-13: 해설지 PDF를 넣으면 AI가 읽은 요약 해설 · 유형도 같이 온다 {"1": {"summary": "...", "tag": "..."}}
+    qmeta: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -9229,7 +9296,7 @@ async def create_homework(
                 # 문항별 해설 — 학생이 채점 결과에서 번호를 눌러 바로 볼 수 있다
                 "explanations": parse_explanation_map(explanations),
                 # 문항별 유형 · 요약 해설 · 영상(해설 칸에서 따로 넣는다) — 과제를 고쳐도 남긴다
-                "qmeta": prev_data.get("qmeta") or {},
+                "qmeta": homework_qmeta_with(prev_data.get("qmeta"), qmeta),
                 "question_count": len(answer_list),
                 "deadline": deadline_str,
                 "group": group,
@@ -9429,6 +9496,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
     #    틀린 번호만 주고 해설은 마감 뒤에 연다.
     return {"success": True, "correct": correct, "total": total, "score": score,
             "wrongs": wrongs, "unsure": unsure, "mine": mine, "edited": edited,
+            "understood": understood_map(prev) if edited else {},
             # 문항마다 고친 횟수 · 더 못 고치는 문항 · 이번에 바꾸려다 막힌 문항
             "q_edits": el.dump_counts(q_counts), "max_edits": el.MAX_EDITS,
             "locked": el.locked_list(q_counts), "blocked": blocked,
