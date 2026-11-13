@@ -361,6 +361,20 @@ def _clip(v, n):
     return t if len(t) <= n else t[:n].rstrip() + "…"
 
 
+def _salvage_items(raw: str) -> dict:
+    """AI 답이 중간에 끊겨 JSON 전체를 못 읽을 때, 끝까지 적힌 문항({"3": {...}})만 골라 살린다."""
+    dec = json.JSONDecoder()
+    out = {}
+    for m in re.finditer(r'"(\d{1,3})"\s*:\s*\{', raw or ""):
+        try:
+            obj, _ = dec.raw_decode(raw, m.end() - 1)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and any(k in obj for k in ("detail", "summary", "explanation", "answer")):
+            out[m.group(1)] = obj
+    return out
+
+
 def parse_explain_reply(text) -> dict:
     """AI 답(JSON) → {"1": {"detail", "summary", "tag", "answer"?}}. 코드블록 · 군말 · 끝 쉼표가 섞여도 읽는다."""
     raw = str(text or "")
@@ -374,7 +388,7 @@ def parse_explain_reply(text) -> dict:
         try:
             parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", blob))
         except ValueError:
-            return {}
+            parsed = {"items": _salvage_items(raw)}
     items = parsed.get("items", parsed) if isinstance(parsed, dict) else None
     if isinstance(items, list):
         items = {str(it.get("no", i + 1)): it for i, it in enumerate(items) if isinstance(it, dict)}

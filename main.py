@@ -3693,43 +3693,107 @@ async def extract_answers_image(files: List[UploadFile] = File(...)):
             "max_no": max([int(k) for k in answers] + [int(k) for k in explanations if str(k).isdigit()] or [0])}
 
 
+EXPLAIN_PDF_PAGES_PER_CALL = 3     # 해설지 PDF는 3쪽씩 나눠 읽는다
+
+
+def split_pdf_for_ai(raw: bytes, pages_per_part: int = EXPLAIN_PDF_PAGES_PER_CALL) -> list:
+    """긴 PDF를 몇 쪽씩 나눈 작은 PDF 목록으로. 못 나누면 원본 하나."""
+    try:
+        src = fitz.open(stream=raw, filetype="pdf")
+    except Exception:
+        return [raw]
+    try:
+        if src.page_count <= pages_per_part:
+            return [raw]
+        parts = []
+        for start in range(0, src.page_count, pages_per_part):
+            out = fitz.open()
+            out.insert_pdf(src, from_page=start, to_page=min(start + pages_per_part, src.page_count) - 1)
+            parts.append(out.tobytes())
+            out.close()
+        return parts
+    finally:
+        src.close()
+
+
+def merge_explain_items(results: list) -> dict:
+    """나눠 읽은 결과를 번호대로 합친다. 쪽 경계에서 같은 번호가 두 번 나오면 해설을 이어 붙인다."""
+    out = {}
+    for res in results:
+        for no, row in (res or {}).items():
+            cur = out.get(no)
+            if not cur:
+                out[no] = dict(row)
+                continue
+            if row.get("detail") and row["detail"] not in cur.get("detail", ""):
+                cur["detail"] = (cur.get("detail", "") + "\n" + row["detail"]).strip()
+            for f in ("summary", "tag", "answer"):
+                if not cur.get(f) and row.get(f):
+                    cur[f] = row[f]
+    return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
+
+
 @app.post("/api/admin/extract_explanations", dependencies=[Depends(verify_admin)])
 async def extract_explanations(files: List[UploadFile] = File(default=[]), text: str = Form(""),
                                known_tags: str = Form("")):
-    """해설 창 전용: 해설지 사진 · 캡처 · PDF 또는 붙여넣은 해설지 글에서
+    """해설 창 · 과제 만들기: 해설지 사진 · 캡처 · PDF 또는 붙여넣은 해설지 글에서
     문항별 자세한 해설 · 요약 해설 · 유형 · 정답을 한 번에 읽는다.
 
     💡 해설을 한 칸씩 손으로 넣기가 너무 불편하다는 요청. 캡처 여러 장, PDF, 글 통째로 모두 받는다.
-       정답표가 없는 해설만 있는 캡처도 읽는다(예전 정답표 읽기는 정답이 없으면 실패했다)."""
-    parts = []
+       정답표가 없는 해설만 있는 캡처도 읽는다(예전 정답표 읽기는 정답이 없으면 실패했다).
+    💡 2026-11-13: 해설지 PDF 통째로는 해설이 하나도 안 들어갔다 — 문항이 많으면 AI 답이 중간에
+       끊겨 읽을 수 없었다. PDF는 3쪽씩 나눠 동시에 읽고 합치며, 끊긴 답도 읽은 문항까지는 살린다."""
+    images, pdf_parts = [], []
     for f in files or []:
         if not f or not f.filename:
             continue
         raw = await f.read()
         if not raw:
             continue
-        ctype = f.content_type or ("application/pdf" if f.filename.lower().endswith(".pdf") else "image/png")
-        if not (ctype.startswith("image/") or ctype == "application/pdf"):
+        ctype = f.content_type or ""
+        if f.filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-":
+            ctype = "application/pdf"
+        if ctype == "application/pdf":
+            pdf_parts.extend(await asyncio.to_thread(split_pdf_for_ai, raw))
+            continue
+        if not ctype.startswith("image/"):
             continue
         cdata, ctype = compress_image_for_ai(raw, ctype)
-        parts.append({"mime_type": ctype, "data": cdata})
+        images.append({"mime_type": ctype, "data": cdata})
     body = (text or "").strip()
     if len(body) > 60000:
         body = body[:60000]
-    if not parts and not body:
+    if not images and not pdf_parts and not body:
         return {"success": False, "detail": "해설지 사진 · PDF를 올리거나 해설 글을 붙여넣어 주세요."}
 
-    contents = [study_extras.explain_prompt(known_tags)] + parts + ([("[해설지 글]\n" + body)] if body else [])
-    try:
-        resp = await asyncio.to_thread(lambda: safe_generate(contents, prefer_quality=True))
-        out_text = (resp.text or "").strip()
-    except Exception as e:
-        return {"success": False, "detail": f"해설지 읽기 실패: {friendly_ai_error(e)}"}
+    prompt = study_extras.explain_prompt(known_tags)
+    # 한 번에 읽을 묶음: 사진 몇 장씩 · PDF 조각 하나씩 · 붙여넣은 글
+    batches = [[{"mime_type": "application/pdf", "data": d}] for d in pdf_parts]
+    for i in range(0, len(images), 4):
+        batches.append(images[i:i + 4])
+    if body:
+        batches.append(["[해설지 글]\n" + body])
 
-    result = study_extras.parse_explain_reply(out_text)
+    sem = asyncio.Semaphore(4)
+
+    async def read_one(parts):
+        async with sem:
+            # 여러 조각이면 빠른 모델로, 한 조각뿐이면 지금처럼 꼼꼼한 모델로
+            quality = len(batches) == 1
+            resp = await asyncio.to_thread(lambda: safe_generate([prompt] + parts, prefer_quality=quality))
+            return study_extras.parse_explain_reply((resp.text or "").strip())
+
+    got = await asyncio.gather(*(read_one(b) for b in batches), return_exceptions=True)
+    errors = [g for g in got if isinstance(g, Exception)]
+    result = merge_explain_items([g for g in got if isinstance(g, dict)])
     if not result:
-        return {"success": False, "detail": "해설을 찾지 못했습니다. 문항 번호와 해설 글이 또렷하게 보이는 사진(또는 글)인지 확인해 주세요."}
-    return {"success": True, "items": result, "count": len(result)}
+        if errors:
+            return {"success": False, "detail": f"해설지 읽기 실패: {friendly_ai_error(errors[0])}"}
+        return {"success": False, "detail": "해설을 찾지 못했습니다. 문항 번호와 해설 글이 또렷하게 보이는 PDF · 사진(또는 글)인지 확인해 주세요."}
+    out = {"success": True, "items": result, "count": len(result), "parts": len(batches)}
+    if errors:
+        out["warning"] = f"{len(batches)}조각 중 {len(errors)}조각은 읽지 못했습니다. 빠진 번호는 직접 확인해 주세요."
+    return out
 
 
 @app.post("/api/exam/submit")
