@@ -92,6 +92,14 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(sc.state(1.0)[:2], (-1, -1))
         self.assertGreaterEqual(sc.state(3.5)[1], 0)
 
+    def test_list_uses_option_numbers(self):
+        sc = vd.ListScene(["a"], "오답", ["① 반대", "⑤ 하나"])
+        self.assertEqual(sc.nums, ["1", "5"])
+        self.assertEqual(sc.items, ["반대", "하나"])
+        sc = vd.ListScene(["a"], "포인트", ["반어", "② 율격"])
+        self.assertEqual(sc.nums, ["1", "2"])
+        self.assertEqual(sc.items, ["반어", "② 율격"])
+
     def test_question_video_with_diagram(self):
         diagram = vd.build_scene(vd.clean_scene({"type": "compare", "left": {"title": "A", "points": ["a"]},
                                                  "right": {"title": "B", "points": ["b"]}, "lines": ["비교."]}))
