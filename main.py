@@ -8221,6 +8221,43 @@ async def set_understood(req: UnderstoodReq):
     return {"success": True, "understood": req.understood, "marks": marks}
 
 
+# ─────────────────────────────────────────────────────────
+# 오답 쌍둥이 클리닉 (화면: rosyedu-web/twin-clinic) — 결과 저장 · 선생님 화면
+# ─────────────────────────────────────────────────────────
+import twin_clinic
+
+
+@app.post("/api/twin-clinic/results")
+async def save_twin_result(request: Request):
+    """학생이 쌍둥이 클리닉을 끝내면 결과 문서를 통째로 저장한다."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB 연결 오류")
+    try:
+        doc = twin_clinic.clean_result(await request.json())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="결과 형식이 올바르지 않습니다.")
+    if is_preview(doc["student"]):
+        return {"success": True, "preview": True}
+    doc["savedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await asyncio.to_thread(lambda: db.collection("twin_results").add(doc))
+    if doc["ask"]:
+        send_telegram_message(f"👯 [쌍둥이 클리닉] {doc['student']} · {doc['setTitle'] or doc['setId']}\n"
+                              f"{doc['right']}/{doc['total']} · 선생님께 질문할 문항: {', '.join(map(str, doc['ask']))}번")
+    return {"success": True}
+
+
+@app.get("/api/admin/twin-clinic/results", dependencies=[Depends(verify_admin)])
+def list_twin_results(limit: int = 300):
+    """선생님 화면: 최근 결과(최신순)."""
+    if db is None:
+        return []
+    rows = [d.to_dict() for d in db.collection("twin_results").limit(2000).stream()]
+    rows.sort(key=lambda r: str(r.get("createdAt") or r.get("savedAt") or ""), reverse=True)
+    return rows[:max(1, min(1000, limit))]
+
+
 @app.get("/api/student/reason_options")
 def reason_options():
     return {"success": True, "reasons": study_extras.REASONS}
