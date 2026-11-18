@@ -62,3 +62,82 @@ def clean_result(doc) -> dict:
         "twins": rows("twins", ("vid", "no", "pick", "correct")),
         "ask": _int_list(doc.get("ask"), 1, MAX_ITEMS),
     }
+
+
+# ── 원장님이 올리는 세트(원래 문제 + 유사 문제) ─────────────────────────
+MAX_SET_BYTES = 900_000      # Firestore 문서 한 개(1MB) 안에 들도록
+CIRCLED = "①②③④⑤"
+
+
+def _txt(v, n):
+    return str(v or "").strip()[:n]
+
+
+def _question(q, passages, where):
+    if not isinstance(q, dict):
+        raise ValueError(f"{where}: 형식이 올바르지 않습니다.")
+    choices = [_txt(c, 600) for c in (q.get("choices") or [])][:5]
+    if len(choices) != 5 or not all(choices):
+        raise ValueError(f"{where}: 선택지 ①~⑤ 다섯 개가 모두 있어야 합니다.")
+    try:
+        answer = int(q.get("answer"))
+    except (TypeError, ValueError):
+        answer = 0
+    if not 1 <= answer <= 5:
+        raise ValueError(f"{where}: 정답(1~5)이 없습니다.")
+    pid = _txt(q.get("passage"), 40)
+    if pid and pid not in passages:
+        pid = ""
+    return {"passage": pid, "stem": _txt(q.get("stem"), 1500),
+            "box": [_txt(b, 1500) for b in (q.get("box") or [])][:30],
+            "choices": choices, "answer": answer,
+            "explain": _txt(q.get("explain"), 3000),
+            "note": [_txt(b, 300) for b in (q.get("note") or [])][:5]}
+
+
+def clean_set(bank) -> dict:
+    """원장님이 만든 세트(문항은행 JSON)를 점검한다. 문항마다 유사 문제가 1개 이상 있어야 한다."""
+    if not isinstance(bank, dict):
+        raise ValueError("세트 형식이 올바르지 않습니다.")
+    if len(json.dumps(bank, ensure_ascii=False).encode("utf-8")) > MAX_SET_BYTES:
+        raise ValueError("세트가 너무 큽니다. 지문이나 문항을 나눠 두 세트로 올려 주세요.")
+    title = _txt(bank.get("title"), 120)
+    if not title:
+        raise ValueError("세트 제목을 적어 주세요.")
+    passages = {}
+    out_p = []
+    for i, p in enumerate((bank.get("passages") or [])[:30]):
+        if not isinstance(p, dict):
+            continue
+        pid = _txt(p.get("id"), 40) or f"p{i + 1}"
+        passages[pid] = True
+        out_p.append({"id": pid, "title": _txt(p.get("title"), 120) or f"지문 {i + 1}",
+                      "lead": _txt(p.get("lead"), 200), "text": _txt(p.get("text"), 20000)})
+    items = []
+    for it in (bank.get("items") or [])[:MAX_ITEMS]:
+        try:
+            no = int((it or {}).get("no"))
+        except (TypeError, ValueError):
+            raise ValueError("문항 번호가 올바르지 않습니다.")
+        q = _question(it, passages, f"{no}번")
+        q["no"] = no
+        q["points"] = 3 if str(it.get("points")) == "3" else 2
+        variants = []
+        for j, v in enumerate((it.get("variants") or [])[:4]):
+            vq = _question(v, passages, f"{no}번 유사 문제 {j + 1}")
+            vq["vid"] = f"{no}-{'ABCD'[j]}"
+            if not vq["passage"]:
+                vq["passage"] = q["passage"]
+            variants.append(vq)
+        if not variants:
+            raise ValueError(f"{no}번: 유사 문제가 없습니다. 문항마다 유사 문제를 1개 이상 넣어 주세요.")
+        q["variants"] = variants
+        items.append(q)
+    if not items:
+        raise ValueError("문항이 없습니다.")
+    nos = [x["no"] for x in items]
+    if len(set(nos)) != len(nos):
+        raise ValueError("문항 번호가 겹칩니다.")
+    items.sort(key=lambda x: x["no"])
+    return {"title": title, "school": _txt(bank.get("school"), 60), "note": _txt(bank.get("note"), 200),
+            "passages": out_p, "items": items}

@@ -8258,6 +8258,59 @@ def list_twin_results(limit: int = 300):
     return rows[:max(1, min(1000, limit))]
 
 
+@app.get("/api/twin-clinic/sets")
+def list_twin_sets():
+    """학생 화면의 세트 목록(원장님이 올린 세트). 미리 넣어 둔 세트는 화면 파일에 들어 있다."""
+    if db is None:
+        return []
+    out = []
+    for d in db.collection("twin_sets").stream():
+        r = d.to_dict() or {}
+        if r.get("hidden"):
+            continue
+        out.append({"id": d.id, "title": r.get("title", ""), "count": len(r.get("items") or []),
+                    "school": r.get("school", ""), "note": r.get("note", ""), "createdAt": r.get("createdAt", "")})
+    out.sort(key=lambda r: str(r["createdAt"]), reverse=True)
+    return out
+
+
+@app.get("/api/twin-clinic/sets/{set_id}")
+def get_twin_set(set_id: str):
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB 연결 오류")
+    d = db.collection("twin_sets").document(sanitize_doc_id(set_id)).get()
+    if not d.exists:
+        raise HTTPException(status_code=404, detail="세트를 찾지 못했습니다.")
+    r = d.to_dict() or {}
+    return {**r, "set_id": d.id}
+
+
+@app.post("/api/admin/twin-clinic/sets", dependencies=[Depends(verify_admin)])
+async def save_twin_set(request: Request):
+    """원장님이 만든 세트(원래 문제 + 유사 문제)를 올린다. 같은 제목이면 바꿔 쓴다."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB 연결 오류")
+    try:
+        bank = twin_clinic.clean_set(await request.json())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="세트 형식이 올바르지 않습니다.")
+    sid = sanitize_doc_id("set-" + bank["title"])
+    bank["createdAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await asyncio.to_thread(lambda: db.collection("twin_sets").document(sid).set(bank))
+    return {"success": True, "id": sid, "count": len(bank["items"]),
+            "variants": sum(len(i["variants"]) for i in bank["items"])}
+
+
+@app.delete("/api/admin/twin-clinic/sets/{set_id}", dependencies=[Depends(verify_admin)])
+def delete_twin_set(set_id: str):
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB 연결 오류")
+    db.collection("twin_sets").document(sanitize_doc_id(set_id)).delete()
+    return {"success": True}
+
+
 @app.get("/api/student/reason_options")
 def reason_options():
     return {"success": True, "reasons": study_extras.REASONS}
