@@ -54,6 +54,7 @@ def clean_result(doc) -> dict:
         "studentId": str(doc.get("studentId") or "").strip()[:60] or None,
         "school": str(doc.get("school") or "").strip()[:40],
         "grade": str(doc.get("grade") or "").strip()[:20],
+        "hw": str(doc.get("hw") or "").strip()[:120],       # 클리닉 과제에서 들어온 경우 그 과제 이름
         "createdAt": str(doc.get("createdAt") or "").strip()[:40],
         "total": total, "right": right,
         "answers": _int_list(doc.get("answers"), 0, 5),

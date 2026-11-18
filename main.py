@@ -9400,6 +9400,9 @@ async def create_homework(
     group: str = Form(""),
     # 💡 2026-11-13: 해설지 PDF를 넣으면 AI가 읽은 요약 해설 · 유형도 같이 온다 {"1": {"summary": "...", "tag": "..."}}
     qmeta: str = Form(""),
+    # 💡 2026-11-18: 원장님이 만든 유사 문제 세트(쌍둥이 클리닉 twin_sets id). 채점 뒤 틀린 문항의 유사 문제가 나온다.
+    #    비우면 있던 것을 그대로 두고, '-'이면 뗀다.
+    twin_set: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -9458,6 +9461,7 @@ async def create_homework(
                 "hidden": bool(prev_data.get("hidden", False)),
                 # 문제 공장에서 낸 과제의 문제지(homework_papers) — 고쳐도 이어진다
                 "has_paper": bool(prev_data.get("has_paper", False)),
+                "twin_set": "" if twin_set.strip() == "-" else (twin_set.strip()[:200] or prev_data.get("twin_set", "")),
                 "created_at": created_at,
             }
         )
@@ -9657,6 +9661,7 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "locked_message": el.LOCKED_MESSAGE if blocked else "",
             "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
+            "twin_set": data.get("twin_set", ""),
             "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
             # 문항별 유형 · 요약 해설 · 해설 영상(마감 전이면 유형만)
             "meta": {k: ({"tag": v["tag"]} if homework_expl_locked(data) else v)
