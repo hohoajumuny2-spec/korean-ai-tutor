@@ -8269,7 +8269,9 @@ def list_twin_sets():
         if r.get("hidden"):
             continue
         out.append({"id": d.id, "title": r.get("title", ""), "count": len(r.get("items") or []),
-                    "school": r.get("school", ""), "note": r.get("note", ""), "createdAt": r.get("createdAt", "")})
+                    "school": r.get("school", ""), "note": r.get("note", ""), "createdAt": r.get("createdAt", ""),
+                    # 유사 문제만 있는 세트(원래 문제는 종이로) — 클리닉 과제에서만 쓴다
+                    "twin_only": bool(r.get("twinOnly"))})
     out.sort(key=lambda r: str(r["createdAt"]), reverse=True)
     return out
 

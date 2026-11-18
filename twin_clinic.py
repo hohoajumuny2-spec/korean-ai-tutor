@@ -120,7 +120,13 @@ def clean_set(bank) -> dict:
             no = int((it or {}).get("no"))
         except (TypeError, ValueError):
             raise ValueError("문항 번호가 올바르지 않습니다.")
-        q = _question(it, passages, f"{no}번")
+        if it.get("twinOnly"):
+            # 원래 문제는 종이로만 — 정답은 과제 정답표에 있다. 유사 문제만 점검한다
+            pid = _txt(it.get("passage"), 40)
+            q = {"passage": pid if pid in passages else "", "stem": "", "box": [], "choices": [], "answer": 0,
+                 "explain": "", "note": [], "twinOnly": True}
+        else:
+            q = _question(it, passages, f"{no}번")
         q["no"] = no
         q["points"] = 3 if str(it.get("points")) == "3" else 2
         variants = []
@@ -141,4 +147,4 @@ def clean_set(bank) -> dict:
         raise ValueError("문항 번호가 겹칩니다.")
     items.sort(key=lambda x: x["no"])
     return {"title": title, "school": _txt(bank.get("school"), 60), "note": _txt(bank.get("note"), 200),
-            "passages": out_p, "items": items}
+            "passages": out_p, "items": items, "twinOnly": all(i.get("twinOnly") for i in items)}

@@ -52,3 +52,16 @@ class SetTests(unittest.TestCase):
             tc.clean_set({"title": "t", "items": [{"no": 1, **_q(0), "variants": [_q()]}]})
         with self.assertRaisesRegex(ValueError, "제목"):
             tc.clean_set({"title": "", "items": []})
+
+
+class TwinOnlyTests(unittest.TestCase):
+    def test_twin_only_set(self):
+        b = tc.clean_set({"title": "48제", "passages": [{"id": "p1", "text": "지문"}],
+                          "items": [{"no": 1, "twinOnly": True, "passage": "p1", "variants": [_q(3), _q(4)]}]})
+        self.assertTrue(b["twinOnly"])
+        self.assertEqual(b["items"][0]["answer"], 0)
+        self.assertEqual(b["items"][0]["variants"][0]["passage"], "p1")
+
+    def test_twin_only_still_checks_variants(self):
+        with self.assertRaisesRegex(ValueError, "정답"):
+            tc.clean_set({"title": "t", "items": [{"no": 1, "twinOnly": True, "variants": [_q(0)]}]})
