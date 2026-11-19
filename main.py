@@ -2489,6 +2489,58 @@ def _poll_audience(poll: dict) -> list:
                   if task_visible_to_student("", targets, d.id, info=targeting_info_from(d.to_dict() or {})))
 
 
+# ── 클리닉 출석 · 메모 (날짜별) ─────────────────────────────
+#   💡 2026-11-19: 원장님 요청 — 관리자 화면에서 그날 클리닉에 온 학생을 체크하고 메모를 남긴다.
+class ClinicCheckReq(BaseModel):
+    date: str
+    student_name: str
+    attended: Optional[bool] = None   # None이면 그대로 두고 메모만 바꾼다
+    memo: Optional[str] = None
+    time: str = ""
+
+
+def clinic_check_id(date: str, name: str) -> str:
+    return sanitize_doc_id(f"{date}__{name}")
+
+
+@app.get("/api/admin/clinic_checks", dependencies=[Depends(verify_admin)])
+def list_clinic_checks(date: str = "", student_name: str = ""):
+    """date를 주면 그날 기록 전부, student_name을 주면 그 학생의 지난 기록(최신순)."""
+    if db is None:
+        return {"success": False, "rows": []}
+    q = db.collection("clinic_checks")
+    if date.strip():
+        if not parse_ymd(date.strip()):
+            return {"success": False, "detail": "날짜를 2026-11-19 형식으로 주세요.", "rows": []}
+        q = q.where("date", "==", date.strip())
+    elif student_name.strip():
+        q = q.where("student_name", "==", student_name.strip())
+    else:
+        return {"success": False, "detail": "날짜나 학생을 골라 주세요.", "rows": []}
+    rows = [d.to_dict() or {} for d in q.stream()]
+    rows.sort(key=lambda r: (str(r.get("date", "")), str(r.get("time", ""))), reverse=bool(student_name.strip()) and not date.strip())
+    return {"success": True, "rows": rows}
+
+
+@app.post("/api/admin/clinic_check", dependencies=[Depends(verify_admin)])
+def save_clinic_check(req: ClinicCheckReq):
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    date, name = (req.date or "").strip(), (req.student_name or "").strip()
+    if not parse_ymd(date) or not name:
+        return {"success": False, "detail": "날짜와 학생을 확인해 주세요."}
+    ref = db.collection("clinic_checks").document(clinic_check_id(date, name))
+    row = {"date": date, "student_name": name, "updated_at": now_kst().strftime("%Y-%m-%d %H:%M")}
+    if req.time.strip():
+        row["time"] = req.time.strip()[:10]
+    if req.attended is not None:
+        row["attended"] = bool(req.attended)
+    if req.memo is not None:
+        row["memo"] = req.memo.strip()[:1000]
+    ref.set(row, merge=True)
+    return {"success": True, "row": (ref.get().to_dict() or row)}
+
+
 def _poll_is_open(poll: dict) -> bool:
     if not poll.get("open"):
         return False
