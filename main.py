@@ -44,6 +44,7 @@ import study_extras
 import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
 import explain_video  # 해설 영상: 사람 같은 목소리 + 움직이는 화면
 import video_diagrams  # 해설 영상: 내용에 맞춘 도표 장면
+import homework_bank   # 과제 · 클리닉으로 올린 문제도 문제 보관함에 남기기 (2026-11-22)
 from PIL import Image
 
 # ─────────────────────────────────────────────────────────
@@ -9412,14 +9413,68 @@ async def extract_from_bank(content: str = Form(...), _: bool = Depends(verify_a
     last = max(nums)
     answer_list = [answers.get(str(i), "") for i in range(1, last + 1)]
 
+    # 💡 2026-11-22: 붙여 넣은 문제 글을 문제 보관함에 '과제 연결 대기'로 남긴다.
+    #    과제를 올리면(create_homework) 정답 · 해설이 맞는 이 자료에 과제 이름이 붙는다.
+    #    저장에 실패해도 정답 꺼내기는 그대로 돌려준다.
+    bank_id = ""
+    try:
+        bank_id = await asyncio.to_thread(stash_pasted_problems, text, answer_list, explanations)
+    except Exception as e:
+        print("과제 문제 보관함 저장 실패:", e)
+
     return {
         "success": True,
+        "bank_id": bank_id,
         "question_count": len(nums),
         "answers": answers,
         "answer_list": answer_list,
         "explanations": explanations,
         "explanation_count": len(explanations),
     }
+
+
+def stash_pasted_problems(content: str, answer_list: list, explanations: dict) -> str:
+    """붙여 넣은 문제 글을 보관함에 '과제 연결 대기'로 넣는다. 같은 글이 이미 있으면 그 자료를 다시 대기로.
+
+    💡 AI 학습 자료(knowledge)에는 싣지 않는다 — 학생이 풀고 있는 과제의 정답을
+       AI 국최가 알게 되기 때문. 보관함 화면에서 고쳐 저장하면 그때 예전처럼 실린다."""
+    if db is None or not (content or "").strip():
+        return ""
+    now = datetime.now()
+    now_s = now.strftime("%Y-%m-%d %H:%M:%S")
+    key = homework_bank.content_key(content)
+    pending = {"pending_link": True, "pending_at": now_s,
+               "fp": homework_bank.fingerprint(answer_list, explanations)}
+    for d in db.collection("questions").where("content_key", "==", key).limit(1).stream():
+        d.reference.set(pending, merge=True)
+        return d.id
+    _, ref = db.collection("questions").add({
+        "title": homework_bank.guess_title(content, now), "content": content, "subject": "korean",
+        "origin": homework_bank.ORIGIN, "content_key": key, "created_at": now_s, **pending})
+    return ref.id
+
+
+def link_homework_to_bank(bank_id: str, title: str, kind_norm: str, target_classes, answer_list, explanations,
+                          qmeta, old_title: str = "", prev_bank_id: str = "") -> str:
+    """과제를 보관함 자료에 잇는다. 이은 보관함 id(없으면 '')를 돌려준다."""
+    if db is None:
+        return ""
+    now = datetime.now()
+    bid = (bank_id or "").strip() or (prev_bank_id or "").strip()
+    if not bid:
+        rows = [{"id": d.id, **(d.to_dict() or {})}
+                for d in db.collection("questions").where("pending_link", "==", True).stream()]
+        bid = homework_bank.pick_pending(rows, answer_list, explanations, now)
+    if not bid:
+        return ""
+    ref = db.collection("questions").document(bid)
+    doc = ref.get()
+    if not doc.exists:
+        return ""
+    ref.set(homework_bank.link_fields(
+        doc.to_dict() or {}, title, HOMEWORK_KINDS.get(kind_norm, "과제"), target_classes,
+        guess_class_subject(title), homework_bank.tags_from_qmeta(qmeta), now, old_title), merge=True)
+    return bid
 
 
 def homework_qmeta_with(old, raw: str) -> dict:
@@ -9457,6 +9512,8 @@ async def create_homework(
     # 💡 2026-11-18: 원장님이 만든 유사 문제 세트(쌍둥이 클리닉 twin_sets id). 채점 뒤 틀린 문항의 유사 문제가 나온다.
     #    비우면 있던 것을 그대로 두고, '-'이면 뗀다.
     twin_set: str = Form(""),
+    # 💡 2026-11-22: 정답 꺼내기(extract_from_bank)가 돌려준 보관함 id. 안 보내도 정답 · 해설로 찾아 잇는다.
+    bank_id: str = Form(""),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -9516,10 +9573,23 @@ async def create_homework(
                 # 문제 공장에서 낸 과제의 문제지(homework_papers) — 고쳐도 이어진다
                 "has_paper": bool(prev_data.get("has_paper", False)),
                 "twin_set": "" if twin_set.strip() == "-" else (twin_set.strip()[:200] or prev_data.get("twin_set", "")),
+                "bank_id": prev_data.get("bank_id", ""),
                 "created_at": created_at,
             }
         )
     )
+    # 💡 2026-11-22: 이 과제의 문제 글을 문제 보관함에 잇는다(실패해도 과제 올리기는 그대로).
+    try:
+        expl_map = parse_explanation_map(explanations)
+        linked = await asyncio.to_thread(
+            link_homework_to_bank, bank_id, title, kind_norm, normalize_target_classes(target_classes),
+            answer_list, expl_map, homework_qmeta_with(prev_data.get("qmeta"), qmeta),
+            old_title, prev_data.get("bank_id", ""))
+        if linked and linked != prev_data.get("bank_id"):
+            await asyncio.to_thread(
+                lambda: db.collection("homeworks").document(safe_title).set({"bank_id": linked}, merge=True))
+    except Exception as e:
+        print("과제 ↔ 문제 보관함 잇기 실패:", e)
     if prev_data.get("has_paper") and old_title and sanitize_doc_id(old_title) != safe_title:
         def _move_paper():
             src = db.collection("homework_papers").document(sanitize_doc_id(old_title))
