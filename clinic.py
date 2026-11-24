@@ -27,6 +27,8 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException, File, Form, UploadFile
 from pydantic import BaseModel
 
+import twin_clinic
+
 H = {}
 
 PROGRAMS_COLL = "clinic_programs"
@@ -422,7 +424,10 @@ def run_view(rid: str, run: dict, prog: dict) -> dict:
            "first": {k: first.get(k) for k in ("score", "correct", "total", "wrong")} if first else None,
            "wrong_items": [qbrief(n, show_hint) for n in wrong],
            "second": {k: second.get(k) for k in ("fixed", "still")} if second else None,
-           "still_items": [qbrief(n, True) for n in (second.get("still") or [])],
+           "still_items": [qbrief(n, True) for n in (ask_nos(st) if st.get("twin") else (second.get("still") or []))],
+           "twin_numbers": st.get("twin_ids", []), "twin_printed": bool(st.get("twin_printed_at")),
+           "twin": {k: (st.get("twin") or {}).get(k) for k in ("wrong", "correct", "total")} if st.get("twin") else None,
+           "has_twins": bool(sset.get("twins")),
            "asked": st.get("asked", []), "printed": bool(st.get("printed_at")), "hint_printed": bool(st.get("hint_printed_at")),
            "reasons_list": REASONS, "finished": bool(run.get("finished_at")), "summary": run.get("summary", ""),
            "history": [{"set": k, "label": SET_LABEL[k], "score": (((run.get("sets") or {}).get(k) or {}).get("first") or {}).get("score")}
@@ -512,7 +517,7 @@ def build_hint_pdf_pil(lines: list, font_path: str = FONT_PATH) -> bytes:
         return out
 
     new_page()
-    for text, size, color, indent, gap in lines:
+    for text, size, color, indent, gap, *_ in lines:
         f = font(size)
         lh = int(size * scale * 1.5)
         for ln in wrap(text, f, W - 2 * M - int(indent * scale)):
@@ -530,13 +535,13 @@ def build_hint_pdf(run: dict, prog: dict, set_key: str) -> bytes:
     """틀린 문제만 모아 '내가 고른 이유'와 '주목할 점'을 붙인 해설지. 정답은 싣지 않는다(다시 풀어야 하므로).
     글자가 선명한 PyMuPDF로 먼저 만들고, 혹시 실패하면 Pillow(그림) 방식으로 만든다."""
     try:
-        return _build_hint_pdf_fitz(run, prog, set_key)
+        return _lines_pdf_fitz(hint_lines(run, prog, set_key))
     except Exception as e:
         print("해설지 PDF(fitz) 실패 → 그림 방식으로:", e)
         return build_hint_pdf_pil(hint_lines(run, prog, set_key))
 
 
-def _build_hint_pdf_fitz(run: dict, prog: dict, set_key: str) -> bytes:
+def _lines_pdf_fitz(lines: list) -> bytes:
     import fitz
     W, Hh, M = 595, 842, 44
     doc = fitz.open()
@@ -548,24 +553,48 @@ def _build_hint_pdf_fitz(run: dict, prog: dict, set_key: str) -> bytes:
         st["page"], st["y"] = p, M
         return p
 
-    def write(text, size=10.5, gap=4, indent=0, color=(0, 0, 0)):
+    def put(text, size, indent, color):
+        """한 문단 넣기. 남은 자리에 안 들어가면 다음 쪽, 한 쪽보다 길면 문장 단위로 나눠 이어 쓴다(잘리지 않게)."""
+        p = st["page"] or new_page()
+        if st["y"] > Hh - M - size * 1.6:          # 쪽 맨 아래 — 한 줄도 안 들어가면 다음 쪽
+            p = new_page()
+        rect = fitz.Rect(M + indent, st["y"], W - M, Hh - M)
+        r = p.insert_textbox(rect, text, fontsize=size, fontname="kr", color=color)
+        if r >= 0:
+            st["y"] = Hh - M - r
+            return
+        if st["y"] > M + 1:                      # 이 쪽에 자리가 모자라면 — 길면 나눠서 이 쪽부터 채운다
+            if len(text) > 120:
+                return split(text, size, indent, color)
+            new_page()
+            return put(text, size, indent, color)
+        split(text, size, indent, color)        # 새 쪽에도 다 안 들어가는 긴 문단
+
+    def split(text, size, indent, color):
+        cut = [m.end() for m in re.finditer(r"[.?!다요]\s+", text)]
+        mid = len(text) // 2
+        at = min(cut, key=lambda c: abs(c - mid)) if cut else mid
+        if at <= 0 or at >= len(text):
+            at = mid
+        put(text[:at].rstrip(), size, indent, color)
+        put(text[at:].lstrip(), size, indent, color)
+
+    def write(text, size=10.5, gap=4, indent=0, color=(0, 0, 0), keep=0):
         if not text:
             return
-        for _ in range(3):
-            p = st["page"] or new_page()
-            rect = fitz.Rect(M + indent, st["y"], W - M, Hh - M)
-            r = p.insert_textbox(rect, text, fontsize=size, fontname="kr", color=color)
-            if r >= 0:
-                st["y"] = Hh - M - r + gap
-                return
-            if st["y"] <= M + 1:
-                text = text[: max(200, int(len(text) * 0.7))] + " …"
-                continue
+        if keep and st["page"] and st["y"] + keep > Hh - M:   # 지문 안내 줄이 쪽 맨 아래에 홀로 남지 않게
             new_page()
+        paras = text.split("\n")
+        for i, para in enumerate(paras):
+            put(para if para.strip() else " ", size, indent, color)
+            if i < len(paras) - 1:
+                st["y"] += 1
+        st["y"] += gap
 
     new_page()
-    for text, size, color, indent, gap in hint_lines(run, prog, set_key):
-        write(text, size, gap=gap, indent=indent, color=color)
+    for line in lines:
+        text, size, color, indent, gap = line[:5]
+        write(text, size, gap=gap, indent=indent, color=color, keep=line[5] if len(line) > 5 else 0)
     # 한글 글꼴(10MB)을 통째로 넣으면 해설지 한 장이 10MB가 된다 — 쓴 글자만 남긴다
     try:
         doc.subset_fonts()
@@ -584,15 +613,131 @@ def post_question(run: dict, prog: dict, set_key: str, nos: list) -> str:
         q = qmap.get(no, {})
         my1 = ((rs.get("first") or {}).get("answers") or {}).get(no, "")
         my2 = ((rs.get("second") or {}).get("answers") or {}).get(no, "")
-        lines.append(f"· {no}번 {_plain(q.get('q_text',''))[:70]}\n  처음 고른 답 {my1 or '-'} → 다시 고른 답 {my2 or '-'} / 틀린 이유: {(rs.get('reasons') or {}).get(no, '')}")
+        line = f"· {no}번 {_plain(q.get('q_text',''))[:70]}\n  처음 고른 답 {my1 or '-'} → 다시 고른 답 {my2 or '-'} / 틀린 이유: {(rs.get('reasons') or {}).get(no, '')}"
+        tw = rs.get("twin") or {}
+        mine = [f"{v} {tw['answers'].get(v) or '-'}{'(틀림)' if v in tw.get('wrong', []) else ''}"
+                for v in (tw.get("answers") or {}) if _no_key(v.split("-")[0]) == _no_key(no)]
+        if mine:
+            line += "\n  쌍둥이 문제: " + ", ".join(mine)
+        lines.append(line)
     text = (f"[클리닉 질문] {prog.get('title','')} · {SET_LABEL[set_key]}\n"
-            f"해설지를 보고 다시 풀었는데도 잘 모르겠어요. 아래 문제를 알려 주세요.\n\n" + "\n".join(lines))
+            f"해설지를 보고 다시 풀고 쌍둥이 문제까지 풀었는데도 잘 모르겠어요. 아래 문제를 알려 주세요.\n\n" + "\n".join(lines))
     ref = db.collection(H["qna_coll"]).document()
     ref.set({"author": run.get("student_name"), "is_admin": False, "school": run.get("school", ""), "grade": run.get("grade", ""),
              "subject": "korean", "text": text[:4000], "images": [], "solved": False, "answers": [], "created_at": _now(),
              "clinic_run": run.get("_id", "")})
     H["send_telegram_message"](f"❓ [클리닉 질문]\n{run.get('student_name')} — {SET_LABEL[set_key]} {', '.join(nos)}번을 모르겠대요.")
     return ref.id
+
+
+# ── 쌍둥이 문제 (2026-11-24) ─────────────────────────────
+#   원장님이 문제지마다 쌍둥이 세트(1-A · 1-B 양식, '오답 쌍둥이 클리닉'과 같은 양식)를 올려 두면,
+#   해설지를 보고 다시 푼 답을 입력한 뒤 '처음에 틀렸던 문제'의 쌍둥이만 뽑아 문제지로 출력한다.
+#   학생은 쌍둥이를 풀어 답을 입력하고, 그래도 틀리면 국최 선생님께 질문으로 넘어간다.
+def clean_twins(raw: str, fallback_title: str = "") -> dict:
+    """화면이 읽어 보낸 쌍둥이 세트(JSON 글) → 점검한 세트. 잘못되면 ValueError(원장님께 보일 말)."""
+    try:
+        bank = json.loads(raw)
+    except Exception:
+        raise ValueError("쌍둥이 세트를 읽지 못했어요. 파일을 다시 골라 주세요.")
+    if isinstance(bank, dict) and not _s(bank.get("title")):
+        bank = {**bank, "title": _s(fallback_title, 120) or "쌍둥이 세트"}
+    return twin_clinic.clean_set(bank)
+
+
+def _no_key(no) -> str:
+    return re.sub(r"\D", "", str(no or "")) or str(no or "").strip()
+
+
+def twin_variants(sset: dict) -> dict:
+    """vid('3-A') → (원래 번호, 쌍둥이 문제)."""
+    out = {}
+    for it in ((sset.get("twins") or {}).get("items") or []):
+        for v in it.get("variants") or []:
+            out[v["vid"]] = (str(it["no"]), v)
+    return out
+
+
+def twin_ids_for(sset: dict, wrong: list) -> list:
+    """처음에 틀린 문제들의 쌍둥이 번호(틀린 순서대로)."""
+    by = {}
+    for vid, (no, _) in twin_variants(sset).items():
+        by.setdefault(no, []).append(vid)
+    out = []
+    for no in wrong or []:
+        out += by.get(_no_key(no), [])
+    return out
+
+
+def after_retry(st: dict, sset: dict) -> str:
+    """다시 푼 답을 채점한 뒤 다음 단계: 쌍둥이가 있으면 twin, 아니면 예전처럼 ask · next."""
+    wrong = (st.get("first") or {}).get("wrong", [])
+    ids = twin_ids_for(sset, wrong)
+    if ids:
+        st["twin_ids"] = ids
+        return "twin"
+    return "ask" if (st.get("second") or {}).get("still") else "next"
+
+
+def grade_twin(st: dict, sset: dict, answers: dict) -> str:
+    """쌍둥이 답 채점 → 다음 단계(ask · next). st['twin'] 에 결과를 적는다."""
+    tv = twin_variants(sset)
+    ids = [v for v in st.get("twin_ids", []) if v in tv]
+    ans = {str(k): _s(v, 4) for k, v in (answers or {}).items()}
+    wrong = [v for v in ids if ans.get(v, "") != str(tv[v][1].get("answer"))]
+    st["twin"] = {"answers": {v: ans.get(v, "") for v in ids}, "wrong": wrong, "correct": len(ids) - len(wrong),
+                  "total": len(ids), "at": _now()}
+    return "ask" if ask_nos(st) else "next"
+
+
+def ask_nos(st: dict) -> list:
+    """질문으로 보낼 원래 문제 번호: 다시 풀어도 틀린 것 + 쌍둥이를 틀린 것(처음 틀린 순서대로)."""
+    still = set((st.get("second") or {}).get("still") or [])
+    twin_bad = {_no_key(v.split("-")[0]) for v in ((st.get("twin") or {}).get("wrong") or [])}
+    return [n for n in (st.get("first") or {}).get("wrong", []) if n in still or _no_key(n) in twin_bad]
+
+
+def twin_lines(run: dict, prog: dict, set_key: str) -> list:
+    """쌍둥이 문제지에 들어갈 줄들: 필요한 지문 → 그 지문의 쌍둥이 문제. 정답은 싣지 않는다."""
+    sset = (prog.get("sets") or {}).get(set_key) or {}
+    rs = ((run.get("sets") or {}).get(set_key)) or {}
+    tv = twin_variants(sset)
+    ids = [v for v in rs.get("twin_ids", []) if v in tv]
+    passages = {p["id"]: p for p in ((sset.get("twins") or {}).get("passages") or [])}
+    out = [(f"로지에듀 클리닉 · 쌍둥이 문제 ({SET_LABEL[set_key]})", 16, (0, 0, 0), 0, 2),
+           (f"{run.get('student_name','')}   ·   {prog.get('title','')}   ·   {_today()}", 10, (0.3, 0.3, 0.3), 0, 6),
+           ("처음에 틀렸던 문제와 같은 개념을 다른 사례로 묻는 문제예요. 다 풀면 태블릿에서 내 이름을 누르고 쌍둥이 답을 입력하세요.",
+            9.5, (0.3, 0.3, 0.3), 0, 12)]
+    groups = []                                   # 지문별로 묶는다(나온 순서대로)
+    for vid in ids:
+        pid = tv[vid][1].get("passage", "")
+        if not groups or groups[-1][0] != pid:
+            groups.append((pid, []))
+        groups[-1][1].append(vid)
+    for pid, vids in groups:
+        p = passages.get(pid)
+        if p and p.get("text"):
+            out.append((p.get("lead") or "다음 글을 읽고 물음에 답하시오.", 11, (0, 0, 0), 0, 4, 160))
+            out.append((_plain(p["text"]), 10, (0, 0, 0), 6, 12))
+        for vid in vids:
+            no, v = tv[vid]
+            out.append((f"{vid}.  " + _plain(v.get("stem", "")) + f"   (원 {no}번)" + ("  [3점]" if v.get("points") == 3 else ""),
+                        11, (0, 0, 0), 0, 3))
+            if v.get("box"):
+                out.append(("〈보기〉 " + _plain("\n".join(v["box"])), 9.8, (0, 0, 0), 10, 3))
+            opts = [f"{CIRC[i]} {_plain(o)}" for i, o in enumerate(v.get("choices") or []) if o]
+            if opts:
+                out.append(("\n".join(opts), 10, (0, 0, 0), 10, 14))
+    return out
+
+
+def build_twin_pdf(run: dict, prog: dict, set_key: str) -> bytes:
+    lines = twin_lines(run, prog, set_key)
+    try:
+        return _lines_pdf_fitz(lines)
+    except Exception as e:
+        print("쌍둥이 PDF(fitz) 실패 → 그림 방식으로:", e)
+        return build_hint_pdf_pil(lines)
 
 
 def summarize(run: dict) -> str:
@@ -605,7 +750,12 @@ def summarize(run: dict) -> str:
         t = f"{SET_LABEL[k]} {f.get('score', 0)}점"
         if f.get("wrong"):
             fixed, still = len(sec.get("fixed") or []), len(sec.get("still") or [])
-            t += f"(틀린 {len(f['wrong'])}문제 중 다시 풀어 {fixed}문제 해결" + (f", {still}문제 질문" if still else "") + ")"
+            t += f"(틀린 {len(f['wrong'])}문제 중 다시 풀어 {fixed}문제 해결"
+            tw = s.get("twin") or {}
+            if tw.get("total"):
+                t += f", 쌍둥이 {tw['total']}문제 중 {tw.get('correct', 0)}문제 맞힘"
+            asked = len(s.get("asked") or [])
+            t += (f", {asked}문제 질문" if asked else f", {still}문제 질문" if still and not tw else "") + ")"
         parts.append(t)
     return " → ".join(parts)
 
@@ -724,7 +874,7 @@ def register(app, helpers: dict):
                 if r["finished_at"][:10] == today:
                     status[n] = "done"
             else:
-                status.setdefault(n, f"{SET_LABEL.get(r.get('cur','main'),'')} 진행 중")
+                status.setdefault(n, f"{SET_LABEL.get(r.get('cur','main'),'')} " + ("쌍둥이 푸는 중" if r.get("step") == "twin" else "진행 중"))
         rows = [{"student_name": n, "time": t, "status": status.get(n, "")} for n, t in sched.items()]
         for n, s in status.items():
             if n not in sched:
@@ -800,7 +950,14 @@ def register(app, helpers: dict):
             fixed = [n for n in wrong if ans.get(n, "") == amap.get(n)]
             still = [n for n in wrong if n not in fixed]
             st["second"] = {"answers": ans, "fixed": fixed, "still": still, "at": _now()}
-            run["step"] = "ask" if still else "next"
+            sset = (prog.get("sets") or {}).get(cur) or {}
+            run["step"] = after_retry(st, sset)
+            if run["step"] == "twin":            # 처음 틀렸던 문제의 쌍둥이만 뽑아 복사기로
+                await asyncio.to_thread(_queue_print, rid, run["student_name"], "twin", cur, f"/api/clinic/run/{rid}/twin.pdf?set={cur}")
+                st["twin_printed_at"] = _now()
+                H["send_telegram_message"](f"🩺 [클리닉 쌍둥이]\n{run['student_name']} — 쌍둥이 {len(st['twin_ids'])}문제를 출력했습니다.")
+        elif run["step"] == "twin":
+            run["step"] = grade_twin(st, (prog.get("sets") or {}).get(cur) or {}, req.answers)
         else:
             return {"success": False, "detail": "지금은 답을 입력하는 단계가 아니에요."}
         await asyncio.to_thread(save_run, rid, run)
@@ -830,8 +987,13 @@ def register(app, helpers: dict):
         rid, run, prog = await asyncio.to_thread(load_run_for, req.student_name.strip())
         cur = run["cur"]
         st = run["sets"].setdefault(cur, {})
-        if req.which == "hint":
-            if run["step"] not in ("hint", "ask", "next"):
+        if req.which == "twin":
+            if not st.get("twin_ids"):
+                return {"success": False, "detail": "쌍둥이 문제는 다시 푼 답을 입력한 다음에 나와요."}
+            await asyncio.to_thread(_queue_print, rid, run["student_name"], "twin", cur, f"/api/clinic/run/{rid}/twin.pdf?set={cur}")
+            st["twin_printed_at"] = _now()
+        elif req.which == "hint":
+            if run["step"] not in ("hint", "twin", "ask", "next"):
                 return {"success": False, "detail": "해설지는 이유를 고른 다음에 출력할 수 있어요."}
             await asyncio.to_thread(_queue_print, rid, run["student_name"], "hint", cur, f"/api/clinic/run/{rid}/hint.pdf?set={cur}")
             st["hint_printed_at"] = _now()
@@ -849,7 +1011,7 @@ def register(app, helpers: dict):
         if run["step"] != "ask":
             return {"success": False, "detail": "지금은 질문하는 단계가 아니에요."}
         st = run["sets"][run["cur"]]
-        still = (st.get("second") or {}).get("still", [])
+        still = ask_nos(st) if st.get("twin") else (st.get("second") or {}).get("still", [])
         if not H["is_preview"](run["student_name"]):
             st["question_id"] = await asyncio.to_thread(post_question, run, prog, run["cur"], still)
         st["asked"] = still
@@ -889,6 +1051,18 @@ def register(app, helpers: dict):
         fname = urllib.parse.quote(f"해설지_{run.get('student_name','')}.pdf")
         return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f"inline; filename*=UTF-8''{fname}"})
 
+    @app.get("/api/clinic/run/{run_id}/twin.pdf")
+    def twin_pdf(run_id: str, set: str = "main", code: str = "", x_admin_token: Optional[str] = Header(None)):
+        from fastapi.responses import Response
+        need_kiosk(code, x_admin_token)
+        d = _db().collection(RUNS_COLL).document(run_id).get()
+        if not d.exists or set not in SET_KEYS:
+            raise HTTPException(status_code=404, detail="없는 기록입니다.")
+        run = d.to_dict() or {}
+        pdf = build_twin_pdf(run, _program(run["program_id"]), set)
+        fname = urllib.parse.quote(f"쌍둥이문제_{run.get('student_name','')}.pdf")
+        return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f"inline; filename*=UTF-8''{fname}"})
+
     # ── 자동출력 프로그램용 ──
     @app.get("/api/clinic/print_jobs")
     def print_jobs(code: str = "", status: str = "pending", x_admin_token: Optional[str] = Header(None)):
@@ -919,17 +1093,36 @@ def register(app, helpers: dict):
                               pass_score: int = Form(70), low_pass_score: int = Form(70), hint_mode: str = Form("focus"),
                               main_pdf: UploadFile = File(None), main_json: UploadFile = File(None), main_text: str = Form(""),
                               low_pdf: UploadFile = File(None), low_json: UploadFile = File(None), low_text: str = Form(""),
-                              high_pdf: UploadFile = File(None), high_json: UploadFile = File(None), high_text: str = Form("")):
+                              high_pdf: UploadFile = File(None), high_json: UploadFile = File(None), high_text: str = Form(""),
+                              main_twins: str = Form(""), low_twins: str = Form(""), high_twins: str = Form("")):
         """클리닉 프로그램 만들기(또는 고치기). 문제지마다 PDF(출력용) + .json 또는 글(정답·해설)."""
         db = _db()
         old = _program(id) if id else {}
         sets = dict(old.get("sets") or {})
         report = {}
         files = {"main": (main_pdf, main_json, main_text), "low": (low_pdf, low_json, low_text), "high": (high_pdf, high_json, high_text)}
+        twins_in = {"main": main_twins, "low": low_twins, "high": high_twins}
         guess_title = ""
         for k, (pdf, js, text) in files.items():
             has_pdf = bool(pdf and pdf.filename)
+            tw_raw = (twins_in.get(k) or "").strip()
             if not has_pdf and not (js and js.filename) and not text.strip():
+                if not tw_raw:
+                    continue
+                if not sets.get(k):
+                    return {"success": False, "detail": f"{SET_LABEL[k]}: 쌍둥이 세트만으로는 안 돼요. 문제지 PDF도 골라 주세요."}
+                if tw_raw == "-":                 # 쌍둥이 세트 빼기
+                    sets[k] = {kk: vv for kk, vv in sets[k].items() if kk != "twins"}
+                    report[k] = {"graded": len(sets[k].get("questions", [])), "total": sets[k].get("total", 0),
+                                 "written": sets[k].get("written", []), "no_answer": sets[k].get("no_answer", []), "twins": 0}
+                    continue
+                try:
+                    sets[k] = {**sets[k], "twins": clean_twins(tw_raw, title or old.get("title", ""))}
+                except ValueError as e:
+                    return {"success": False, "detail": f"{SET_LABEL[k]} 쌍둥이 세트: {e}"}
+                report[k] = {"graded": len(sets[k].get("questions", [])), "total": sets[k].get("total", 0),
+                             "written": sets[k].get("written", []), "no_answer": sets[k].get("no_answer", []),
+                             "twins": len(twin_variants(sets[k]))}
                 continue
             if not has_pdf and not sets.get(k):
                 return {"success": False, "detail": f"{SET_LABEL[k]}의 PDF를 골라주세요."}
@@ -947,12 +1140,20 @@ def register(app, helpers: dict):
             if text.strip():
                 built = await asyncio.to_thread(build_set, text, hint_mode)
                 entry.update(built)
+            if tw_raw == "-":
+                entry.pop("twins", None)
+            elif tw_raw:
+                try:
+                    entry["twins"] = clean_twins(tw_raw, title or old.get("title", ""))
+                except ValueError as e:
+                    return {"success": False, "detail": f"{SET_LABEL[k]} 쌍둥이 세트: {e}"}
             entry.setdefault("questions", [])
             entry.setdefault("total", 0)
             entry.setdefault("written", [])
             entry.setdefault("no_answer", [])
             sets[k] = entry
-            report[k] = {"graded": len(entry["questions"]), "total": entry["total"], "written": entry["written"], "no_answer": entry["no_answer"]}
+            report[k] = {"graded": len(entry["questions"]), "total": entry["total"], "written": entry["written"], "no_answer": entry["no_answer"],
+                         "twins": len(twin_variants(entry))}
         if not sets.get("main"):
             return {"success": False, "detail": "1단계 문제지(PDF)는 꼭 올려야 해요."}
         try:
@@ -991,7 +1192,7 @@ def register(app, helpers: dict):
                                                                 "pass_score", "low_pass_score", "hint_mode", "active", "created_at")},
                          "sets": {k: {"label": SET_LABEL[k], "pdf_url": v.get("pdf_url", ""), "pdf_name": v.get("pdf_name", ""),
                                       "graded": len(v.get("questions", [])), "total": v.get("total", 0), "written": v.get("written", []),
-                                      "no_answer": v.get("no_answer", [])} for k, v in sets.items()},
+                                      "no_answer": v.get("no_answer", []), "twins": len(twin_variants(v))} for k, v in sets.items()},
                          **stats.get(d.id, {"started": [], "done": []})})
         rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
         return {"success": True, "rows": rows, "today": _today()}
