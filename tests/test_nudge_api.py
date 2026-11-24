@@ -166,6 +166,24 @@ class TickTests(unittest.TestCase):
         self.assertNotIn("이퇴원", rows)
         self.assertEqual(list(rows)[0], "박서연")                    # 빠진 학생이 맨 위
 
+    def test_send_test_ignores_time_and_caps(self):
+        db, sent = setup()
+        self.seed(db)
+        NOW[0] = datetime(2026, 11, 24, 23, 50)          # 쉬는 시간이어도
+        try:
+            r = na.send_test("박서연", "pr23", True, True)
+        finally:
+            NOW[0] = datetime(2026, 11, 24, 19, 10)
+        self.assertTrue(r["success"])
+        self.assertTrue(r["title"].startswith("[시험]"))
+        self.assertNotIn("{", r["body"])
+        self.assertEqual((len(sent["push"]), [i["name"] for i in sent["kakao"]]), (1, ["박서연"]))
+        self.assertEqual(db.collection("nudge_log").rows, {})     # 기록 · 한도에는 안 넣는다
+        self.assertFalse(na.send_test("박서연", "없는것", True, False)["success"])
+        self.assertFalse(na.send_test("", "pr19", True, False)["success"])
+        for k in na.nd.TEXTS:                                     # 모든 종류가 빈칸 없이 만들어진다
+            self.assertNotIn("{", na.nd.sample_message(k, "김지수", NOW[0])["body"])
+
     def test_leagues_by_class(self):
         db, _ = setup()
         lg = na.leagues([{"name": "가", "class_name": "A"}, {"name": "나", "class_name": "A"}, {"name": "다", "class_name": "B"}],
