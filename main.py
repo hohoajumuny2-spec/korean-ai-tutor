@@ -3068,6 +3068,11 @@ def is_preview(student_name) -> bool:
     return str(student_name or "").strip() == PREVIEW_NAME
 
 
+# 재촉(nudge_api.py)이 연결되면 여기에 함수를 건다. 실패해도 제출은 그대로 되게 그쪽에서 오류를 삼킨다.
+ACTIVITY_HOOKS: list = []
+XP_HOOKS: list = []
+
+
 def save_report(payload: dict):
     """제출 기록을 남긴다.
 
@@ -3075,7 +3080,10 @@ def save_report(payload: dict):
     오답 목록에 원장님 기록이 섞여 들어간다."""
     if is_preview(payload.get("student_name")):
         return None
-    return db.collection("reports").add(payload)
+    res = db.collection("reports").add(payload)
+    for hook in ACTIVITY_HOOKS:   # 재촉(nudge_api): 오늘을 '공부한 날'로
+        hook(payload.get("student_name"))
+    return res
 
 def add_xp(student_name: str, amount: int):
     """학생 점수를 올린다.
@@ -3087,6 +3095,8 @@ def add_xp(student_name: str, amount: int):
         return
     db.collection("students").document(student_name).set(
         {"xp": firestore.Increment(amount)}, merge=True)
+    for hook in XP_HOOKS:         # 재촉(nudge_api): 반별 주간 리그
+        hook(student_name, amount)
 
 
 
@@ -15582,3 +15592,22 @@ except Exception as _e:
     except Exception:
         pass
 # ── 키오스크 클리닉 연결 (clinic.py) ── 끝
+
+
+# ── 재촉(듀오링고식) 연결 (nudge_api.py) ── 2026-11-24
+#   연속 기록 🔥 · 방패 · 반별 주간 리그 · 시간 맞춘 앱 알림/카톡 · 원장님 '빠진 학생' 보기.
+try:
+    import nudge_api as _nudge_api
+    _g = globals()
+    _nudge_api.register(app, {
+        **{_k: _g[_k] for _k in ("add_xp", "verify_admin", "send_push_to_student", "kakao_message", "is_preview",
+                                  "sanitize_doc_id", "now_kst", "targeting_info_from",
+                                  "homework_visible_to_student") if _k in _g},
+        "db": lambda: db,
+        "increment": firestore.Increment,
+        "activity_hooks": ACTIVITY_HOOKS,
+        "xp_hooks": XP_HOOKS,
+    })
+except Exception as _e:
+    print("재촉 기능 연결 실패:", _e)
+# ── 재촉 연결 ── 끝
