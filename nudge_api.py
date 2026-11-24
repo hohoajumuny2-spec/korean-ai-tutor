@@ -338,6 +338,37 @@ def leagues(students: List[dict], week: str, xp_rows: List[dict], top: int = 10)
 
 
 # ── 주소 ────────────────────────────────────────────────
+def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
+    """시간 · 하루 한도와 상관없이 한 학생에게 예시 재촉을 바로 보낸다(기록 · 한도에는 넣지 않는다)."""
+    name = str(name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생을 골라 주세요."}
+    if kind not in nd.TEXTS:
+        return {"success": False, "detail": "재촉 종류를 골라 주세요."}
+    if not push and not kakao:
+        return {"success": False, "detail": "앱 알림이나 카톡 중 하나는 골라 주세요."}
+    snap = _db().collection(STREAKS).document(_sid(name)).get()
+    cur = nd.streak_view((snap.to_dict() or {}) if snap.exists else None, _now().date())["current"]
+    m = nd.sample_message(kind, name, _now(), cur or 5)
+    out = {"success": True, "title": m["title"], "body": m["body"], "push": None, "kakao": None}
+    if push:
+        try:
+            out["push"] = int(H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-test"))
+        except Exception as e:
+            out["push"] = 0
+            out["push_error"] = str(e)
+    if kakao:
+        out["kakao"] = H["kakao_message"]("안내", "student", [{"name": name, "vars": {"내용": f"{m['title']}\n{m['body']}"[:600]}}])
+    return out
+
+
+class NudgeTestReq(BaseModel):
+    student_name: str = ""
+    kind: str = "pr19"
+    push: bool = True
+    kakao: bool = False
+
+
 class NudgeConfigReq(BaseModel):
     enabled: bool = False
     kakao: bool = True
@@ -413,6 +444,10 @@ def register(app, helpers: dict):
         return {"success": True, "at": g["now"].strftime("%Y-%m-%d %H:%M"), "attendance_ok": g["attendance"] is not None,
                 "rows": rows, "leagues": leagues(g["students"], w, xp_rows, top=5), "week": w,
                 "config": {k: v for k, v in load_config().items() if k != "key"}}
+
+    @app.post("/api/admin/nudge/test", dependencies=[Depends(verify_admin)])
+    def nudge_test(req: NudgeTestReq):
+        return send_test(req.student_name, req.kind, bool(req.push), bool(req.kakao))
 
     @app.post("/api/admin/nudge/run", dependencies=[Depends(verify_admin)])
     def nudge_run(dry: bool = True):

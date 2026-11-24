@@ -161,7 +161,7 @@ def _pick(options: List[str], seed: str) -> str:
 # 말투 — {who}: '서연아' · {n}: 연속 일수 · {t}: 과제 이름 · {when}: 마감 · {left}: 남은 시간 · {time}: 클리닉 시각
 TEXTS = {
     "hw24": (1, "📚 숙제 잊지 않았지?", [
-        "{who}, '{t}' 마감이 {when}이야. 오늘 미리 해 두면 내일이 편해! 🙌",
+        "{who}, '{t}' 마감은 {when}! 오늘 미리 해 두면 내일이 편해 🙌",
         "{who}! '{t}' 아직이네? 마감 {when}. 지금 10분만 시작해 보자 ✏️",
         "국최 선생님이 '{t}' 기다리는 중… {when}까지야 👀",
     ]),
@@ -202,7 +202,7 @@ TEXTS = {
     ]),
     "idle": (1, "🥺 보고 싶어", [
         "{who}, 이틀째 소식이 없네… 학생 앱에서 하나만 풀고 가 🙏",
-        "국최 선생님이 {who}를 찾고 있어 👀 오늘 5분만!",
+        "{who}! 국최 선생님이 찾고 있어 👀 오늘 5분만!",
     ]),
 }
 
@@ -212,6 +212,27 @@ def _msg(key: str, kind: str, ctx: dict, seed: str, extra: dict) -> dict:
     vals = {"who": ctx.get("call") or call_name(ctx.get("name", "")), "n": max(1, int(ctx.get("streak") or 0)), **extra}
     body = _pick(options, seed + key).format(**vals)
     return {"key": key, "kind": kind, "level": level, "title": title, "body": body}
+
+
+# 원장님 [시험 보내기]용 이름표와 예시 값
+KIND_LABELS = {
+    "hw24": "숙제 마감 하루 전 (부드럽게)", "hw3": "숙제 마감 3시간 전", "hw1": "숙제 마감 1시간 전 (단호하게)",
+    "hwlate": "숙제 미제출 (단호하게)", "pr19": "저녁 7시 오늘 공부 (부드럽게)", "pr2130": "밤 9시 반 오늘 공부",
+    "pr23": "밤 11시 연속 끊김 경고 (단호하게)", "cl2h": "클리닉 2시간 전", "cl30": "클리닉 미등원 (단호하게)",
+    "idle": "이틀 넘게 안 함",
+}
+
+
+def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict:
+    """[시험 보내기]: 그 학생 이름으로 예시 재촉 한 통(시각 · 과제는 예시)."""
+    if kind not in TEXTS:
+        raise ValueError(kind)
+    dl = (now + timedelta(hours={"hw24": 20, "hw3": 3, "hw1": 1}.get(kind, -10))).replace(second=0, microsecond=0)
+    extra = {"t": "예시 숙제", "when": _when(dl, now), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
+             "time": "18시"}
+    m = _msg("test:" + kind, kind, {"name": name, "streak": streak}, name + now.isoformat(), extra)
+    m["title"] = "[시험] " + m["title"]
+    return m
 
 
 def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
