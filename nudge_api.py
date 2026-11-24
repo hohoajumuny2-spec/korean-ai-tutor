@@ -44,17 +44,38 @@ def _now() -> datetime:
 
 # ── 설정 ────────────────────────────────────────────────
 def load_config(create_key: bool = False) -> dict:
-    out = {"enabled": False, "kakao": True, "key": "", "exclude": []}
+    out = {"enabled": False, "kakao": True, "key": "", "exclude": [], "memo": "", "memo_until": ""}
     ref = _db().collection("settings").document("nudge_config")
     snap = ref.get()
     if snap.exists:
         v = snap.to_dict() or {}
         out.update({"enabled": bool(v.get("enabled")), "kakao": bool(v.get("kakao", True)),
-                    "key": str(v.get("key") or ""), "exclude": [str(x) for x in (v.get("exclude") or [])]})
+                    "key": str(v.get("key") or ""), "exclude": [str(x) for x in (v.get("exclude") or [])],
+                    "memo": str(v.get("memo") or ""), "memo_until": str(v.get("memo_until") or "")})
     if create_key and not out["key"]:
         out["key"] = secrets.token_urlsafe(18)
         ref.set({"key": out["key"]}, merge=True)
     return out
+
+
+MEMO_MAX = 200
+
+
+def active_memo(cfg: dict, today: date) -> str:
+    """원장님 한마디: 적어 둔 것이 있고, 마지막 날(있으면)이 아직 안 지났을 때만."""
+    memo = str((cfg or {}).get("memo") or "").strip()
+    until = nd._d((cfg or {}).get("memo_until"))
+    if not memo or (until and today > until):
+        return ""
+    return memo[:MEMO_MAX]
+
+
+def kakao_text(m: dict, memo: str) -> str:
+    """카톡 #{내용}: 재촉 제목 · 본문, 원장님 한마디가 있으면 아래에 붙인다(없으면 그 줄 자체가 없다)."""
+    text = f"{m['title']}\n{m['body']}"
+    if memo:
+        text += f"\n\n💬 원장님 한마디\n{memo}"
+    return text[:600]
 
 
 # ── 공부 기록 · 리그 ────────────────────────────────────
@@ -221,6 +242,7 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
     today = now.date()
     g = gather(now)
     exclude = set(cfg.get("exclude") or [])
+    memo = active_memo(cfg, today)
     planned, kakao_items, marked = [], [], []
     for s in g["students"]:
         name = s["name"]
@@ -253,7 +275,7 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
                         print("[재촉] 앱 알림 실패:", repr(e))
                         row["via"].remove("push")
                 if "kakao" in m["via"]:
-                    kakao_items.append({"name": name, "vars": {"내용": f"{m['title']}\n{m['body']}"[:600]}})
+                    kakao_items.append({"name": name, "vars": {"내용": kakao_text(m, memo)}})
             sent_rows.append(row)
         planned.append({"name": name, "items": sent_rows})
         if not dry:
@@ -350,7 +372,9 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
     snap = _db().collection(STREAKS).document(_sid(name)).get()
     cur = nd.streak_view((snap.to_dict() or {}) if snap.exists else None, _now().date())["current"]
     m = nd.sample_message(kind, name, _now(), cur or 5)
-    out = {"success": True, "title": m["title"], "body": m["body"], "push": None, "kakao": None}
+    memo = active_memo(load_config(), _now().date())
+    out = {"success": True, "title": m["title"], "body": m["body"], "kakao_text": kakao_text(m, memo),
+           "push": None, "kakao": None}
     if push:
         try:
             out["push"] = int(H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-test"))
@@ -358,7 +382,7 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
             out["push"] = 0
             out["push_error"] = str(e)
     if kakao:
-        out["kakao"] = H["kakao_message"]("안내", "student", [{"name": name, "vars": {"내용": f"{m['title']}\n{m['body']}"[:600]}}])
+        out["kakao"] = H["kakao_message"]("안내", "student", [{"name": name, "vars": {"내용": out["kakao_text"]}}])
     return out
 
 
@@ -374,6 +398,8 @@ class NudgeConfigReq(BaseModel):
     kakao: bool = True
     exclude: list = []
     new_key: bool = False
+    memo: Optional[str] = None          # 원장님 한마디(비우면 안 붙는다). None 이면 그대로 둔다
+    memo_until: Optional[str] = None    # 이날까지만 붙인다(YYYY-MM-DD, 비우면 지울 때까지)
 
 
 def register(app, helpers: dict):
@@ -432,6 +458,11 @@ def register(app, helpers: dict):
                 "exclude": [str(x).strip() for x in (req.exclude or []) if str(x).strip()][:300]}
         if req.new_key:
             data["key"] = secrets.token_urlsafe(18)
+        if req.memo is not None:
+            data["memo"] = str(req.memo).strip()[:MEMO_MAX]
+        if req.memo_until is not None:
+            mu = str(req.memo_until).strip()[:10]
+            data["memo_until"] = mu if nd._d(mu) else ""
         _db().collection("settings").document("nudge_config").set(data, merge=True)
         return {"success": True, **load_config(create_key=True)}
 

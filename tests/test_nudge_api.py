@@ -184,6 +184,28 @@ class TickTests(unittest.TestCase):
         for k in na.nd.TEXTS:                                     # 모든 종류가 빈칸 없이 만들어진다
             self.assertNotIn("{", na.nd.sample_message(k, "김지수", NOW[0])["body"])
 
+    def test_memo_only_when_written_and_not_expired(self):
+        from datetime import date
+        m = {"title": "T", "body": "B"}
+        self.assertEqual(na.kakao_text(m, ""), "T\nB")                                   # 없으면 그 줄도 없다
+        self.assertIn("💬 원장님 한마디\n기말 대비 주간!", na.kakao_text(m, "기말 대비 주간!"))
+        d = date(2026, 11, 24)
+        self.assertEqual(na.active_memo({"memo": " 힘내 "}, d), "힘내")
+        self.assertEqual(na.active_memo({"memo": "힘내", "memo_until": "2026-11-24"}, d), "힘내")
+        self.assertEqual(na.active_memo({"memo": "힘내", "memo_until": "2026-11-23"}, d), "")   # 날짜 지나면 자동으로 빠짐
+        self.assertEqual(na.active_memo({"memo": ""}, d), "")
+
+    def test_tick_kakao_carries_memo(self):
+        db, sent = setup()
+        self.seed(db)
+        NOW[0] = datetime(2026, 11, 24, 23, 5)
+        try:
+            na.run_tick(False, {"enabled": True, "kakao": True, "exclude": [], "memo": "이번 주는 기말 대비!"})
+        finally:
+            NOW[0] = datetime(2026, 11, 24, 19, 10)
+        self.assertTrue(sent["kakao"][0]["vars"]["내용"].endswith("💬 원장님 한마디\n이번 주는 기말 대비!"))
+        self.assertNotIn("원장님 한마디", sent["push"][0][2])                     # 앱 알림은 짧게 그대로
+
     def test_leagues_by_class(self):
         db, _ = setup()
         lg = na.leagues([{"name": "가", "class_name": "A"}, {"name": "나", "class_name": "A"}, {"name": "다", "class_name": "B"}],
