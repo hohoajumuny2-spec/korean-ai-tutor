@@ -9786,6 +9786,8 @@ async def submit_homework_omr(req: HomeworkOmrReq):
             "late": bool(late_info.get("late") or late_info.get("late_edit")),
             "omr_kinds": [slot_kind(a) for a in key], "kind": data.get("kind", "class"),
             "twin_set": data.get("twin_set", ""),
+            # 💡 2026-11-24: 쌍둥이(유사) 문제는 '처음 냈을 때 틀린 문항' 기준 — 답을 고쳐 다시 내도 사라지지 않게
+            "twin_wrongs": (prev["first_wrongs"] if "first_wrongs" in prev else (prev.get("wrongs") or [])) if edited else wrongs,
             "explanations": {} if homework_expl_locked(data) else parse_explanation_map(data.get("explanations")),
             # 문항별 유형 · 요약 해설 · 해설 영상(마감 전이면 유형만)
             "meta": {k: ({"tag": v["tag"]} if homework_expl_locked(data) else v)
