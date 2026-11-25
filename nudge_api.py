@@ -268,7 +268,10 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
         if name in exclude:
             continue
         log = g["logs"].get(name) or {}
-        msgs = nd.due_messages(context_for(g, s, streak), now,
+        ctx = context_for(g, s, streak)
+        # 클리닉 시간은 학생마다 자주 바뀌어서, 등록된 일정으로 자동 재촉하지 않는다(원장님이 골라서 보낸다, 2026-11-25)
+        ctx["clinic"] = None
+        msgs = nd.due_messages(ctx, now,
                                set(log.get("keys") or []) | g.get("late_sent", {}).get(name, set()))
         if not msgs:
             continue
@@ -433,37 +436,59 @@ def _clinic_hhmm(t: str) -> str:
         return str(t)
 
 
-def send_clinic_notice(day: str, names: List[str]) -> dict:
-    """고른 학생들에게 '클리닉 안내' 카톡(#{날짜} #{시각})을 보낸다. 그날 클리닉이 없는 이름은 건너뛴다."""
-    d = nd._d(day)
-    names = [str(n).strip() for n in (names or []) if str(n).strip()]
-    if not d or not names:
-        return {"success": False, "detail": "날짜와 학생을 골라 주세요."}
-    rows = {r["name"]: r for r in clinic_rows(d.isoformat())}
-    items, skipped = [], []
-    for n in dict.fromkeys(names):
-        if n not in rows:
+def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
+    """원장님이 고른 학생에게 '클리닉 안내' 카톡(#{날짜} #{시각}). 학생마다 날짜 · 시간을 따로 정할 수 있다
+    (클리닉 시간이 학생마다 바뀌므로 등록된 일정에 없는 학생 · 시간도 보낸다). push 면 앱 알림도 같이."""
+    names = {x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn")}
+    jobs, skipped, seen = [], [], set()
+    for it in items or []:
+        n = str((it or {}).get("name") or "").strip()
+        d = nd._d((it or {}).get("date"))
+        hm = str((it or {}).get("time") or "").strip()[:5]
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        try:
+            hh, mm = (int(x) for x in hm.split(":"))
+            ok_time = 0 <= hh < 24 and 0 <= mm < 60
+        except ValueError:
+            ok_time = False
+        if n not in names or not d or not ok_time:
             skipped.append(n)
             continue
-        items.append({"name": n, "vars": {"날짜": nd._day_label(d), "시각": _clinic_hhmm(rows[n]["time"])}})
-    if not items:
-        return {"success": False, "detail": "그날 클리닉이 잡힌 학생이 없습니다.", "skipped": skipped}
-    res = H["kakao_message"]("클리닉", "student", items)
+        jobs.append({"name": n, "date": d, "time": f"{hh:02d}:{mm:02d}",
+                     "vars": {"날짜": nd._day_label(d), "시각": _clinic_hhmm(f"{hh}:{mm}")}})
+    if not jobs:
+        return {"success": False, "detail": "학생 · 날짜 · 시간을 확인해 주세요.", "skipped": skipped}
+    res = H["kakao_message"]("클리닉", "student", [{"name": j["name"], "vars": j["vars"]} for j in jobs])
     if not res.get("success"):
         return {"success": False, "detail": res.get("detail") or "보내지 못했습니다.", "skipped": skipped}
     bad = set(res.get("no_phone") or []) | set(res.get("unknown") or [])
-    sent = [i["name"] for i in items if i["name"] not in bad]
+    pushed = []
+    if push:
+        for j in jobs:
+            try:
+                body = f"{nd.call_name(j['name'])}, {j['vars']['날짜']} {j['vars']['시각']} 클리닉이야! 늦지 말고 와 😊"
+                if H["send_push_to_student"](j["name"], "🩺 클리닉 일정 안내", body, "/", "clinic-" + j["date"].isoformat()):
+                    pushed.append(j["name"])
+            except Exception as e:
+                print("[클리닉 안내] 앱 알림 실패:", repr(e))
     at = _now().strftime("%m/%d %H:%M")
-    for n in sent:
-        _db().collection(CLINIC_LOG).document(_sid(f"{d.isoformat()}__{n}")).set(
-            {"date": d.isoformat(), "student_name": n, "at": at})
-    return {"success": True, "sent": sent, "skipped": skipped,
+    sent = []
+    for j in jobs:
+        if j["name"] in bad and j["name"] not in pushed:
+            continue
+        sent.append(j["name"])
+        _db().collection(CLINIC_LOG).document(_sid(f"{j['date'].isoformat()}__{j['name']}")).set(
+            {"date": j["date"].isoformat(), "student_name": j["name"], "time": j["time"], "at": at})
+    return {"success": True, "sent": sent, "kakao_sent": [j["name"] for j in jobs if j["name"] not in bad],
+            "pushed": pushed, "skipped": skipped,
             "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or []}
 
 
 class ClinicSendReq(BaseModel):
-    day: str = ""
-    names: list = []
+    items: list = []          # [{name, date: 'YYYY-MM-DD', time: 'HH:MM'}]
+    push: bool = False
 
 
 class NudgeTestReq(BaseModel):
@@ -560,11 +585,13 @@ def register(app, helpers: dict):
     @app.get("/api/admin/nudge/clinics", dependencies=[Depends(verify_admin)])
     def nudge_clinics(day: str = ""):
         d = nd._d(day) or _now().date()
-        return {"success": True, "day": d.isoformat(), "label": nd._day_label(d), "rows": clinic_rows(d.isoformat())}
+        students = sorted(x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn"))
+        return {"success": True, "day": d.isoformat(), "label": nd._day_label(d), "rows": clinic_rows(d.isoformat()),
+                "students": students}
 
     @app.post("/api/admin/nudge/clinic_send", dependencies=[Depends(verify_admin)])
     def nudge_clinic_send(req: ClinicSendReq):
-        return send_clinic_notice(req.day, req.names)
+        return send_clinic_notice(req.items, bool(req.push))
 
     @app.post("/api/admin/nudge/test", dependencies=[Depends(verify_admin)])
     def nudge_test(req: NudgeTestReq):
