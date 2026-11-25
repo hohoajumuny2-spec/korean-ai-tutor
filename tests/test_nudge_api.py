@@ -154,7 +154,7 @@ class TickTests(unittest.TestCase):
         self.assertEqual(r["marked_from_kiosk"], ["김지수"])
         self.assertEqual(db.collection("streaks").rows["김지수"]["current"], 1)
         keys = [i["key"] for p in r["planned"] for i in p["items"]]
-        self.assertIn("cl30", keys)
+        self.assertNotIn("cl30", keys)                                           # 클리닉은 자동 재촉 안 함
         self.assertIn("hwlate:독서 3회", keys)
         self.assertNotIn("김지수", [p["name"] for p in r["planned"]])      # 빼 둔 학생
 
@@ -247,12 +247,28 @@ class TickTests(unittest.TestCase):
         db.collection("clinics").rows["c3"] = {"student_name": "이퇴원", "kind": "once", "date": "2026-11-25", "time": "17:00"}
         rows = na.clinic_rows("2026-11-25")                                   # 수요일
         self.assertEqual([(r["name"], r["time"], r["sent"]) for r in rows], [("김지수", "16:00", ""), ("박서연", "18:30", "")])
-        r = na.send_clinic_notice("2026-11-25", ["박서연", "없는학생"])
-        self.assertEqual(sent["kakao"], [{"name": "박서연", "vars": {"날짜": "11월 25일(수)", "시각": "18시 30분"}, "kind": "클리닉"}])
-        self.assertEqual(r["sent"], ["박서연"])
-        self.assertEqual(r["skipped"], ["없는학생"])                                  # 그날 클리닉이 없는 이름
+        r = na.send_clinic_notice([{"name": "박서연", "date": "2026-11-25", "time": "18:30"},
+                                   {"name": "이하늘X", "date": "2026-11-25", "time": "18:00"},       # 명단에 없음
+                                   {"name": "김지수", "date": "2026-11-27", "time": "17:10"}],       # 등록 일정과 달라도 보냄
+                                  push=True)
+        self.assertEqual(sent["kakao"], [{"name": "박서연", "vars": {"날짜": "11월 25일(수)", "시각": "18시 30분"}, "kind": "클리닉"},
+                                         {"name": "김지수", "vars": {"날짜": "11월 27일(금)", "시각": "17시 10분"}, "kind": "클리닉"}])
+        self.assertEqual((r["sent"], r["skipped"], r["pushed"]), (["박서연", "김지수"], ["이하늘X"], ["박서연", "김지수"]))
+        self.assertEqual(sent["push"][0][1], "🩺 클리닉 일정 안내")
         self.assertTrue([x for x in na.clinic_rows("2026-11-25") if x["name"] == "박서연"][0]["sent"])   # 보냄 표시
-        self.assertFalse(na.send_clinic_notice("2026-11-25", [])["success"])
+        self.assertFalse(na.send_clinic_notice([{"name": "박서연", "date": "2026-11-25", "time": "25:00"}])["success"])
+        self.assertFalse(na.send_clinic_notice([])["success"])
+
+    def test_tick_does_not_nudge_clinic_automatically(self):
+        att = [{"name": "박서연", "presentDates": [], "clinicDates": []}]
+        db, sent = setup(att)
+        self.seed(db)
+        db.collection("clinics").rows["c1"] = {"student_name": "박서연", "kind": "weekly", "weekday": 1, "time": "18:00"}
+        r = na.run_tick(False, {"enabled": True, "kakao": True, "exclude": []})
+        keys = [i["key"] for p in r["planned"] for i in p["items"]]
+        self.assertFalse([k for k in keys if k.startswith("cl")])
+        rows = {x["name"]: x for x in na.overview_rows(na.gather(NOW[0]))}
+        self.assertIn("클리닉 미등원", rows["박서연"]["flags"])                    # 원장님 화면에는 그대로 보인다
 
     def test_leagues_by_class(self):
         db, _ = setup()
