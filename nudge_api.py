@@ -44,16 +44,43 @@ def _now() -> datetime:
 
 # ── 설정 ────────────────────────────────────────────────
 def load_config(create_key: bool = False) -> dict:
-    out = {"enabled": False, "kakao": True, "key": "", "exclude": []}
+    out = {"enabled": False, "kakao": True, "key": "", "exclude": [], "memo": "", "memo_until": ""}
     ref = _db().collection("settings").document("nudge_config")
     snap = ref.get()
     if snap.exists:
         v = snap.to_dict() or {}
         out.update({"enabled": bool(v.get("enabled")), "kakao": bool(v.get("kakao", True)),
-                    "key": str(v.get("key") or ""), "exclude": [str(x) for x in (v.get("exclude") or [])]})
+                    "key": str(v.get("key") or ""), "exclude": [str(x) for x in (v.get("exclude") or [])],
+                    "memo": str(v.get("memo") or ""), "memo_until": str(v.get("memo_until") or "")})
     if create_key and not out["key"]:
         out["key"] = secrets.token_urlsafe(18)
         ref.set({"key": out["key"]}, merge=True)
+    return out
+
+
+MEMO_MAX = 200
+
+
+def active_memo(cfg: dict, today: date) -> str:
+    """원장님 한마디: 적어 둔 것이 있고, 마지막 날(있으면)이 아직 안 지났을 때만."""
+    memo = str((cfg or {}).get("memo") or "").strip()
+    until = nd._d((cfg or {}).get("memo_until"))
+    if not memo or (until and today > until):
+        return ""
+    return memo[:MEMO_MAX]
+
+
+def push_body(m: dict, memo: str) -> str:
+    """앱 알림 본문: 재촉 한 줄 + 원장님 한마디(있을 때만).
+    💡 카톡은 카카오가 검수한 고정 문구 템플릿이라 한마디를 넣을 수 없다 → 한마디는 앱 알림 · 학생 앱 첫 화면에."""
+    return f"{m['body']}\n💬 {memo}" if memo else m["body"]
+
+
+def group_kakao(items: List[tuple]) -> Dict[str, List[dict]]:
+    """[(이름, 재촉)] → {카톡 종류: [{name, vars}]} — 종류마다 템플릿이 달라 따로 보낸다."""
+    out: Dict[str, List[dict]] = {}
+    for name, m in items:
+        out.setdefault(m["kakao_kind"], []).append({"name": name, "vars": m["kakao_vars"]})
     return out
 
 
@@ -129,7 +156,7 @@ def gather(now: datetime) -> dict:
         studs.append({"name": d.id, **v})
     since = (now - timedelta(days=21)).strftime("%Y-%m-%d")
     reports = [r.to_dict() or {} for r in db.collection("reports").where("submitted_at", ">=", since).stream()]
-    lo, hi = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=2)).isoformat()
+    lo, hi = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=nd.HWD_DAYS)).isoformat()
     hws = []
     for d in db.collection("homeworks").stream():
         v = d.to_dict() or {}
@@ -147,8 +174,13 @@ def gather(now: datetime) -> dict:
     for d in db.collection(LOG).where("date", "==", ds).stream():
         v = d.to_dict() or {}
         logs[str(v.get("student_name"))] = v
+    # 어제 보낸 '마감 지남' 안내는 오늘 또 보내지 않는다
+    late_sent = {}
+    for d in db.collection(LOG).where("date", "==", (today - timedelta(days=1)).isoformat()).stream():
+        v = d.to_dict() or {}
+        late_sent[str(v.get("student_name"))] = {k for k in (v.get("keys") or []) if str(k).startswith("hwlate:")}
     return {"now": now, "students": studs, "reports": reports, "homeworks": hws, "streaks": streaks,
-            "push_names": push_names, "clinics": clinics, "logs": logs, "attendance": fetch_attendance(today)}
+            "push_names": push_names, "clinics": clinics, "logs": logs, "late_sent": late_sent, "attendance": fetch_attendance(today)}
 
 
 # ── 학생 한 명 상황 만들기 (DB 없이) ─────────────────────
@@ -221,6 +253,7 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
     today = now.date()
     g = gather(now)
     exclude = set(cfg.get("exclude") or [])
+    memo = active_memo(cfg, today)
     planned, kakao_items, marked = [], [], []
     for s in g["students"]:
         name = s["name"]
@@ -235,7 +268,8 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
         if name in exclude:
             continue
         log = g["logs"].get(name) or {}
-        msgs = nd.due_messages(context_for(g, s, streak), now, set(log.get("keys") or []))
+        msgs = nd.due_messages(context_for(g, s, streak), now,
+                               set(log.get("keys") or []) | g.get("late_sent", {}).get(name, set()))
         if not msgs:
             continue
         routed = nd.route(msgs, name in g["push_names"], int(log.get("push") or 0),
@@ -247,13 +281,13 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
             if not dry:
                 if "push" in m["via"]:
                     try:
-                        if not H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-" + m["key"]):
+                        if not H["send_push_to_student"](name, m["title"], push_body(m, memo), "/", "nudge-" + m["key"]):
                             row["via"].remove("push")
                     except Exception as e:
                         print("[재촉] 앱 알림 실패:", repr(e))
                         row["via"].remove("push")
                 if "kakao" in m["via"]:
-                    kakao_items.append({"name": name, "vars": {"내용": f"{m['title']}\n{m['body']}"[:600]}})
+                    kakao_items.append((name, m))
             sent_rows.append(row)
         planned.append({"name": name, "items": sent_rows})
         if not dry:
@@ -266,7 +300,7 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
             }, merge=True)
     kakao = None
     if kakao_items and not dry:
-        kakao = H["kakao_message"]("안내", "student", kakao_items)
+        kakao = {k: H["kakao_message"](k, "student", items) for k, items in group_kakao(kakao_items).items()}
     return {"success": True, "dry": dry, "at": now.strftime("%Y-%m-%d %H:%M"), "quiet": nd.quiet(now),
             "students": len(g["students"]), "attendance_ok": g["attendance"] is not None,
             "marked_from_kiosk": marked, "planned": planned, "kakao": kakao}
@@ -350,16 +384,86 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
     snap = _db().collection(STREAKS).document(_sid(name)).get()
     cur = nd.streak_view((snap.to_dict() or {}) if snap.exists else None, _now().date())["current"]
     m = nd.sample_message(kind, name, _now(), cur or 5)
-    out = {"success": True, "title": m["title"], "body": m["body"], "push": None, "kakao": None}
+    memo = active_memo(load_config(), _now().date())
+    out = {"success": True, "title": m["title"], "body": push_body(m, memo),
+           "kakao_kind": m["kakao_kind"], "kakao_vars": m["kakao_vars"], "push": None, "kakao": None}
     if push:
         try:
-            out["push"] = int(H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-test"))
+            out["push"] = int(H["send_push_to_student"](name, m["title"], out["body"], "/", "nudge-test"))
         except Exception as e:
             out["push"] = 0
             out["push_error"] = str(e)
     if kakao:
-        out["kakao"] = H["kakao_message"]("안내", "student", [{"name": name, "vars": {"내용": f"{m['title']}\n{m['body']}"[:600]}}])
+        out["kakao"] = H["kakao_message"](m["kakao_kind"], "student", [{"name": name, "vars": m["kakao_vars"]}])
     return out
+
+
+# ── 클리닉 안내 카톡: 원장님이 눌러서 보낸다 ─────────────────
+CLINIC_LOG = "clinic_notice_log"
+
+
+def clinic_rows(day: str) -> List[dict]:
+    """그날 클리닉이 있는 학생(퇴원생 빼고), 시각 순. sent: 그날 안내 카톡을 보낸 시각(안 보냈으면 '')."""
+    d = nd._d(day)
+    if not d:
+        return []
+    db = _db()
+    left = {x.id for x in db.collection("students").stream() if (x.to_dict() or {}).get("withdrawn")}
+    names = {x.id for x in db.collection("students").stream()}
+    times: Dict[str, str] = {}
+    for c in (x.to_dict() or {} for x in db.collection("clinics").stream()):
+        who = str(c.get("student_name") or "").strip()
+        if not who or who in left or who not in names:
+            continue
+        t = clinic_today([c], who, d)
+        if t and (who not in times or t < times[who]):
+            times[who] = t
+    out = []
+    for who, t in sorted(times.items(), key=lambda kv: (kv[1], kv[0])):
+        snap = db.collection(CLINIC_LOG).document(_sid(f"{d.isoformat()}__{who}")).get()
+        out.append({"name": who, "time": t, "sent": ((snap.to_dict() or {}).get("at") or "") if snap.exists else ""})
+    return out
+
+
+def _clinic_hhmm(t: str) -> str:
+    try:
+        hh, mm = str(t).split(":")[:2]
+        return nd._hhmm(datetime(2000, 1, 1, int(hh), int(mm)))
+    except (ValueError, TypeError):
+        return str(t)
+
+
+def send_clinic_notice(day: str, names: List[str]) -> dict:
+    """고른 학생들에게 '클리닉 안내' 카톡(#{날짜} #{시각})을 보낸다. 그날 클리닉이 없는 이름은 건너뛴다."""
+    d = nd._d(day)
+    names = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not d or not names:
+        return {"success": False, "detail": "날짜와 학생을 골라 주세요."}
+    rows = {r["name"]: r for r in clinic_rows(d.isoformat())}
+    items, skipped = [], []
+    for n in dict.fromkeys(names):
+        if n not in rows:
+            skipped.append(n)
+            continue
+        items.append({"name": n, "vars": {"날짜": nd._day_label(d), "시각": _clinic_hhmm(rows[n]["time"])}})
+    if not items:
+        return {"success": False, "detail": "그날 클리닉이 잡힌 학생이 없습니다.", "skipped": skipped}
+    res = H["kakao_message"]("클리닉", "student", items)
+    if not res.get("success"):
+        return {"success": False, "detail": res.get("detail") or "보내지 못했습니다.", "skipped": skipped}
+    bad = set(res.get("no_phone") or []) | set(res.get("unknown") or [])
+    sent = [i["name"] for i in items if i["name"] not in bad]
+    at = _now().strftime("%m/%d %H:%M")
+    for n in sent:
+        _db().collection(CLINIC_LOG).document(_sid(f"{d.isoformat()}__{n}")).set(
+            {"date": d.isoformat(), "student_name": n, "at": at})
+    return {"success": True, "sent": sent, "skipped": skipped,
+            "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or []}
+
+
+class ClinicSendReq(BaseModel):
+    day: str = ""
+    names: list = []
 
 
 class NudgeTestReq(BaseModel):
@@ -374,6 +478,8 @@ class NudgeConfigReq(BaseModel):
     kakao: bool = True
     exclude: list = []
     new_key: bool = False
+    memo: Optional[str] = None          # 원장님 한마디(비우면 안 붙는다). None 이면 그대로 둔다
+    memo_until: Optional[str] = None    # 이날까지만 붙인다(YYYY-MM-DD, 비우면 지울 때까지)
 
 
 def register(app, helpers: dict):
@@ -419,6 +525,7 @@ def register(app, helpers: dict):
             league = {"class_name": cls, "week": w, **nd.league([{"name": n, "xp": xp.get(n, 0)} for n in mates], name),
                       "days_left": 6 - today.weekday()}
         return {"success": True, **view, "next_milestone": next((m for m in sorted(nd.MILESTONES) if m > view["current"]), None),
+                "memo": active_memo(load_config(), today),
                 "league": league}
 
     @app.get("/api/admin/nudge/config", dependencies=[Depends(verify_admin)])
@@ -432,6 +539,11 @@ def register(app, helpers: dict):
                 "exclude": [str(x).strip() for x in (req.exclude or []) if str(x).strip()][:300]}
         if req.new_key:
             data["key"] = secrets.token_urlsafe(18)
+        if req.memo is not None:
+            data["memo"] = str(req.memo).strip()[:MEMO_MAX]
+        if req.memo_until is not None:
+            mu = str(req.memo_until).strip()[:10]
+            data["memo_until"] = mu if nd._d(mu) else ""
         _db().collection("settings").document("nudge_config").set(data, merge=True)
         return {"success": True, **load_config(create_key=True)}
 
@@ -444,6 +556,15 @@ def register(app, helpers: dict):
         return {"success": True, "at": g["now"].strftime("%Y-%m-%d %H:%M"), "attendance_ok": g["attendance"] is not None,
                 "rows": rows, "leagues": leagues(g["students"], w, xp_rows, top=5), "week": w,
                 "config": {k: v for k, v in load_config().items() if k != "key"}}
+
+    @app.get("/api/admin/nudge/clinics", dependencies=[Depends(verify_admin)])
+    def nudge_clinics(day: str = ""):
+        d = nd._d(day) or _now().date()
+        return {"success": True, "day": d.isoformat(), "label": nd._day_label(d), "rows": clinic_rows(d.isoformat())}
+
+    @app.post("/api/admin/nudge/clinic_send", dependencies=[Depends(verify_admin)])
+    def nudge_clinic_send(req: ClinicSendReq):
+        return send_clinic_notice(req.day, req.names)
 
     @app.post("/api/admin/nudge/test", dependencies=[Depends(verify_admin)])
     def nudge_test(req: NudgeTestReq):

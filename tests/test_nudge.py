@@ -76,14 +76,30 @@ class DueTests(unittest.TestCase):
 
     def test_homework_steps_by_time_left(self):
         hw = [{"title": "독서 3회", "deadline": "2026-11-25T22:00", "submitted": False}]
-        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(9)), [])                       # 37시간 전
-        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(23, 0)), ["hw24:독서 3회"])
-        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(19, 30, D + timedelta(1))), ["hw3:독서 3회"])
-        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(21, 10, D + timedelta(1))), ["hw1:독서 3회"])
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(9)), [])                       # 17시 전
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(17, 0)), ["hwd:독서 3회"])     # D-1 17시
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(19, 30, D + timedelta(1))), ["hwd:독서 3회"])  # D-day
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(19, 30, D + timedelta(1)), ["hwd:독서 3회"]), ["hw3:독서 3회"])
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(21, 10, D + timedelta(1)), ["hwd:독서 3회"]), ["hw1:독서 3회"])
         self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(8, 30, D + timedelta(2))), ["hwlate:독서 3회"])
-        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(21, 10, D + timedelta(1)), ["hw1:독서 3회"]), [])
+        self.assertEqual(self.keys(ctx(homeworks=hw, active_today=True), at(21, 10, D + timedelta(1)), ["hwd:독서 3회", "hw1:독서 3회"]), [])
         done = [{**hw[0], "submitted": True}]
         self.assertEqual(self.keys(ctx(homeworks=done, active_today=True), at(21, 10, D + timedelta(1))), [])
+
+    def test_homework_daily_from_three_days_before(self):
+        hw = [{"title": "독서", "deadline": "2026-11-28T22:00", "submitted": False}]
+        c = ctx(homeworks=hw, active_today=True)
+        self.assertEqual(self.keys(c, at(17, 5, date(2026, 11, 24))), [])                    # D-4: 아직
+        for d in (25, 26, 27, 28):                                                        # D-3 ~ D-day 매일
+            m = nd.due_messages(c, at(17, 5, date(2026, 11, d)), set())
+            self.assertEqual([x["key"] for x in m], ["hwd:독서"])
+            self.assertEqual(m[0]["kakao_kind"], "과제마감")
+        self.assertIn("D-3", nd.due_messages(c, at(17, 5, date(2026, 11, 25)), set())[0]["title"])
+        self.assertIn("D-day", nd.due_messages(c, at(17, 5, date(2026, 11, 28)), set())[0]["title"])
+        early = [{"title": "독서", "deadline": "2026-11-24T10:00", "submitted": False}]   # 당일 오전 마감 → 아침 8시에
+        self.assertEqual(self.keys(ctx(homeworks=early, active_today=True), at(8, 0)), ["hwd:독서"])
+        late = nd.route(nd.due_messages(ctx(homeworks=early, active_today=True), at(10, 30), set()), True, 0, 0, True)
+        self.assertEqual([(m["key"], m["via"]) for m in late], [("hwlate:독서", ["push", "kakao"])])   # 마감 지나면 카톡
 
     def test_daily_practice_steps_and_quiet_hours(self):
         self.assertEqual(self.keys(ctx(), at(18, 59)), [])
@@ -122,10 +138,13 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(r, {"b": ["push", "kakao"], "c": ["push"], "a": ["push"]})
         r = {m["key"]: m["via"] for m in nd.route(msgs, False, 0, 0, True)}
         self.assertEqual(r, {"b": ["kakao"], "c": ["kakao"], "a": []})       # 앱 알림이 없으면 2단계부터 카톡
-        r = {m["key"]: m["via"] for m in nd.route(msgs, True, 5, 2, True)}
+        r = {m["key"]: m["via"] for m in nd.route(msgs, True, 5, nd.MAX_KAKAO_PER_DAY, True)}
         self.assertEqual(r, {"a": [], "b": [], "c": []})                     # 하루 한도
         r = {m["key"]: m["via"] for m in nd.route(msgs, True, 0, 0, False)}
         self.assertEqual(r["b"], ["push"])                                   # 카톡 끔
+        guide = [{"key": "h", "kind": "hwd", "level": 1}, {"key": "w", "kind": "hw1", "level": 3}, {"key": "c2", "kind": "cl2h", "level": 1}]
+        r = {m["key"]: m["via"] for m in nd.route(guide, True, 0, 0, True)}
+        self.assertEqual(r, {"h": ["push", "kakao"], "c2": ["push"], "w": ["push"]})  # 과제 안내는 늘 카톡, 클리닉 · 1시간 전은 앱만
 
 
 class LeagueTests(unittest.TestCase):
