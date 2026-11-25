@@ -216,10 +216,11 @@ class TickTests(unittest.TestCase):
         db.collection("homeworks").rows["독서 3회"] = {"deadline": "2026-11-24T18:00"}
         na.run_tick(False, {"enabled": True, "kakao": True, "exclude": []})
         got = {k["kind"]: k["vars"] for k in sent["kakao"]}
+        self.assertEqual(na.nd.sample_message("hw1", "김지수", NOW[0])["kakao_kind"], "과제마감")   # 마감 전은 재촉 템플릿
         self.assertEqual(got, {"미제출": {"과제": "독서 3회", "마감": "11월 24일 18시"}, "클리닉": {"날짜": "11월 24일(화)", "시각": "18시"}})
         for k in na.nd.TEXTS:                                                     # 모든 종류에 템플릿 · 빈칸이 있다
             m = na.nd.sample_message(k, "김지수", NOW[0])
-            self.assertIn(m["kakao_kind"], ("미제출", "클리닉", "학습기록"))
+            self.assertIn(m["kakao_kind"], ("과제마감", "미제출", "클리닉", "학습기록"))
             self.assertTrue(all(str(v) for v in m["kakao_vars"].values()))
 
     def test_leagues_by_class(self):
