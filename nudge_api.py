@@ -70,12 +70,18 @@ def active_memo(cfg: dict, today: date) -> str:
     return memo[:MEMO_MAX]
 
 
-def kakao_text(m: dict, memo: str) -> str:
-    """카톡 #{내용}: 재촉 제목 · 본문, 원장님 한마디가 있으면 아래에 붙인다(없으면 그 줄 자체가 없다)."""
-    text = f"{m['title']}\n{m['body']}"
-    if memo:
-        text += f"\n\n💬 원장님 한마디\n{memo}"
-    return text[:600]
+def push_body(m: dict, memo: str) -> str:
+    """앱 알림 본문: 재촉 한 줄 + 원장님 한마디(있을 때만).
+    💡 카톡은 카카오가 검수한 고정 문구 템플릿이라 한마디를 넣을 수 없다 → 한마디는 앱 알림 · 학생 앱 첫 화면에."""
+    return f"{m['body']}\n💬 {memo}" if memo else m["body"]
+
+
+def group_kakao(items: List[tuple]) -> Dict[str, List[dict]]:
+    """[(이름, 재촉)] → {카톡 종류: [{name, vars}]} — 종류마다 템플릿이 달라 따로 보낸다."""
+    out: Dict[str, List[dict]] = {}
+    for name, m in items:
+        out.setdefault(m["kakao_kind"], []).append({"name": name, "vars": m["kakao_vars"]})
+    return out
 
 
 # ── 공부 기록 · 리그 ────────────────────────────────────
@@ -269,13 +275,13 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
             if not dry:
                 if "push" in m["via"]:
                     try:
-                        if not H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-" + m["key"]):
+                        if not H["send_push_to_student"](name, m["title"], push_body(m, memo), "/", "nudge-" + m["key"]):
                             row["via"].remove("push")
                     except Exception as e:
                         print("[재촉] 앱 알림 실패:", repr(e))
                         row["via"].remove("push")
                 if "kakao" in m["via"]:
-                    kakao_items.append({"name": name, "vars": {"내용": kakao_text(m, memo)}})
+                    kakao_items.append((name, m))
             sent_rows.append(row)
         planned.append({"name": name, "items": sent_rows})
         if not dry:
@@ -288,7 +294,7 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
             }, merge=True)
     kakao = None
     if kakao_items and not dry:
-        kakao = H["kakao_message"]("안내", "student", kakao_items)
+        kakao = {k: H["kakao_message"](k, "student", items) for k, items in group_kakao(kakao_items).items()}
     return {"success": True, "dry": dry, "at": now.strftime("%Y-%m-%d %H:%M"), "quiet": nd.quiet(now),
             "students": len(g["students"]), "attendance_ok": g["attendance"] is not None,
             "marked_from_kiosk": marked, "planned": planned, "kakao": kakao}
@@ -373,16 +379,16 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
     cur = nd.streak_view((snap.to_dict() or {}) if snap.exists else None, _now().date())["current"]
     m = nd.sample_message(kind, name, _now(), cur or 5)
     memo = active_memo(load_config(), _now().date())
-    out = {"success": True, "title": m["title"], "body": m["body"], "kakao_text": kakao_text(m, memo),
-           "push": None, "kakao": None}
+    out = {"success": True, "title": m["title"], "body": push_body(m, memo),
+           "kakao_kind": m["kakao_kind"], "kakao_vars": m["kakao_vars"], "push": None, "kakao": None}
     if push:
         try:
-            out["push"] = int(H["send_push_to_student"](name, m["title"], m["body"], "/", "nudge-test"))
+            out["push"] = int(H["send_push_to_student"](name, m["title"], out["body"], "/", "nudge-test"))
         except Exception as e:
             out["push"] = 0
             out["push_error"] = str(e)
     if kakao:
-        out["kakao"] = H["kakao_message"]("안내", "student", [{"name": name, "vars": {"내용": out["kakao_text"]}}])
+        out["kakao"] = H["kakao_message"](m["kakao_kind"], "student", [{"name": name, "vars": m["kakao_vars"]}])
     return out
 
 
@@ -445,6 +451,7 @@ def register(app, helpers: dict):
             league = {"class_name": cls, "week": w, **nd.league([{"name": n, "xp": xp.get(n, 0)} for n in mates], name),
                       "days_left": 6 - today.weekday()}
         return {"success": True, **view, "next_milestone": next((m for m in sorted(nd.MILESTONES) if m > view["current"]), None),
+                "memo": active_memo(load_config(), today),
                 "league": league}
 
     @app.get("/api/admin/nudge/config", dependencies=[Depends(verify_admin)])

@@ -207,11 +207,33 @@ TEXTS = {
 }
 
 
+# 카톡(알림톡)은 카카오 검수를 받은 '목적별' 템플릿으로만 보낸다(2026-11-25 '학습 안내 + #{내용}' 반려).
+#   숙제 → 미제출 템플릿 #{과제} #{마감} · 클리닉 → 클리닉 템플릿 #{시각} · 매일/며칠째 → 학습기록 템플릿 #{일수}
+KAKAO_KIND = {"hw24": "미제출", "hw3": "미제출", "hw1": "미제출", "hwlate": "미제출",
+              "cl2h": "클리닉", "cl30": "클리닉", "pr19": "학습기록", "pr2130": "학습기록", "pr23": "학습기록",
+              "idle": "학습기록"}
+
+
+def _kakao_vars(kind: str, ctx: dict, extra: dict) -> dict:
+    k = KAKAO_KIND[kind]
+    if k == "미제출":
+        return {"과제": str(extra.get("t", "")), "마감": str(extra.get("due", ""))}
+    if k == "클리닉":
+        return {"시각": str(extra.get("time", ""))}
+    return {"일수": str(max(0, int(ctx.get("streak") or 0)))}
+
+
 def _msg(key: str, kind: str, ctx: dict, seed: str, extra: dict) -> dict:
     level, title, options = TEXTS[kind]
     vals = {"who": ctx.get("call") or call_name(ctx.get("name", "")), "n": max(1, int(ctx.get("streak") or 0)), **extra}
     body = _pick(options, seed + key).format(**vals)
-    return {"key": key, "kind": kind, "level": level, "title": title, "body": body}
+    return {"key": key, "kind": kind, "level": level, "title": title, "body": body,
+            "kakao_kind": KAKAO_KIND[kind], "kakao_vars": _kakao_vars(kind, ctx, extra)}
+
+
+def _due(dl: datetime) -> str:
+    """카톡 #{마감}: '11월 25일 22시'."""
+    return f"{dl.month}월 {dl.day}일 {_hhmm(dl)}"
 
 
 # 원장님 [시험 보내기]용 이름표와 예시 값
@@ -228,7 +250,7 @@ def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict
     if kind not in TEXTS:
         raise ValueError(kind)
     dl = (now + timedelta(hours={"hw24": 20, "hw3": 3, "hw1": 1}.get(kind, -10))).replace(second=0, microsecond=0)
-    extra = {"t": "예시 숙제", "when": _when(dl, now), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
+    extra = {"t": "예시 숙제", "when": _when(dl, now), "due": _due(dl), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
              "time": "18시"}
     m = _msg("test:" + kind, kind, {"name": name, "streak": streak}, name + now.isoformat(), extra)
     m["title"] = "[시험] " + m["title"]
@@ -259,7 +281,7 @@ def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
             continue
         t = str(hw.get("title") or "숙제")
         left = dl - now
-        extra = {"t": t, "when": _when(dl, now), "left": f"{max(1, int(left.total_seconds() // 3600))}시간"}
+        extra = {"t": t, "when": _when(dl, now), "due": _due(dl), "left": f"{max(1, int(left.total_seconds() // 3600))}시간"}
         if timedelta(0) < left <= timedelta(hours=1):
             want(f"hw1:{t}", "hw1", extra)
         elif timedelta(hours=1) < left <= timedelta(hours=3):

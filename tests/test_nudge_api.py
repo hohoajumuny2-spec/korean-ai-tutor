@@ -84,7 +84,7 @@ def setup(att=None):
                                           "all_classes": [d.get("class_name")] if d.get("class_name") else []},
         "homework_visible_to_student": lambda hw, n, info=None: True,
         "send_push_to_student": lambda n, t, b, u, tag: sent["push"].append((n, t, b)) or 1,
-        "kakao_message": lambda kind, to, items: sent["kakao"].extend(items) or {"success": True},
+        "kakao_message": lambda kind, to, items: sent["kakao"].extend({**i, "kind": kind} for i in items) or {"success": True},
     })
     na.fetch_attendance = lambda day: att
     return db, sent
@@ -187,8 +187,8 @@ class TickTests(unittest.TestCase):
     def test_memo_only_when_written_and_not_expired(self):
         from datetime import date
         m = {"title": "T", "body": "B"}
-        self.assertEqual(na.kakao_text(m, ""), "T\nB")                                   # 없으면 그 줄도 없다
-        self.assertIn("💬 원장님 한마디\n기말 대비 주간!", na.kakao_text(m, "기말 대비 주간!"))
+        self.assertEqual(na.push_body(m, ""), "B")                                       # 없으면 그 줄도 없다
+        self.assertEqual(na.push_body(m, "기말 대비 주간!"), "B\n💬 기말 대비 주간!")
         d = date(2026, 11, 24)
         self.assertEqual(na.active_memo({"memo": " 힘내 "}, d), "힘내")
         self.assertEqual(na.active_memo({"memo": "힘내", "memo_until": "2026-11-24"}, d), "힘내")
@@ -203,8 +203,24 @@ class TickTests(unittest.TestCase):
             na.run_tick(False, {"enabled": True, "kakao": True, "exclude": [], "memo": "이번 주는 기말 대비!"})
         finally:
             NOW[0] = datetime(2026, 11, 24, 19, 10)
-        self.assertTrue(sent["kakao"][0]["vars"]["내용"].endswith("💬 원장님 한마디\n이번 주는 기말 대비!"))
-        self.assertNotIn("원장님 한마디", sent["push"][0][2])                     # 앱 알림은 짧게 그대로
+        # 카톡은 검수받은 '학습기록' 템플릿 빈칸만(한마디 없음), 한마디는 앱 알림에
+        self.assertEqual(sent["kakao"][0], {"name": "박서연", "vars": {"일수": "4"}, "kind": "학습기록"})
+        self.assertTrue(sent["push"][0][2].endswith("💬 이번 주는 기말 대비!"))
+
+    def test_each_purpose_goes_to_its_own_kakao_template(self):
+        att = [{"name": "박서연", "presentDates": [], "clinicDates": []}]
+        db, sent = setup(att)
+        self.seed(db)
+        db.collection("push_subs").rows.clear()                                  # 앱 알림 없음 → 2단계부터 카톡
+        db.collection("clinics").rows["c1"] = {"student_name": "박서연", "kind": "weekly", "weekday": 1, "time": "18:00"}
+        db.collection("homeworks").rows["독서 3회"] = {"deadline": "2026-11-24T18:00"}
+        na.run_tick(False, {"enabled": True, "kakao": True, "exclude": []})
+        got = {k["kind"]: k["vars"] for k in sent["kakao"]}
+        self.assertEqual(got, {"미제출": {"과제": "독서 3회", "마감": "11월 24일 18시"}, "클리닉": {"시각": "18시"}})
+        for k in na.nd.TEXTS:                                                     # 모든 종류에 템플릿 · 빈칸이 있다
+            m = na.nd.sample_message(k, "김지수", NOW[0])
+            self.assertIn(m["kakao_kind"], ("미제출", "클리닉", "학습기록"))
+            self.assertTrue(all(str(v) for v in m["kakao_vars"].values()))
 
     def test_leagues_by_class(self):
         db, _ = setup()
