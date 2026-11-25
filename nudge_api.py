@@ -486,6 +486,21 @@ def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
             "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or []}
 
 
+def student_classes() -> dict:
+    """클리닉 안내에서 학생을 반별로 찾게: students(이름 목록) + classes([{name, students}], 반 이름순, '반 없음'은 맨 뒤)."""
+    names, by_class = [], {}
+    for x in _db().collection("students").stream():
+        v = x.to_dict() or {}
+        if v.get("withdrawn") or H["is_preview"](x.id):
+            continue
+        names.append(x.id)
+        cls = H["targeting_info_from"](v).get("all_classes") or []
+        for c in (cls or ["반 없음"]):
+            by_class.setdefault(c, []).append(x.id)
+    order = sorted(by_class, key=lambda c: (c == "반 없음", c))
+    return {"students": sorted(names), "classes": [{"name": c, "students": sorted(by_class[c])} for c in order]}
+
+
 class ClinicSendReq(BaseModel):
     items: list = []          # [{name, date: 'YYYY-MM-DD', time: 'HH:MM'}]
     push: bool = False
@@ -585,9 +600,8 @@ def register(app, helpers: dict):
     @app.get("/api/admin/nudge/clinics", dependencies=[Depends(verify_admin)])
     def nudge_clinics(day: str = ""):
         d = nd._d(day) or _now().date()
-        students = sorted(x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn"))
         return {"success": True, "day": d.isoformat(), "label": nd._day_label(d), "rows": clinic_rows(d.isoformat()),
-                "students": students}
+                **student_classes()}
 
     @app.post("/api/admin/nudge/clinic_send", dependencies=[Depends(verify_admin)])
     def nudge_clinic_send(req: ClinicSendReq):

@@ -259,6 +259,15 @@ class TickTests(unittest.TestCase):
         self.assertFalse(na.send_clinic_notice([{"name": "박서연", "date": "2026-11-25", "time": "25:00"}])["success"])
         self.assertFalse(na.send_clinic_notice([])["success"])
 
+    def test_students_grouped_by_class_for_clinic(self):
+        db, _ = setup()
+        self.seed(db)
+        db.collection("students").rows["최반없"] = {}
+        got = na.student_classes()
+        self.assertEqual(got["students"], ["김지수", "박서연", "최반없"])
+        self.assertEqual(got["classes"], [{"name": "고2A", "students": ["김지수", "박서연"]},
+                                          {"name": "반 없음", "students": ["최반없"]}])     # 퇴원생 빠짐, 반 없음은 맨 뒤
+
     def test_tick_does_not_nudge_clinic_automatically(self):
         att = [{"name": "박서연", "presentDates": [], "clinicDates": []}]
         db, sent = setup(att)
