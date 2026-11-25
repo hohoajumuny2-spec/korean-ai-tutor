@@ -44,14 +44,15 @@ def _now() -> datetime:
 
 # ── 설정 ────────────────────────────────────────────────
 def load_config(create_key: bool = False) -> dict:
-    out = {"enabled": False, "kakao": True, "key": "", "exclude": [], "memo": "", "memo_until": ""}
+    out = {"enabled": False, "kakao": True, "key": "", "exclude": [], "memo": "", "memo_until": "", "penalty": ""}
     ref = _db().collection("settings").document("nudge_config")
     snap = ref.get()
     if snap.exists:
         v = snap.to_dict() or {}
         out.update({"enabled": bool(v.get("enabled")), "kakao": bool(v.get("kakao", True)),
                     "key": str(v.get("key") or ""), "exclude": [str(x) for x in (v.get("exclude") or [])],
-                    "memo": str(v.get("memo") or ""), "memo_until": str(v.get("memo_until") or "")})
+                    "memo": str(v.get("memo") or ""), "memo_until": str(v.get("memo_until") or ""),
+                    "penalty": str(v.get("penalty") or "")})
     if create_key and not out["key"]:
         out["key"] = secrets.token_urlsafe(18)
         ref.set({"key": out["key"]}, merge=True)
@@ -71,17 +72,51 @@ def active_memo(cfg: dict, today: date) -> str:
 
 
 def push_body(m: dict, memo: str) -> str:
-    """앱 알림 본문: 재촉 한 줄 + 원장님 한마디(있을 때만).
-    💡 카톡은 카카오가 검수한 고정 문구 템플릿이라 한마디를 넣을 수 없다 → 한마디는 앱 알림 · 학생 앱 첫 화면에."""
+    """앱 알림 본문: 재촉 한 줄 + 원장님 한마디(있을 때만)."""
     return f"{m['body']}\n💬 {memo}" if memo else m["body"]
 
 
-def group_kakao(items: List[tuple]) -> Dict[str, List[dict]]:
-    """[(이름, 재촉)] → {카톡 종류: [{name, vars}]} — 종류마다 템플릿이 달라 따로 보낸다."""
-    out: Dict[str, List[dict]] = {}
-    for name, m in items:
-        out.setdefault(m["kakao_kind"], []).append({"name": name, "vars": m["kakao_vars"]})
-    return out
+# ── 카톡: 이미 승인받은 '알림장' 틀로 보낸다 ─────────────────
+#   💡 2026-11-25 원장님 요청: 재촉마다 새 템플릿을 검수받지 말고 쓰고 있는 알림장(SOLAPI_TEMPLATE_NOTICE)을 쓴다.
+#      알림장 틀: #{학생} #{날짜} · ■ 오늘 수업 진도 #{진도} · ■ 다음 수업까지 과제 #{과제} · ■ … 기록 #{알림장}
+#      → 진도 칸에 말머리, 과제 칸에 과제와 마감, 알림장 칸에 재촉 글(+ 원장님 한마디 · 불이익).
+NOTICE_KIND = "알림장"
+NOTICE_TOPIC = {"과제마감": "과제 마감 안내", "미제출": "과제 미제출 안내", "클리닉": "클리닉 일정 안내",
+                "학습기록": "오늘의 학습 기록 안내"}
+NONE = "별도 안내 없음"
+PENALTY_MAX = 300
+
+
+def penalty_lines(text: str) -> List[str]:
+    import re as _re
+    return [x.strip(" -–") for x in _re.split(r"\s*(?:\n|·|ㆍ|•)\s*", str(text or "")) if x.strip(" -–")]
+
+
+def notice_text(head: str, body: str, memo: str = "", penalty: str = "") -> str:
+    """알림장 칸에 들어갈 글."""
+    text = f"{head}\n{body}".strip()
+    pl = penalty_lines(penalty)
+    if pl:
+        text += "\n\n[ 지키지 않으면 ]\n" + "\n".join("- " + x for x in pl)
+    if memo:
+        text += f"\n\n💬 원장님 한마디\n{memo}"
+    return text[:700]
+
+
+def notice_vars(m: dict, memo: str = "", penalty: str = "") -> dict:
+    """재촉 하나 → 알림장 틀 빈칸. 불이익은 과제 · 클리닉 재촉에만 붙인다."""
+    k, v = m["kakao_kind"], m.get("kakao_vars") or {}
+    if k in ("과제마감", "미제출"):
+        hw = f"{v.get('과제', '')} ({v.get('마감', '')} 마감)".strip()
+    else:
+        hw = NONE
+    return {"진도": NOTICE_TOPIC.get(k, "학습 안내"), "과제": hw or NONE,
+            "알림장": notice_text(m["title"], m["body"], memo, penalty if k in ("과제마감", "미제출", "클리닉") else "")}
+
+
+def group_kakao(items: List[tuple], memo: str = "", penalty: str = "") -> Dict[str, List[dict]]:
+    """[(이름, 재촉)] → {'알림장': [{name, vars}]} — 모두 알림장 틀 하나로 보낸다."""
+    return {NOTICE_KIND: [{"name": name, "vars": notice_vars(m, memo, penalty)} for name, m in items]} if items else {}
 
 
 # ── 공부 기록 · 리그 ────────────────────────────────────
@@ -303,7 +338,8 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
             }, merge=True)
     kakao = None
     if kakao_items and not dry:
-        kakao = {k: H["kakao_message"](k, "student", items) for k, items in group_kakao(kakao_items).items()}
+        kakao = {k: H["kakao_message"](k, "student", items)
+                 for k, items in group_kakao(kakao_items, memo, cfg.get("penalty", "")).items()}
     return {"success": True, "dry": dry, "at": now.strftime("%Y-%m-%d %H:%M"), "quiet": nd.quiet(now),
             "students": len(g["students"]), "attendance_ok": g["attendance"] is not None,
             "marked_from_kiosk": marked, "planned": planned, "kakao": kakao}
@@ -387,9 +423,11 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
     snap = _db().collection(STREAKS).document(_sid(name)).get()
     cur = nd.streak_view((snap.to_dict() or {}) if snap.exists else None, _now().date())["current"]
     m = nd.sample_message(kind, name, _now(), cur or 5)
-    memo = active_memo(load_config(), _now().date())
+    cfg = load_config()
+    memo = active_memo(cfg, _now().date())
+    nv = notice_vars(m, memo, cfg.get("penalty", ""))
     out = {"success": True, "title": m["title"], "body": push_body(m, memo),
-           "kakao_kind": m["kakao_kind"], "kakao_vars": m["kakao_vars"], "push": None, "kakao": None}
+           "kakao_kind": NOTICE_KIND, "kakao_vars": nv, "push": None, "kakao": None}
     if push:
         try:
             out["push"] = int(H["send_push_to_student"](name, m["title"], out["body"], "/", "nudge-test"))
@@ -397,7 +435,7 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
             out["push"] = 0
             out["push_error"] = str(e)
     if kakao:
-        out["kakao"] = H["kakao_message"](m["kakao_kind"], "student", [{"name": name, "vars": m["kakao_vars"]}])
+        out["kakao"] = H["kakao_message"](NOTICE_KIND, "student", [{"name": name, "vars": nv}])
     return out
 
 
@@ -437,7 +475,7 @@ def _clinic_hhmm(t: str) -> str:
 
 
 def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
-    """원장님이 고른 학생에게 '클리닉 안내' 카톡(#{날짜} #{시각}). 학생마다 날짜 · 시간을 따로 정할 수 있다
+    """원장님이 고른 학생에게 클리닉 일정 카톡(알림장 틀). 학생마다 날짜 · 시간을 따로 정할 수 있다
     (클리닉 시간이 학생마다 바뀌므로 등록된 일정에 없는 학생 · 시간도 보낸다). push 면 앱 알림도 같이."""
     names = {x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn")}
     jobs, skipped, seen = [], [], set()
@@ -460,7 +498,14 @@ def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
                      "vars": {"날짜": nd._day_label(d), "시각": _clinic_hhmm(f"{hh}:{mm}")}})
     if not jobs:
         return {"success": False, "detail": "학생 · 날짜 · 시간을 확인해 주세요.", "skipped": skipped}
-    res = H["kakao_message"]("클리닉", "student", [{"name": j["name"], "vars": j["vars"]} for j in jobs])
+    cfg = load_config()
+    penalty = cfg.get("penalty", "")
+    res = H["kakao_message"](NOTICE_KIND, "student", [{"name": j["name"], "vars": {
+        "진도": NOTICE_TOPIC["클리닉"], "과제": NONE,
+        "알림장": notice_text("🩺 클리닉 일정 안내",
+                             f"📅 {j['vars']['날짜']} {j['vars']['시각']}\n"
+                             f"{nd.call_name(j['name'])}, 잊지 말고 시간 맞춰 와! 오면 키오스크에서 '클리닉 등원'을 꼭 눌러 줘.",
+                             "", penalty)}} for j in jobs])
     if not res.get("success"):
         return {"success": False, "detail": res.get("detail") or "보내지 못했습니다.", "skipped": skipped}
     bad = set(res.get("no_phone") or []) | set(res.get("unknown") or [])
@@ -520,6 +565,7 @@ class NudgeConfigReq(BaseModel):
     new_key: bool = False
     memo: Optional[str] = None          # 원장님 한마디(비우면 안 붙는다). None 이면 그대로 둔다
     memo_until: Optional[str] = None    # 이날까지만 붙인다(YYYY-MM-DD, 비우면 지울 때까지)
+    penalty: Optional[str] = None       # 지키지 않으면(불이익): 과제 · 클리닉 카톡(알림장) 끝에 붙는다
 
 
 def register(app, helpers: dict):
@@ -581,6 +627,8 @@ def register(app, helpers: dict):
             data["key"] = secrets.token_urlsafe(18)
         if req.memo is not None:
             data["memo"] = str(req.memo).strip()[:MEMO_MAX]
+        if req.penalty is not None:
+            data["penalty"] = str(req.penalty).strip()[:PENALTY_MAX]
         if req.memo_until is not None:
             mu = str(req.memo_until).strip()[:10]
             data["memo_until"] = mu if nd._d(mu) else ""
