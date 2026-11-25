@@ -8,11 +8,12 @@ DB 없이 계산만 한다(그래서 따로 시험할 수 있다). DB 읽기 · 
    방패는 처음 1개, 7일 연속마다 1개(최대 2개). 7 · 30 · 50 · 100 · 200 · 365일에는 보너스 경험치.
 
 ② 재촉 시간표 (한국 시각)
-   숙제     마감 24시간 전(부드럽게) → 3시간 전 → 1시간 전(단호하게 + 카톡) → 마감 뒤(단호하게 + 카톡)
+   숙제     마감 3일 전부터 매일 17시(카톡 '과제 마감 안내' + 앱 알림) → 3시간 · 1시간 전(앱 알림)
+            → 마감이 지나면 한 번(카톡 '과제 제출 안내' + 앱 알림)   ※ 2026-11-25 원장님 요청
    매일     19:00 → 21:30 → 23:00 (연속 기록이 있는데 오늘 아직 아무것도 안 했을 때) "연속이 1시간 뒤 꺼져요"(+ 카톡)
-   클리닉   시작 2시간 전 → 시작 30분이 지나도 안 오면(+ 카톡)
+   클리닉   시작 2시간 전 → 시작 30분이 지나도 안 오면(둘 다 앱 알림). 클리닉 안내 카톡은 원장님이 눌러서 보낸다
    며칠째   이틀 넘게 아무것도 안 했으면 17:00에 한 번
-   23:30 ~ 08:00 에는 보내지 않는다. 학생 한 명에게 하루 앱 알림 5번 · 카톡 2번까지.
+   23:30 ~ 08:00 에는 보내지 않는다. 학생 한 명에게 하루 앱 알림 5번 · 카톡 4번까지.
 
 ③ 말투: 1단계는 장난스럽게, 2단계는 다그치게, 3단계는 단호하고 건조하게(원장님 요청: 섞어서).
 """
@@ -28,7 +29,10 @@ MILESTONES = {7: 30, 30: 100, 50: 150, 100: 300, 200: 500, 365: 1000}   # 연속
 QUIET_START = (23, 30)   # 이때부터
 QUIET_END = (8, 0)       # 이때까지는 보내지 않는다
 MAX_PUSH_PER_DAY = 5
-MAX_KAKAO_PER_DAY = 2
+MAX_KAKAO_PER_DAY = 4
+HWD_DAYS = 3              # 숙제 마감 3일 전부터 매일 카톡(원장님 요청 2026-11-25)
+HWD_AT = (17, 0)          # 그 안내를 보내는 시각(마감 당일은 마감 3시간 전이 더 이르면 그때)
+CLINIC_BEFORE_H = 2       # 클리닉 시작 몇 시간 전에 안내 카톡
 
 TWO_CHAR_SURNAMES = ("남궁", "황보", "제갈", "선우", "독고", "사공", "서문", "동방")
 
@@ -160,10 +164,10 @@ def _pick(options: List[str], seed: str) -> str:
 
 # 말투 — {who}: '서연아' · {n}: 연속 일수 · {t}: 과제 이름 · {when}: 마감 · {left}: 남은 시간 · {time}: 클리닉 시각
 TEXTS = {
-    "hw24": (1, "📚 숙제 잊지 않았지?", [
-        "{who}, '{t}' 마감은 {when}! 오늘 미리 해 두면 내일이 편해 🙌",
-        "{who}! '{t}' 아직이네? 마감 {when}. 지금 10분만 시작해 보자 ✏️",
-        "국최 선생님이 '{t}' 기다리는 중… {when}까지야 👀",
+    "hwd": (1, "📚 과제 마감 {dleft}", [
+        "{who}, '{t}' 마감은 {when}! 오늘 조금이라도 해 두자 ✏️",
+        "{who}! '{t}' 아직이네? 마감 {when}. 지금 10분만 시작해 보자 🙌",
+        "국최 선생님이 '{t}' 기다리는 중… 마감 {when} 👀",
     ]),
     "hw3": (2, "⏰ 숙제 마감 3시간 전", [
         "{who}, '{t}' 마감까지 {left} 남았어. 지금 시작해야 해!",
@@ -209,9 +213,13 @@ TEXTS = {
 
 # 카톡(알림톡)은 카카오 검수를 받은 '목적별' 템플릿으로만 보낸다(2026-11-25 '학습 안내 + #{내용}' 반려).
 #   숙제 마감 전 → 과제마감 템플릿, 마감 뒤 → 미제출 템플릿 (둘 다 #{과제} #{마감}) · 클리닉 → 클리닉 템플릿 #{날짜} #{시각} · 매일/며칠째 → 학습기록 템플릿 #{일수}
-KAKAO_KIND = {"hw24": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출",
+KAKAO_KIND = {"hwd": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출",
               "cl2h": "클리닉", "cl30": "클리닉", "pr19": "학습기록", "pr2130": "학습기록", "pr23": "학습기록",
               "idle": "학습기록"}
+# 카톡을 언제 보내나: always = 늘(원장님이 정한 안내: 과제 마감 3일 전부터 매일 · 마감 지나면 · 클리닉 전),
+#   never = 앱 알림만(카톡은 위 안내가 맡는다), 나머지 = 단호한 3단계 또는 앱 알림을 안 켠 학생의 2단계부터
+# 클리닉 안내 카톡은 원장님이 재촉 현황에서 눌러서 보낸다(2026-11-25 요청) → 자동은 앱 알림만
+KAKAO_POLICY = {"hwd": "always", "hwlate": "always", "cl2h": "never", "hw3": "never", "hw1": "never", "cl30": "never"}
 
 
 def _kakao_vars(kind: str, ctx: dict, extra: dict) -> dict:
@@ -227,6 +235,7 @@ def _msg(key: str, kind: str, ctx: dict, seed: str, extra: dict) -> dict:
     level, title, options = TEXTS[kind]
     vals = {"who": ctx.get("call") or call_name(ctx.get("name", "")), "n": max(1, int(ctx.get("streak") or 0)), **extra}
     body = _pick(options, seed + key).format(**vals)
+    title = title.format(**vals) if "{" in title else title
     return {"key": key, "kind": kind, "level": level, "title": title, "body": body,
             "kakao_kind": KAKAO_KIND[kind], "kakao_vars": _kakao_vars(kind, ctx, extra)}
 
@@ -239,6 +248,11 @@ def _day_label(d: date) -> str:
     return f"{d.month}월 {d.day}일({WEEKDAYS[d.weekday()]})"
 
 
+def _dleft(d: date, today: date) -> str:
+    n = (d - today).days
+    return "D-day" if n <= 0 else f"D-{n}"
+
+
 def _due(dl: datetime) -> str:
     """카톡 #{마감}: '11월 25일 22시'."""
     return f"{dl.month}월 {dl.day}일 {_hhmm(dl)}"
@@ -246,7 +260,7 @@ def _due(dl: datetime) -> str:
 
 # 원장님 [시험 보내기]용 이름표와 예시 값
 KIND_LABELS = {
-    "hw24": "숙제 마감 하루 전 (부드럽게)", "hw3": "숙제 마감 3시간 전", "hw1": "숙제 마감 1시간 전 (단호하게)",
+    "hwd": "과제 마감 안내 (3일 전부터 매일)", "hw3": "숙제 마감 3시간 전", "hw1": "숙제 마감 1시간 전 (단호하게)",
     "hwlate": "숙제 미제출 (단호하게)", "pr19": "저녁 7시 오늘 공부 (부드럽게)", "pr2130": "밤 9시 반 오늘 공부",
     "pr23": "밤 11시 연속 끊김 경고 (단호하게)", "cl2h": "클리닉 2시간 전", "cl30": "클리닉 미등원 (단호하게)",
     "idle": "이틀 넘게 안 함",
@@ -257,8 +271,8 @@ def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict
     """[시험 보내기]: 그 학생 이름으로 예시 재촉 한 통(시각 · 과제는 예시)."""
     if kind not in TEXTS:
         raise ValueError(kind)
-    dl = (now + timedelta(hours={"hw24": 20, "hw3": 3, "hw1": 1}.get(kind, -10))).replace(second=0, microsecond=0)
-    extra = {"t": "예시 숙제", "when": _when(dl, now), "due": _due(dl), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
+    dl = (now + timedelta(hours={"hwd": 48, "hw3": 3, "hw1": 1}.get(kind, -10))).replace(second=0, microsecond=0)
+    extra = {"t": "예시 숙제", "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), now.date()), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
              "time": "18시", "date": _day_label(now.date())}
     m = _msg("test:" + kind, kind, {"name": name, "streak": streak}, name + now.isoformat(), extra)
     m["title"] = "[시험] " + m["title"]
@@ -289,15 +303,25 @@ def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
             continue
         t = str(hw.get("title") or "숙제")
         left = dl - now
-        extra = {"t": t, "when": _when(dl, now), "due": _due(dl), "left": f"{max(1, int(left.total_seconds() // 3600))}시간"}
+        extra = {"t": t, "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), today),
+                 "left": f"{max(1, int(left.total_seconds() // 3600))}시간"}
+        # 마감 3일 전부터 매일 한 번(17시, 마감 당일은 마감 3시간 전이 더 이르면 그때 · 아침 8시 전에는 안 보냄)
+        days = (dl.date() - today).days
+        before = len(out)
+        if left > timedelta(0) and 0 <= days <= HWD_DAYS:
+            at = datetime.combine(today, datetime.min.time()).replace(hour=HWD_AT[0], minute=HWD_AT[1])
+            if days == 0:
+                at = max(at.replace(hour=8, minute=0), min(at, dl - timedelta(hours=3)))
+            if now >= at:
+                want(f"hwd:{t}", "hwd", extra)
+        if len(out) > before:
+            continue                                   # 같은 때 앱 알림이 겹치지 않게
         if timedelta(0) < left <= timedelta(hours=1):
             want(f"hw1:{t}", "hw1", extra)
         elif timedelta(hours=1) < left <= timedelta(hours=3):
             want(f"hw3:{t}", "hw3", extra)
-        elif timedelta(hours=3) < left <= timedelta(hours=24):
-            want(f"hw24:{t}", "hw24", extra)
         elif timedelta(hours=-36) <= left <= timedelta(0) and now.hour >= 8:
-            want(f"hwlate:{t}", "hwlate", extra)
+            want(f"hwlate:{t}", "hwlate", extra)       # 마감이 지나면 한 번(어제 보냈으면 run_tick 이 sent_keys 로 막는다)
 
     # 클리닉
     cl = ctx.get("clinic") or None
@@ -306,7 +330,7 @@ def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
         if m:
             start = datetime.combine(today, datetime.min.time()).replace(hour=int(m.group(1)), minute=int(m.group(2)))
             extra = {"time": _hhmm(start), "date": _day_label(today)}
-            if start - timedelta(hours=2) <= now < start:
+            if start - timedelta(hours=CLINIC_BEFORE_H) <= now < start:
                 want("cl2h", "cl2h", extra)
             elif start + timedelta(minutes=30) <= now < start + timedelta(hours=3):
                 want("cl30", "cl30", extra)
@@ -331,12 +355,14 @@ def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
 def route(msgs: List[dict], has_push: bool, pushed_today: int, kakao_today: int, kakao_on: bool) -> List[dict]:
     """보낼 길 정하기: 앱 알림은 하루 MAX_PUSH_PER_DAY, 카톡은 3단계(또는 앱 알림이 없는 학생의 2단계 이상)만 하루 MAX_KAKAO_PER_DAY."""
     out = []
-    for m in sorted(msgs, key=lambda x: -x["level"]):
+    for m in sorted(msgs, key=lambda x: (KAKAO_POLICY.get(x.get("kind", "")) != "always", -x["level"])):
         via = []
         if has_push and pushed_today < MAX_PUSH_PER_DAY:
             via.append("push")
             pushed_today += 1
-        if kakao_on and kakao_today < MAX_KAKAO_PER_DAY and (m["level"] >= 3 or (not has_push and m["level"] >= 2)):
+        pol = KAKAO_POLICY.get(m.get("kind", ""), "urgent")
+        wants = pol == "always" or (pol == "urgent" and (m["level"] >= 3 or (not has_push and m["level"] >= 2)))
+        if kakao_on and kakao_today < MAX_KAKAO_PER_DAY and wants:
             via.append("kakao")
             kakao_today += 1
         out.append({**m, "via": via})

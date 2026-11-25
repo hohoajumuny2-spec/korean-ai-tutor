@@ -156,7 +156,7 @@ def gather(now: datetime) -> dict:
         studs.append({"name": d.id, **v})
     since = (now - timedelta(days=21)).strftime("%Y-%m-%d")
     reports = [r.to_dict() or {} for r in db.collection("reports").where("submitted_at", ">=", since).stream()]
-    lo, hi = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=2)).isoformat()
+    lo, hi = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=nd.HWD_DAYS)).isoformat()
     hws = []
     for d in db.collection("homeworks").stream():
         v = d.to_dict() or {}
@@ -174,8 +174,13 @@ def gather(now: datetime) -> dict:
     for d in db.collection(LOG).where("date", "==", ds).stream():
         v = d.to_dict() or {}
         logs[str(v.get("student_name"))] = v
+    # 어제 보낸 '마감 지남' 안내는 오늘 또 보내지 않는다
+    late_sent = {}
+    for d in db.collection(LOG).where("date", "==", (today - timedelta(days=1)).isoformat()).stream():
+        v = d.to_dict() or {}
+        late_sent[str(v.get("student_name"))] = {k for k in (v.get("keys") or []) if str(k).startswith("hwlate:")}
     return {"now": now, "students": studs, "reports": reports, "homeworks": hws, "streaks": streaks,
-            "push_names": push_names, "clinics": clinics, "logs": logs, "attendance": fetch_attendance(today)}
+            "push_names": push_names, "clinics": clinics, "logs": logs, "late_sent": late_sent, "attendance": fetch_attendance(today)}
 
 
 # ── 학생 한 명 상황 만들기 (DB 없이) ─────────────────────
@@ -263,7 +268,8 @@ def run_tick(dry: bool = False, cfg: Optional[dict] = None) -> dict:
         if name in exclude:
             continue
         log = g["logs"].get(name) or {}
-        msgs = nd.due_messages(context_for(g, s, streak), now, set(log.get("keys") or []))
+        msgs = nd.due_messages(context_for(g, s, streak), now,
+                               set(log.get("keys") or []) | g.get("late_sent", {}).get(name, set()))
         if not msgs:
             continue
         routed = nd.route(msgs, name in g["push_names"], int(log.get("push") or 0),
@@ -392,6 +398,74 @@ def send_test(name: str, kind: str, push: bool, kakao: bool) -> dict:
     return out
 
 
+# ── 클리닉 안내 카톡: 원장님이 눌러서 보낸다 ─────────────────
+CLINIC_LOG = "clinic_notice_log"
+
+
+def clinic_rows(day: str) -> List[dict]:
+    """그날 클리닉이 있는 학생(퇴원생 빼고), 시각 순. sent: 그날 안내 카톡을 보낸 시각(안 보냈으면 '')."""
+    d = nd._d(day)
+    if not d:
+        return []
+    db = _db()
+    left = {x.id for x in db.collection("students").stream() if (x.to_dict() or {}).get("withdrawn")}
+    names = {x.id for x in db.collection("students").stream()}
+    times: Dict[str, str] = {}
+    for c in (x.to_dict() or {} for x in db.collection("clinics").stream()):
+        who = str(c.get("student_name") or "").strip()
+        if not who or who in left or who not in names:
+            continue
+        t = clinic_today([c], who, d)
+        if t and (who not in times or t < times[who]):
+            times[who] = t
+    out = []
+    for who, t in sorted(times.items(), key=lambda kv: (kv[1], kv[0])):
+        snap = db.collection(CLINIC_LOG).document(_sid(f"{d.isoformat()}__{who}")).get()
+        out.append({"name": who, "time": t, "sent": ((snap.to_dict() or {}).get("at") or "") if snap.exists else ""})
+    return out
+
+
+def _clinic_hhmm(t: str) -> str:
+    try:
+        hh, mm = str(t).split(":")[:2]
+        return nd._hhmm(datetime(2000, 1, 1, int(hh), int(mm)))
+    except (ValueError, TypeError):
+        return str(t)
+
+
+def send_clinic_notice(day: str, names: List[str]) -> dict:
+    """고른 학생들에게 '클리닉 안내' 카톡(#{날짜} #{시각})을 보낸다. 그날 클리닉이 없는 이름은 건너뛴다."""
+    d = nd._d(day)
+    names = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not d or not names:
+        return {"success": False, "detail": "날짜와 학생을 골라 주세요."}
+    rows = {r["name"]: r for r in clinic_rows(d.isoformat())}
+    items, skipped = [], []
+    for n in dict.fromkeys(names):
+        if n not in rows:
+            skipped.append(n)
+            continue
+        items.append({"name": n, "vars": {"날짜": nd._day_label(d), "시각": _clinic_hhmm(rows[n]["time"])}})
+    if not items:
+        return {"success": False, "detail": "그날 클리닉이 잡힌 학생이 없습니다.", "skipped": skipped}
+    res = H["kakao_message"]("클리닉", "student", items)
+    if not res.get("success"):
+        return {"success": False, "detail": res.get("detail") or "보내지 못했습니다.", "skipped": skipped}
+    bad = set(res.get("no_phone") or []) | set(res.get("unknown") or [])
+    sent = [i["name"] for i in items if i["name"] not in bad]
+    at = _now().strftime("%m/%d %H:%M")
+    for n in sent:
+        _db().collection(CLINIC_LOG).document(_sid(f"{d.isoformat()}__{n}")).set(
+            {"date": d.isoformat(), "student_name": n, "at": at})
+    return {"success": True, "sent": sent, "skipped": skipped,
+            "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or []}
+
+
+class ClinicSendReq(BaseModel):
+    day: str = ""
+    names: list = []
+
+
 class NudgeTestReq(BaseModel):
     student_name: str = ""
     kind: str = "pr19"
@@ -482,6 +556,15 @@ def register(app, helpers: dict):
         return {"success": True, "at": g["now"].strftime("%Y-%m-%d %H:%M"), "attendance_ok": g["attendance"] is not None,
                 "rows": rows, "leagues": leagues(g["students"], w, xp_rows, top=5), "week": w,
                 "config": {k: v for k, v in load_config().items() if k != "key"}}
+
+    @app.get("/api/admin/nudge/clinics", dependencies=[Depends(verify_admin)])
+    def nudge_clinics(day: str = ""):
+        d = nd._d(day) or _now().date()
+        return {"success": True, "day": d.isoformat(), "label": nd._day_label(d), "rows": clinic_rows(d.isoformat())}
+
+    @app.post("/api/admin/nudge/clinic_send", dependencies=[Depends(verify_admin)])
+    def nudge_clinic_send(req: ClinicSendReq):
+        return send_clinic_notice(req.day, req.names)
 
     @app.post("/api/admin/nudge/test", dependencies=[Depends(verify_admin)])
     def nudge_test(req: NudgeTestReq):
