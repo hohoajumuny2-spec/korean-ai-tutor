@@ -3945,6 +3945,10 @@ async def submit_exam(req: ExamSubmitRequest):
     )
     if 허락:
         await asyncio.to_thread(consume_retry_permission, "실시간 모의고사", req.title, req.student_name)
+    # 💡 2026-11-26: 문항 유형(#유형)도 실어 보내 채점 결과에 '이번에 많이 틀린 부분'을 보여 준다
+    ex_meta = await asyncio.to_thread(qmeta_for, "모의고사", req.title)
+    for d in details:
+        d["tag"] = str((ex_meta.get(str(d["no"])) or {}).get("tag", "") or "")
     exam_xp = XP_REWARD_EXAM_BASE + actual_score // 2  # 💡 고득점자가 지나치게 빨리 레벨업하지 않도록 점수 반영 비중을 절반으로 축소
     s_ref = db.collection("students").document(req.student_name)
     s_doc = await asyncio.to_thread(s_ref.get)
