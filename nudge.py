@@ -280,6 +280,18 @@ def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict
     return m
 
 
+def homework_message(name: str, title: str, deadline, now: datetime) -> Optional[dict]:
+    """원장님이 눌러서 보내는 숙제 카톡(2026-11-27): 마감 전이면 '과제 마감 안내', 지났으면 '숙제 미제출' 말투."""
+    dl = parse_deadline(deadline)
+    if not dl:
+        return None
+    t = str(title or "숙제")
+    extra = {"t": t, "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), now.date()),
+             "left": f"{max(1, int((dl - now).total_seconds() // 3600))}시간"}
+    kind = "hwd" if dl > now else "hwlate"
+    return _msg(f"manual:{kind}:{t}", kind, {"name": name}, name + now.isoformat(), extra)
+
+
 def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
     """지금 보낼 재촉(아직 안 보낸 것만). ctx:
         name, call, streak(지금 연속), active_today(bool), last_active(date|None)
