@@ -146,3 +146,15 @@ def summary_line(res: dict, name: str = "") -> str:
     parts = [f"'{x['tag']}'({x['solved']}문항 중 {x['wrong']}개 틀림)" for x in w[:3]]
     who = f"{name} 학생은 " if name else ""
     return f"{who}최근 {', '.join(parts)}에서 약합니다."
+
+
+TREND_LABEL = {"up": "나아지는 중", "down": "요즘 더 틀림", "same": "비슷함", "new": "요즘 새로 틀림"}
+
+
+def student_view(res: dict, top: int = 3) -> dict:
+    """학생 화면(채점 결과)에 보일 만큼만 — 자주 틀리는 유형 몇 개와 정답률 · 흐름."""
+    weak = [{"tag": x["tag"], "solved": x["solved"], "wrong": x["wrong"], "correct_rate": x["correct_rate"],
+             "trend": x["trend"], "trend_label": TREND_LABEL.get(x["trend"], "")}
+            for x in (res.get("weak") or [])[:top]]
+    strong = [{"tag": x["tag"], "solved": x["solved"]} for x in (res.get("strong") or [])[:2]]
+    return {"weak": weak, "strong": strong, "tasks": res.get("tasks", 0)}

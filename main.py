@@ -8871,6 +8871,20 @@ def weakness_students():
     return {"success": True, "classes": [{"name": c, "students": sorted(by_class[c])} for c in order]}
 
 
+def _weakness_of(name: str):
+    """그 학생의 채점 기록 전체로 약점 분석(weakness.analyze) — 원장님 화면 · 학생 채점 결과가 함께 쓴다."""
+    import weakness
+    rows = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream()]
+    cache = {}
+
+    def meta_for(kind, title):
+        if (kind, title) not in cache:
+            cache[(kind, title)] = qmeta_for(kind, title)
+        return cache[(kind, title)]
+
+    return weakness.analyze(rows, meta_for, now_kst().date())
+
+
 @app.get("/api/admin/weakness/student", dependencies=[Depends(verify_admin)])
 def weakness_student(student_name: str = ""):
     import weakness
@@ -8880,18 +8894,26 @@ def weakness_student(student_name: str = ""):
     if not name:
         return {"success": False, "detail": "학생을 골라 주세요."}
     try:
-        rows = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream()]
+        res = _weakness_of(name)
     except Exception as e:
         return {"success": False, "detail": f"기록을 읽지 못했습니다: {e}"}
-    cache = {}
-
-    def meta_for(kind, title):
-        if (kind, title) not in cache:
-            cache[(kind, title)] = qmeta_for(kind, title)
-        return cache[(kind, title)]
-
-    res = weakness.analyze(rows, meta_for, now_kst().date())
     return {"success": True, "student": name, **res, "summary": weakness.summary_line(res, name)}
+
+
+# 💡 2026-11-26: 학생도 채점 결과 화면에서 '요즘 내가 자주 틀리는 부분'을 본다(유형 · 정답률 · 흐름만)
+@app.get("/api/student/weakness")
+def student_weakness(student_name: str = ""):
+    import weakness
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생 정보가 없습니다."}
+    try:
+        res = _weakness_of(name)
+    except Exception as e:
+        return {"success": False, "detail": f"기록을 읽지 못했습니다: {e}"}
+    return {"success": True, **weakness.student_view(res)}
 
 
 @app.get("/api/admin/unsure_report", dependencies=[Depends(verify_admin)])
