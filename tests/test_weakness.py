@@ -65,6 +65,14 @@ class WeaknessTests(unittest.TestCase):
         self.assertIn("'추론'(5문항 중 3개 틀림)", wk.summary_line(self.r, "박서연"))
         self.assertIn("없습니다", wk.summary_line(wk.analyze([], meta_for, TODAY), "김지수"))
 
+    def test_student_view_keeps_only_what_students_see(self):
+        v = wk.student_view(self.r)
+        self.assertEqual(v["weak"][0]["tag"], "추론")
+        self.assertEqual(v["weak"][0]["trend_label"], "요즘 더 틀림")
+        self.assertEqual(set(v["weak"][0]), {"tag", "solved", "wrong", "correct_rate", "trend", "trend_label"})   # 틀린 이유 · 예시는 안 보냄
+        self.assertLessEqual(len(v["weak"]), 3)
+        self.assertEqual(v["tasks"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()
