@@ -8854,6 +8854,46 @@ async def grade_for_student(req: GradeForStudentReq):
     return res
 
 
+# ── 학생별 약점 분석 (2026-11-26) ── 채점 기록 + 문항 유형 → 약한 유형 · 정답률 · 틀린 이유 · 흐름 (계산은 weakness.py)
+@app.get("/api/admin/weakness/students", dependencies=[Depends(verify_admin)])
+def weakness_students():
+    """약점 분석에서 고를 학생 목록(반별)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    by_class = {}
+    for d in db.collection("students").stream():
+        v = d.to_dict() or {}
+        if is_withdrawn(v) or is_preview(d.id):
+            continue
+        for c in (targeting_info_from(v).get("all_classes") or ["반 없음"]):
+            by_class.setdefault(c, []).append(d.id)
+    order = sorted(by_class, key=lambda c: (c == "반 없음", c))
+    return {"success": True, "classes": [{"name": c, "students": sorted(by_class[c])} for c in order]}
+
+
+@app.get("/api/admin/weakness/student", dependencies=[Depends(verify_admin)])
+def weakness_student(student_name: str = ""):
+    import weakness
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    name = urllib.parse.unquote(student_name or "").strip()
+    if not name:
+        return {"success": False, "detail": "학생을 골라 주세요."}
+    try:
+        rows = [r.to_dict() or {} for r in db.collection("reports").where("student_name", "==", name).limit(1500).stream()]
+    except Exception as e:
+        return {"success": False, "detail": f"기록을 읽지 못했습니다: {e}"}
+    cache = {}
+
+    def meta_for(kind, title):
+        if (kind, title) not in cache:
+            cache[(kind, title)] = qmeta_for(kind, title)
+        return cache[(kind, title)]
+
+    res = weakness.analyze(rows, meta_for, now_kst().date())
+    return {"success": True, "student": name, **res, "summary": weakness.summary_line(res, name)}
+
+
 @app.get("/api/admin/unsure_report", dependencies=[Depends(verify_admin)])
 def unsure_report(student_name: str = "", subject: str = "", limit: int = 60):
     """학생들이 '모르겠다'고 눌러둔 문항을 모아 준다.
