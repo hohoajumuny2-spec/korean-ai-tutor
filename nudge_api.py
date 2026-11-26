@@ -81,7 +81,7 @@ def push_body(m: dict, memo: str) -> str:
 #      알림장 틀: #{학생} #{날짜} · ■ 오늘 수업 진도 #{진도} · ■ 다음 수업까지 과제 #{과제} · ■ … 기록 #{알림장}
 #      → 진도 칸에 말머리, 과제 칸에 과제와 마감, 알림장 칸에 재촉 글(+ 원장님 한마디 · 불이익).
 NOTICE_KIND = "알림장"
-NOTICE_TOPIC = {"과제마감": "과제 마감 안내", "미제출": "과제 미제출 안내", "클리닉": "클리닉 일정 안내",
+NOTICE_TOPIC = {"과제마감": "과제 마감 안내", "미제출": "과제 미제출 안내", "과제안내": "과제 제출 안내", "클리닉": "클리닉 일정 안내",
                 "학습기록": "오늘의 학습 기록 안내"}
 NONE = "별도 안내 없음"
 PENALTY_MAX = 300
@@ -108,10 +108,12 @@ def notice_vars(m: dict, memo: str = "", penalty: str = "") -> dict:
     k, v = m["kakao_kind"], m.get("kakao_vars") or {}
     if k in ("과제마감", "미제출"):
         hw = f"{v.get('과제', '')} ({v.get('마감', '')} 마감)".strip()
+    elif k == "과제안내":
+        hw = str(v.get("과제", "")).strip()
     else:
         hw = NONE
     return {"진도": NOTICE_TOPIC.get(k, "학습 안내"), "과제": hw or NONE,
-            "알림장": notice_text(m["title"], m["body"], memo, penalty if k in ("과제마감", "미제출", "클리닉") else "")}
+            "알림장": notice_text(m["title"], m["body"], memo, penalty if k in ("과제마감", "미제출", "과제안내", "클리닉") else "")}
 
 
 def group_kakao(items: List[tuple], memo: str = "", penalty: str = "") -> Dict[str, List[dict]]:
@@ -534,21 +536,28 @@ def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
 # ── 숙제 카톡: 원장님이 과제를 골라 안 낸 학생에게 눌러서 보낸다 (2026-11-27) ──
 HW_LOG = "hw_notice_log"
 HW_RANGE_BEFORE, HW_RANGE_AFTER = 14, 21      # 마감이 2주 전 ~ 3주 뒤인 과제
+HW_NODL_DAYS = 30                             # 마감일 없는 과제는 30일 안에 낸 것만
 
 
 def homework_rows(now: Optional[datetime] = None) -> List[dict]:
-    """마감이 있는 최근 과제와 학생별 제출 여부 · 오늘 보낸 시각(마감 가까운 순)."""
+    """최근 과제와 학생별 제출 여부 · 오늘 보낸 시각.
+    순서: 마감 전(가까운 순) → 마감일 없음(최근에 낸 순) → 마감 지남(최근에 지난 순)."""
     now = now or _now()
     today = now.date()
     db = _db()
     lo, hi = (today - timedelta(days=HW_RANGE_BEFORE)).isoformat(), (today + timedelta(days=HW_RANGE_AFTER)).isoformat()
+    since = (today - timedelta(days=HW_NODL_DAYS)).isoformat()
     hws = []
     for d in db.collection("homeworks").stream():
         v = d.to_dict() or {}
-        dl = str(v.get("deadline") or "").strip()
-        if v.get("hidden") or not dl or not (lo <= dl[:10] <= hi) or not nd.parse_deadline(dl):
+        if v.get("hidden"):
             continue
-        hws.append({"title": d.id, **v})
+        dl = str(v.get("deadline") or "").strip()
+        if nd.parse_deadline(dl):
+            if lo <= dl[:10] <= hi:
+                hws.append({"title": d.id, **v})
+        elif str(v.get("created_at") or "")[:10] >= since:
+            hws.append({"title": d.id, **v})
     if not hws:
         return []
     studs = []
@@ -562,7 +571,7 @@ def homework_rows(now: Optional[datetime] = None) -> List[dict]:
         v = d.to_dict() or {}
         sent[(str(v.get("title")), str(v.get("student_name")))] = str(v.get("at") or "")
     out = []
-    for hw in sorted(hws, key=lambda h: str(h.get("deadline"))):
+    for hw in hws:
         t = hw["title"]
         done = {str(r.get("student_name", "")).strip() for r in
                 (x.to_dict() or {} for x in db.collection("reports").where("task_name", "==", t).stream())
@@ -577,9 +586,16 @@ def homework_rows(now: Optional[datetime] = None) -> List[dict]:
             continue
         dl = nd.parse_deadline(hw.get("deadline"))
         rows.sort(key=lambda r: (r["submitted"], r["class_name"] or "~", r["name"]))
-        out.append({"title": t, "deadline": str(hw.get("deadline")), "kind": "clinic" if hw.get("kind") == "clinic" else "class",
-                    "passed": dl <= now, "dleft": nd._dleft(dl.date(), today), "due": nd._due(dl),
+        status = "none" if not dl else ("passed" if dl <= now else "open")
+        out.append({"title": t, "deadline": str(hw.get("deadline") or ""), "kind": "clinic" if hw.get("kind") == "clinic" else "class",
+                    "status": status, "passed": status == "passed",
+                    "dleft": nd._dleft(dl.date(), today) if dl else "", "due": nd._due(dl) if dl else "",
+                    "created": str(hw.get("created_at") or "")[:10],
                     "missing": sum(not r["submitted"] for r in rows), "total": len(rows), "students": rows})
+    order = {"open": 0, "none": 1, "passed": 2}
+    out.sort(key=lambda h: str(h["deadline"]) if h["status"] == "open" else "")
+    out.sort(key=lambda h: h["created"] if h["status"] == "none" else (str(h["deadline"]) if h["status"] == "passed" else ""), reverse=True)
+    out.sort(key=lambda h: order[h["status"]])
     return out
 
 
@@ -591,8 +607,6 @@ def send_homework_notice(title: str, names: List[str], push: bool = False) -> di
         return {"success": False, "detail": "그 과제를 찾지 못했습니다."}
     hw = snap.to_dict() or {}
     now = _now()
-    if not nd.parse_deadline(hw.get("deadline")):
-        return {"success": False, "detail": "이 과제에는 마감일이 없습니다. 학생 앱에서 마감일을 넣어 주세요."}
     alive = {x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn")}
     picked, skipped = [], []
     for n in dict.fromkeys(str(x or "").strip() for x in (names or [])):
@@ -623,7 +637,7 @@ def send_homework_notice(title: str, names: List[str], push: bool = False) -> di
     any_m = next(iter(msgs.values()))
     return {"success": True, "sent": sent, "kakao_sent": [n for n in picked if n not in bad], "pushed": pushed,
             "skipped": skipped, "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or [],
-            "kind": "미제출" if any_m["kind"] == "hwlate" else "과제마감", "at": at}
+            "kind": {"hwlate": "미제출", "hwn": "과제안내"}.get(any_m["kind"], "과제마감"), "at": at}
 
 
 def student_classes() -> dict:
