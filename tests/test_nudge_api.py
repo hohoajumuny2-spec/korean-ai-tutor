@@ -372,3 +372,35 @@ class HomeworkNoticeTests(unittest.TestCase):
         self.assertIn("📚 과제 제출 안내", v["알림장"])
         self.assertIn("'마감 없음'", v["알림장"])
         self.assertIn("[ 지키지 않으면 ]", v["알림장"])
+
+
+class HomeworkBundleTests(unittest.TestCase):
+    """2026-11-27: 숙제 여러 개를 골라 보내면 학생마다 안 낸 것만 모아 카톡 한 통."""
+
+    def setUp(self):
+        self.db, self.sent = setup()
+        HomeworkNoticeTests.seed(None, self.db)
+
+    def test_each_student_gets_one_message_with_only_missing_homework(self):
+        r = na.send_homework_notice(["독서 3회", "문법 1", "마감 없음"], ["김지수", "박서연"])
+        self.assertTrue(r["success"])
+        self.assertEqual(len(self.sent["kakao"]), 2)                                   # 학생마다 한 통
+        by = {k["name"]: k["vars"] for k in self.sent["kakao"]}
+        self.assertEqual(by["김지수"]["과제"], "독서 3회 · 문법 1 · 마감 없음")
+        self.assertIn("- 독서 3회 (11월 26일 22시 마감)\n- 문법 1 (마감 지남)\n- 마감 없음", by["김지수"]["알림장"])
+        self.assertIn("아직 안 낸 숙제 3개", by["김지수"]["알림장"])
+        self.assertEqual(by["박서연"]["과제"], "문법 1 · 마감 없음")                        # 낸 '독서 3회'는 빠짐
+        self.assertEqual(by["박서연"]["진도"], "과제 제출 안내")
+        self.assertEqual(r["sent_titles"]["박서연"], ["문법 1", "마감 없음"])
+        logs = self.db.collection("hw_notice_log").rows
+        self.assertEqual(len(logs), 5)                                                 # 학생 × 안 낸 숙제마다 보낸 표시
+
+    def test_single_missing_falls_back_to_that_homework_wording(self):
+        na.send_homework_notice(["독서 3회", "문법 1"], ["박서연"])
+        self.assertEqual(self.sent["kakao"][0]["vars"]["진도"], "과제 미제출 안내")       # 문법 1 하나만 안 냄
+
+    def test_student_who_submitted_everything_is_skipped(self):
+        r = na.send_homework_notice(["독서 3회"], ["박서연"])
+        self.assertFalse(r["success"])
+        self.assertEqual(r["done"], ["박서연"])
+        self.assertEqual(self.sent["kakao"], [])

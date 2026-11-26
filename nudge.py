@@ -184,6 +184,11 @@ TEXTS = {
         "{who}, '{t}' 아직 안 냈어! 늦지 않게 꼭 내자 ✏️",
         "{who}! 선생님이 '{t}' 기다리는 중이야. 오늘 해서 내 보자 🙌",
     ]),
+    # 원장님이 숙제 여러 개를 골라 보낼 때 — 안 낸 숙제를 한 통에 모아서(2026-11-27)
+    "hwm": (2, "📚 아직 안 낸 숙제 {k}개", [
+        "{who}, 아직 안 낸 숙제가 있어!\n{list}\n오늘 하나씩 끝내서 내자 ✏️",
+        "{who}! 선생님이 기다리는 숙제가 {k}개야.\n{list}\n미루지 말고 오늘 시작하자 🙌",
+    ]),
     "hwlate": (3, "❗ 숙제 미제출", [
         "'{t}' 마감({when})이 지났습니다. 아직 제출하지 않았습니다. 오늘 안에 제출하세요.",
         "{who}, '{t}' 미제출 상태입니다. 늦어도 오늘 꼭 내세요.",
@@ -219,7 +224,7 @@ TEXTS = {
 
 # 카톡(알림톡)은 카카오 검수를 받은 '목적별' 템플릿으로만 보낸다(2026-11-25 '학습 안내 + #{내용}' 반려).
 #   숙제 마감 전 → 과제마감 템플릿, 마감 뒤 → 미제출 템플릿 (둘 다 #{과제} #{마감}) · 클리닉 → 클리닉 템플릿 #{날짜} #{시각} · 매일/며칠째 → 학습기록 템플릿 #{일수}
-KAKAO_KIND = {"hwd": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출", "hwn": "과제안내",
+KAKAO_KIND = {"hwd": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출", "hwn": "과제안내", "hwm": "과제안내",
               "cl2h": "클리닉", "cl30": "클리닉", "pr19": "학습기록", "pr2130": "학습기록", "pr23": "학습기록",
               "idle": "학습기록"}
 # 카톡을 언제 보내나: always = 늘(원장님이 정한 안내: 과제 마감 3일 전부터 매일 · 마감 지나면 · 클리닉 전),
@@ -278,7 +283,7 @@ def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict
     if kind not in TEXTS:
         raise ValueError(kind)
     dl = (now + timedelta(hours={"hwd": 48, "hw3": 3, "hw1": 1}.get(kind, -10))).replace(second=0, microsecond=0)
-    extra = {"t": "예시 숙제", "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), now.date()), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
+    extra = {"t": "예시 숙제", "k": 1, "list": f"- 예시 숙제 ({_due(dl)} 마감)", "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), now.date()), "left": f"{ {'hw3': 3, 'hw1': 1}.get(kind, 20)}시간",
              "time": "18시", "date": _day_label(now.date())}
     m = _msg("test:" + kind, kind, {"name": name, "streak": streak}, name + now.isoformat(), extra)
     m["title"] = "[시험] " + m["title"]
@@ -296,6 +301,24 @@ def homework_message(name: str, title: str, deadline, now: datetime) -> Optional
              "left": f"{max(1, int((dl - now).total_seconds() // 3600))}시간"}
     kind = "hwd" if dl > now else "hwlate"
     return _msg(f"manual:{kind}:{t}", kind, {"name": name}, name + now.isoformat(), extra)
+
+
+def homework_line(title: str, deadline, now: datetime) -> str:
+    """숙제 여러 개 카톡의 한 줄: '- 독서 3회 (11월 28일 22시 마감)' · '- 문법 1 (마감 지남)' · '- 복습지'."""
+    dl = parse_deadline(deadline)
+    if not dl:
+        return f"- {title}"
+    return f"- {title} ({'마감 지남' if dl <= now else _due(dl) + ' 마감'})"
+
+
+def homework_bundle_message(name: str, items: List[tuple], now: datetime) -> dict:
+    """안 낸 숙제 [(제목, 마감)] 를 한 통으로. 하나뿐이면 그 숙제 하나짜리 말투(homework_message)."""
+    if len(items) == 1:
+        return homework_message(name, items[0][0], items[0][1], now)
+    titles = [str(t) for t, _ in items]
+    extra = {"k": len(items), "list": "\n".join(homework_line(t, d, now) for t, d in items),
+             "t": " · ".join(titles), "due": ""}
+    return _msg("manual:hwm:" + "|".join(titles), "hwm", {"name": name}, name + now.isoformat(), extra)
 
 
 def due_messages(ctx: dict, now: datetime, sent_keys: set) -> List[dict]:
