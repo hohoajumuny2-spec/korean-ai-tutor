@@ -226,7 +226,7 @@ class TickTests(unittest.TestCase):
         self.assertEqual(na.nd.sample_message("hw1", "김지수", NOW[0])["kakao_kind"], "과제마감")
         for k in na.nd.TEXTS:                                                     # 모든 종류에 템플릿 · 빈칸이 있다
             m = na.nd.sample_message(k, "김지수", NOW[0])
-            self.assertIn(m["kakao_kind"], ("과제마감", "미제출", "클리닉", "학습기록"))
+            self.assertIn(m["kakao_kind"], ("과제마감", "미제출", "과제안내", "클리닉", "학습기록"))
             self.assertTrue(all(str(v) for v in m["kakao_vars"].values()))
 
     def test_late_notice_goes_once_even_across_days(self):
@@ -312,7 +312,9 @@ class HomeworkNoticeTests(unittest.TestCase):
         hw = db.collection("homeworks")
         hw.rows["독서 3회"] = {"deadline": "2026-11-26T22:00"}
         hw.rows["문법 1"] = {"deadline": "2026-11-23 18:00", "kind": "clinic"}
-        hw.rows["마감 없음"] = {}
+        hw.rows["마감 없음"] = {"created_at": "2026-11-20 10:00:00"}
+        hw.rows["옛날 마감 없음"] = {"created_at": "2026-09-01 10:00:00"}
+        hw.rows["문법 0"] = {"deadline": "2026-11-20 18:00"}
         hw.rows["숨김"] = {"deadline": "2026-11-25", "hidden": True}
         hw.rows["오래된 것"] = {"deadline": "2026-09-01"}
         db.collection("reports").rows["r1"] = {"type": "과제 제출", "task_name": "독서 3회", "student_name": "박서연"}
@@ -321,12 +323,15 @@ class HomeworkNoticeTests(unittest.TestCase):
         db, _ = setup()
         self.seed(db)
         rows = na.homework_rows(NOW[0])
-        self.assertEqual([r["title"] for r in rows], ["문법 1", "독서 3회"])            # 마감 가까운(지난) 순
-        hw = rows[1]
+        # 마감 전 → 마감일 없음(30일 안에 낸 것) → 마감 지남(최근에 지난 순)
+        self.assertEqual([(r["title"], r["status"]) for r in rows],
+                         [("독서 3회", "open"), ("마감 없음", "none"), ("문법 1", "passed"), ("문법 0", "passed")])
+        hw = rows[0]
         self.assertEqual((hw["passed"], hw["dleft"], hw["missing"], hw["total"]), (False, "D-2", 1, 2))
         self.assertEqual([(s["name"], s["submitted"]) for s in hw["students"]], [("김지수", False), ("박서연", True)])
-        self.assertTrue(rows[0]["passed"])
-        self.assertEqual(rows[0]["kind"], "clinic")
+        self.assertEqual((rows[1]["dleft"], rows[1]["due"]), ("", ""))
+        self.assertTrue(rows[2]["passed"])
+        self.assertEqual(rows[2]["kind"], "clinic")
 
     def test_send_before_deadline_uses_due_notice_and_logs(self):
         db, sent = setup()
@@ -339,7 +344,7 @@ class HomeworkNoticeTests(unittest.TestCase):
         self.assertEqual((sent["kakao"][0]["kind"], v["진도"], v["과제"]), ("알림장", "과제 마감 안내", "독서 3회 (11월 26일 22시 마감)"))
         self.assertIn("[ 지키지 않으면 ]\n- 숙제 미제출 시 남아서 끝내고 귀가", v["알림장"])
         self.assertEqual(sent["push"][0][1], "📚 과제 마감 D-2")
-        self.assertEqual(na.homework_rows(NOW[0])[1]["students"][0]["sent"], "19:10")      # 보낸 표시
+        self.assertEqual(na.homework_rows(NOW[0])[0]["students"][0]["sent"], "19:10")      # 보낸 표시
 
     def test_send_after_deadline_uses_missing_notice(self):
         db, sent = setup()
@@ -349,10 +354,21 @@ class HomeworkNoticeTests(unittest.TestCase):
         self.assertEqual(sent["kakao"][0]["vars"]["진도"], "과제 미제출 안내")
         self.assertEqual(sent["push"], [])
 
-    def test_send_refuses_unknown_or_undated_homework(self):
+    def test_send_refuses_unknown_homework_or_no_students(self):
         db, sent = setup()
         self.seed(db)
         self.assertFalse(na.send_homework_notice("없는 과제", ["박서연"])["success"])
-        self.assertIn("마감일", na.send_homework_notice("마감 없음", ["박서연"])["detail"])
         self.assertFalse(na.send_homework_notice("독서 3회", [])["success"])
         self.assertEqual(sent["kakao"], [])
+
+    def test_send_homework_without_deadline(self):
+        db, sent = setup()
+        self.seed(db)
+        db.collection("settings").rows["nudge_config"] = {"penalty": "2회 이상 반복되면 학부모 상담"}
+        r = na.send_homework_notice("마감 없음", ["김지수"])
+        self.assertEqual((r["success"], r["kind"]), (True, "과제안내"))
+        v = sent["kakao"][0]["vars"]
+        self.assertEqual((v["진도"], v["과제"]), ("과제 제출 안내", "마감 없음"))
+        self.assertIn("📚 과제 제출 안내", v["알림장"])
+        self.assertIn("'마감 없음'", v["알림장"])
+        self.assertIn("[ 지키지 않으면 ]", v["알림장"])

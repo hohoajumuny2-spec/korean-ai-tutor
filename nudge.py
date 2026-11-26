@@ -179,6 +179,11 @@ TEXTS = {
         "'{t}' 마감 1시간 전입니다. 아직 제출하지 않았습니다.",
         "{who}, '{t}' 미제출. 마감 {when}. 지금 바로 제출하세요.",
     ]),
+    # 마감일이 없는 과제를 원장님이 눌러서 보낼 때(2026-11-27)
+    "hwn": (2, "📚 과제 제출 안내", [
+        "{who}, '{t}' 아직 안 냈어! 늦지 않게 꼭 내자 ✏️",
+        "{who}! 선생님이 '{t}' 기다리는 중이야. 오늘 해서 내 보자 🙌",
+    ]),
     "hwlate": (3, "❗ 숙제 미제출", [
         "'{t}' 마감({when})이 지났습니다. 아직 제출하지 않았습니다. 오늘 안에 제출하세요.",
         "{who}, '{t}' 미제출 상태입니다. 늦어도 오늘 꼭 내세요.",
@@ -214,7 +219,7 @@ TEXTS = {
 
 # 카톡(알림톡)은 카카오 검수를 받은 '목적별' 템플릿으로만 보낸다(2026-11-25 '학습 안내 + #{내용}' 반려).
 #   숙제 마감 전 → 과제마감 템플릿, 마감 뒤 → 미제출 템플릿 (둘 다 #{과제} #{마감}) · 클리닉 → 클리닉 템플릿 #{날짜} #{시각} · 매일/며칠째 → 학습기록 템플릿 #{일수}
-KAKAO_KIND = {"hwd": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출",
+KAKAO_KIND = {"hwd": "과제마감", "hw3": "과제마감", "hw1": "과제마감", "hwlate": "미제출", "hwn": "과제안내",
               "cl2h": "클리닉", "cl30": "클리닉", "pr19": "학습기록", "pr2130": "학습기록", "pr23": "학습기록",
               "idle": "학습기록"}
 # 카톡을 언제 보내나: always = 늘(원장님이 정한 안내: 과제 마감 3일 전부터 매일 · 마감 지나면 · 클리닉 전),
@@ -225,7 +230,7 @@ KAKAO_POLICY = {"hwd": "always", "hwlate": "always", "cl2h": "never", "hw3": "ne
 
 def _kakao_vars(kind: str, ctx: dict, extra: dict) -> dict:
     k = KAKAO_KIND[kind]
-    if k in ("미제출", "과제마감"):
+    if k in ("미제출", "과제마감", "과제안내"):
         return {"과제": str(extra.get("t", "")), "마감": str(extra.get("due", ""))}
     if k == "클리닉":
         return {"날짜": str(extra.get("date", "")), "시각": str(extra.get("time", ""))}
@@ -281,11 +286,12 @@ def sample_message(kind: str, name: str, now: datetime, streak: int = 5) -> dict
 
 
 def homework_message(name: str, title: str, deadline, now: datetime) -> Optional[dict]:
-    """원장님이 눌러서 보내는 숙제 카톡(2026-11-27): 마감 전이면 '과제 마감 안내', 지났으면 '숙제 미제출' 말투."""
+    """원장님이 눌러서 보내는 숙제 카톡(2026-11-27): 마감 전이면 '과제 마감 안내', 지났으면 '숙제 미제출',
+    마감일이 없으면 '과제 제출 안내' 말투."""
     dl = parse_deadline(deadline)
-    if not dl:
-        return None
     t = str(title or "숙제")
+    if not dl:
+        return _msg(f"manual:hwn:{t}", "hwn", {"name": name}, name + now.isoformat(), {"t": t, "due": ""})
     extra = {"t": t, "when": _when(dl, now), "due": _due(dl), "dleft": _dleft(dl.date(), now.date()),
              "left": f"{max(1, int((dl - now).total_seconds() // 3600))}시간"}
     kind = "hwd" if dl > now else "hwlate"
