@@ -531,6 +531,101 @@ def send_clinic_notice(items: List[dict], push: bool = False) -> dict:
             "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or []}
 
 
+# ── 숙제 카톡: 원장님이 과제를 골라 안 낸 학생에게 눌러서 보낸다 (2026-11-27) ──
+HW_LOG = "hw_notice_log"
+HW_RANGE_BEFORE, HW_RANGE_AFTER = 14, 21      # 마감이 2주 전 ~ 3주 뒤인 과제
+
+
+def homework_rows(now: Optional[datetime] = None) -> List[dict]:
+    """마감이 있는 최근 과제와 학생별 제출 여부 · 오늘 보낸 시각(마감 가까운 순)."""
+    now = now or _now()
+    today = now.date()
+    db = _db()
+    lo, hi = (today - timedelta(days=HW_RANGE_BEFORE)).isoformat(), (today + timedelta(days=HW_RANGE_AFTER)).isoformat()
+    hws = []
+    for d in db.collection("homeworks").stream():
+        v = d.to_dict() or {}
+        dl = str(v.get("deadline") or "").strip()
+        if v.get("hidden") or not dl or not (lo <= dl[:10] <= hi) or not nd.parse_deadline(dl):
+            continue
+        hws.append({"title": d.id, **v})
+    if not hws:
+        return []
+    studs = []
+    for d in db.collection("students").stream():
+        v = d.to_dict() or {}
+        if v.get("withdrawn") or H["is_preview"](d.id):
+            continue
+        studs.append({"name": d.id, **v})
+    sent = {}
+    for d in db.collection(HW_LOG).where("date", "==", today.isoformat()).stream():
+        v = d.to_dict() or {}
+        sent[(str(v.get("title")), str(v.get("student_name")))] = str(v.get("at") or "")
+    out = []
+    for hw in sorted(hws, key=lambda h: str(h.get("deadline"))):
+        t = hw["title"]
+        done = {str(r.get("student_name", "")).strip() for r in
+                (x.to_dict() or {} for x in db.collection("reports").where("task_name", "==", t).stream())
+                if r.get("type") == "과제 제출"}
+        rows = []
+        for s in studs:
+            if not H["homework_visible_to_student"](hw, s["name"], info=H["targeting_info_from"](s)):
+                continue
+            rows.append({"name": s["name"], "class_name": class_of(s), "submitted": s["name"] in done,
+                         "sent": sent.get((t, s["name"]), "")})
+        if not rows:
+            continue
+        dl = nd.parse_deadline(hw.get("deadline"))
+        rows.sort(key=lambda r: (r["submitted"], r["class_name"] or "~", r["name"]))
+        out.append({"title": t, "deadline": str(hw.get("deadline")), "kind": "clinic" if hw.get("kind") == "clinic" else "class",
+                    "passed": dl <= now, "dleft": nd._dleft(dl.date(), today), "due": nd._due(dl),
+                    "missing": sum(not r["submitted"] for r in rows), "total": len(rows), "students": rows})
+    return out
+
+
+def send_homework_notice(title: str, names: List[str], push: bool = False) -> dict:
+    """고른 학생에게 숙제 카톡(알림장 틀). 마감 전이면 '과제 마감 안내', 지났으면 '과제 미제출 안내'."""
+    title = str(title or "").strip()
+    snap = _db().collection("homeworks").document(H["sanitize_doc_id"](title)).get() if title else None
+    if not snap or not snap.exists:
+        return {"success": False, "detail": "그 과제를 찾지 못했습니다."}
+    hw = snap.to_dict() or {}
+    now = _now()
+    if not nd.parse_deadline(hw.get("deadline")):
+        return {"success": False, "detail": "이 과제에는 마감일이 없습니다. 학생 앱에서 마감일을 넣어 주세요."}
+    alive = {x.id for x in _db().collection("students").stream() if not (x.to_dict() or {}).get("withdrawn")}
+    picked, skipped = [], []
+    for n in dict.fromkeys(str(x or "").strip() for x in (names or [])):
+        if n:
+            (picked if n in alive else skipped).append(n)
+    if not picked:
+        return {"success": False, "detail": "보낼 학생을 골라 주세요.", "skipped": skipped}
+    cfg = load_config()
+    memo, penalty = active_memo(cfg, now.date()), cfg.get("penalty", "")
+    msgs = {n: nd.homework_message(n, title, hw.get("deadline"), now) for n in picked}
+    res = H["kakao_message"](NOTICE_KIND, "student", [{"name": n, "vars": notice_vars(m, memo, penalty)} for n, m in msgs.items()])
+    if not res.get("success"):
+        return {"success": False, "detail": res.get("detail") or "보내지 못했습니다.", "skipped": skipped}
+    bad = set(res.get("no_phone") or []) | set(res.get("unknown") or [])
+    pushed = []
+    if push:
+        for n, m in msgs.items():
+            try:
+                if H["send_push_to_student"](n, m["title"], push_body(m, memo), "/", "hw-" + m["key"]):
+                    pushed.append(n)
+            except Exception as e:
+                print("[숙제 카톡] 앱 알림 실패:", repr(e))
+    at = now.strftime("%H:%M")
+    sent = [n for n in picked if n not in bad or n in pushed]
+    for n in sent:
+        _db().collection(HW_LOG).document(_sid(f"{now.date().isoformat()}__{title}__{n}")).set(
+            {"date": now.date().isoformat(), "title": title, "student_name": n, "at": at})
+    any_m = next(iter(msgs.values()))
+    return {"success": True, "sent": sent, "kakao_sent": [n for n in picked if n not in bad], "pushed": pushed,
+            "skipped": skipped, "no_phone": res.get("no_phone") or [], "unknown": res.get("unknown") or [],
+            "kind": "미제출" if any_m["kind"] == "hwlate" else "과제마감", "at": at}
+
+
 def student_classes() -> dict:
     """클리닉 안내에서 학생을 반별로 찾게: students(이름 목록) + classes([{name, students}], 반 이름순, '반 없음'은 맨 뒤)."""
     names, by_class = [], {}
@@ -548,6 +643,12 @@ def student_classes() -> dict:
 
 class ClinicSendReq(BaseModel):
     items: list = []          # [{name, date: 'YYYY-MM-DD', time: 'HH:MM'}]
+    push: bool = False
+
+
+class HomeworkSendReq(BaseModel):
+    title: str = ""
+    names: list = []
     push: bool = False
 
 
@@ -654,6 +755,14 @@ def register(app, helpers: dict):
     @app.post("/api/admin/nudge/clinic_send", dependencies=[Depends(verify_admin)])
     def nudge_clinic_send(req: ClinicSendReq):
         return send_clinic_notice(req.items, bool(req.push))
+
+    @app.get("/api/admin/nudge/homeworks", dependencies=[Depends(verify_admin)])
+    def nudge_homeworks():
+        return {"success": True, "homeworks": homework_rows()}
+
+    @app.post("/api/admin/nudge/homework_send", dependencies=[Depends(verify_admin)])
+    def nudge_homework_send(req: HomeworkSendReq):
+        return send_homework_notice(req.title, req.names, bool(req.push))
 
     @app.post("/api/admin/nudge/test", dependencies=[Depends(verify_admin)])
     def nudge_test(req: NudgeTestReq):

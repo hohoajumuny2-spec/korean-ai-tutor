@@ -299,3 +299,60 @@ class TickTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeworkNoticeTests(unittest.TestCase):
+    """2026-11-27: 원장님이 과제를 골라 안 낸 학생에게 숙제 카톡을 눌러서 보낸다."""
+
+    def seed(self, db):
+        st = db.collection("students")
+        st.rows["박서연"] = {"class_name": "고2A"}
+        st.rows["김지수"] = {"class_name": "고2A"}
+        st.rows["이퇴원"] = {"class_name": "고2A", "withdrawn": True}
+        hw = db.collection("homeworks")
+        hw.rows["독서 3회"] = {"deadline": "2026-11-26T22:00"}
+        hw.rows["문법 1"] = {"deadline": "2026-11-23 18:00", "kind": "clinic"}
+        hw.rows["마감 없음"] = {}
+        hw.rows["숨김"] = {"deadline": "2026-11-25", "hidden": True}
+        hw.rows["오래된 것"] = {"deadline": "2026-09-01"}
+        db.collection("reports").rows["r1"] = {"type": "과제 제출", "task_name": "독서 3회", "student_name": "박서연"}
+
+    def test_rows_list_recent_homeworks_with_who_submitted(self):
+        db, _ = setup()
+        self.seed(db)
+        rows = na.homework_rows(NOW[0])
+        self.assertEqual([r["title"] for r in rows], ["문법 1", "독서 3회"])            # 마감 가까운(지난) 순
+        hw = rows[1]
+        self.assertEqual((hw["passed"], hw["dleft"], hw["missing"], hw["total"]), (False, "D-2", 1, 2))
+        self.assertEqual([(s["name"], s["submitted"]) for s in hw["students"]], [("김지수", False), ("박서연", True)])
+        self.assertTrue(rows[0]["passed"])
+        self.assertEqual(rows[0]["kind"], "clinic")
+
+    def test_send_before_deadline_uses_due_notice_and_logs(self):
+        db, sent = setup()
+        self.seed(db)
+        db.collection("settings").rows["nudge_config"] = {"penalty": "숙제 미제출 시 남아서 끝내고 귀가"}
+        r = na.send_homework_notice("독서 3회", ["김지수", "김지수", "이퇴원"], push=True)
+        self.assertTrue(r["success"])
+        self.assertEqual((r["sent"], r["skipped"], r["kind"], r["pushed"]), (["김지수"], ["이퇴원"], "과제마감", ["김지수"]))
+        v = sent["kakao"][0]["vars"]
+        self.assertEqual((sent["kakao"][0]["kind"], v["진도"], v["과제"]), ("알림장", "과제 마감 안내", "독서 3회 (11월 26일 22시 마감)"))
+        self.assertIn("[ 지키지 않으면 ]\n- 숙제 미제출 시 남아서 끝내고 귀가", v["알림장"])
+        self.assertEqual(sent["push"][0][1], "📚 과제 마감 D-2")
+        self.assertEqual(na.homework_rows(NOW[0])[1]["students"][0]["sent"], "19:10")      # 보낸 표시
+
+    def test_send_after_deadline_uses_missing_notice(self):
+        db, sent = setup()
+        self.seed(db)
+        r = na.send_homework_notice("문법 1", ["박서연"])
+        self.assertEqual((r["kind"], r["pushed"]), ("미제출", []))
+        self.assertEqual(sent["kakao"][0]["vars"]["진도"], "과제 미제출 안내")
+        self.assertEqual(sent["push"], [])
+
+    def test_send_refuses_unknown_or_undated_homework(self):
+        db, sent = setup()
+        self.seed(db)
+        self.assertFalse(na.send_homework_notice("없는 과제", ["박서연"])["success"])
+        self.assertIn("마감일", na.send_homework_notice("마감 없음", ["박서연"])["detail"])
+        self.assertFalse(na.send_homework_notice("독서 3회", [])["success"])
+        self.assertEqual(sent["kakao"], [])
