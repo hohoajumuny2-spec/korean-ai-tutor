@@ -1161,6 +1161,8 @@ def register(app, helpers: dict):
             studs = [c for c in json.loads(student_names or "[]") if _s(c)]
         except Exception:
             cls, studs = [], []
+        if not cls and not studs:      # 2026-11-27: 반이나 학생을 꼭 골라야 만든다
+            return {"success": False, "detail": "클리닉을 받을 반이나 학생을 하나 이상 골라 주세요."}
         doc = {**old, "title": _s(title) or old.get("title") or guess_title or "클리닉", "intro": _s(intro, 1500),
                "class_names": cls, "student_names": studs, "start_date": _s(start_date) or old.get("start_date") or _today(),
                "end_date": _s(end_date), "pass_score": max(0, min(100, int(pass_score))),
@@ -1219,6 +1221,8 @@ def register(app, helpers: dict):
             v = getattr(req, k)
             if v is not None:
                 p[k] = v
+        if (req.class_names is not None or req.student_names is not None) and not (p.get("class_names") or p.get("student_names")):
+            return {"success": False, "detail": "클리닉을 받을 반이나 학생을 하나 이상 골라 주세요."}
         # 정답·주목할 점 고치기
         for sk, edits in (req.questions or {}).items():
             qs = ((p.get("sets") or {}).get(sk) or {}).get("questions", [])
