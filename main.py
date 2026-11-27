@@ -2351,6 +2351,23 @@ def delete_clinic(req: ClinicReq):
     return {"success": True}
 
 
+class ClinicDeleteManyReq(BaseModel):
+    ids: list = []
+
+
+@app.post("/api/admin/clinic/delete_many", dependencies=[Depends(verify_admin)])
+def delete_clinics(req: ClinicDeleteManyReq):
+    """클리닉 · 보강 일정 여러 개를 한 번에 지운다(지난 보강 정리, 2026-11-27)."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    n = 0
+    for i in dict.fromkeys(str(x or "").strip() for x in (req.ids or [])[:500]):
+        if i:
+            db.collection("clinics").document(i).delete()
+            n += 1
+    return {"success": True, "count": n}
+
+
 # ─────────────────────────────────────────────────────────
 # 반별 과제 제출표 — 반을 고르면 학생(줄) × 최근 과제(열)로 냈는지 한눈에
 # ─────────────────────────────────────────────────────────
@@ -9596,6 +9613,11 @@ async def create_homework(
     if db is None:
         return {"success": False}
 
+    # 💡 2026-11-27 원장님 요청: 반이나 학생을 하나도 고르지 않으면 과제(수업 · 클리닉)를 만들지 않는다
+    #    (비우면 전체 학생에게 나가 버려서 엉뚱한 학생 화면에 과제가 떴다)
+    if not normalize_target_classes(target_classes) and not normalize_target_students(target_students):
+        return {"success": False, "detail": "과제를 받을 반이나 학생을 하나 이상 골라 주세요."}
+
     answer_list = parse_answer_list(answers)
     group = normalize_homework_group(group)
     safe_title = sanitize_doc_id(title)
@@ -10160,6 +10182,27 @@ def hide_homeworks(req: HomeworkHideReq):
         ref = db.collection("homeworks").document(sanitize_doc_id(t))
         if ref.get().exists:
             ref.set({"hidden": bool(req.hidden)}, merge=True)
+            n += 1
+    return {"success": True, "count": n}
+
+
+class HomeworkDeleteReq(BaseModel):
+    titles: list = []
+
+
+@app.post("/api/admin/homework/delete", dependencies=[Depends(verify_admin)])
+def delete_homeworks(req: HomeworkDeleteReq):
+    """과제 여러 개를 한 번에 지운다(2026-11-27 원장님 요청: 지난 과제 · 클리닉 과제 정리).
+    하나씩 지우기와 같이 과제만 지우고, 학생 제출 기록 · 성적은 남는다."""
+    if db is None:
+        return {"success": False, "detail": "DB 연결 오류"}
+    n = 0
+    for t in dict.fromkeys(str(x or "").strip() for x in (req.titles or [])[:500]):
+        if not t:
+            continue
+        ref = db.collection("homeworks").document(sanitize_doc_id(t))
+        if ref.get().exists:
+            ref.delete()
             n += 1
     return {"success": True, "count": n}
 
