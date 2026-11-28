@@ -6926,6 +6926,28 @@ def admin_site_token(x_notify_secret: Optional[str] = Header(None)):
     return {"success": True, "admin_token": issue_admin_token("원장님"), "admin_name": "원장님", "is_owner": True}
 
 
+class TelegramRelayReq(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/notify/telegram")
+def notify_telegram(req: TelegramRelayReq, x_notify_secret: Optional[str] = Header(None)):
+    """💡 2026-11-28 원장님: 홈페이지(logyedu.com) 서버의 알림(학부모 답장 · 상담 신청)을 원장님 텔레그램으로.
+    텔레그램 봇 키(TELEGRAM_TOKEN · TELEGRAM_CHAT_ID)는 이 서버에만 있어서, 두 서버가 같이 아는
+    NOTIFY_SECRET 이 맞을 때만 대신 보내 준다."""
+    secret = os.environ.get("NOTIFY_SECRET", "").strip()
+    if not secret or not x_notify_secret or not secrets.compare_digest(secret, x_notify_secret.strip()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    text = str(req.text or "").strip()[:3500]
+    if not text:
+        return {"success": False, "detail": "보낼 글이 없습니다."}
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token or not os.environ.get("TELEGRAM_CHAT_ID"):
+        return {"success": False, "detail": "학생 앱 서버에 TELEGRAM_TOKEN · TELEGRAM_CHAT_ID 가 없습니다."}
+    send_telegram_message(text)
+    return {"success": True}
+
+
 @app.get("/api/notice/homework_status")
 def notice_homework_status(date: str = "", x_notify_secret: Optional[str] = Header(None)):
     """홈페이지(logyedu.com) 알림장이 묻는다: 수업일 즈음 과제를 누가 냈고 누가 안 냈는지.
