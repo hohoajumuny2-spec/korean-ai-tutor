@@ -45,6 +45,7 @@ import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
 import explain_video  # 해설 영상: 사람 같은 목소리 + 움직이는 화면
 import video_diagrams  # 해설 영상: 내용에 맞춘 도표 장면
 import homework_bank   # 과제 · 클리닉으로 올린 문제도 문제 보관함에 남기기 (2026-11-22)
+import homework_file_bank   # 과제에 올린 파일 글 · 정답 · 해설도 문제 보관함에 (2026-11-28)
 from PIL import Image
 
 # ─────────────────────────────────────────────────────────
@@ -9576,6 +9577,48 @@ def link_homework_to_bank(bank_id: str, title: str, kind_norm: str, target_class
     return bid
 
 
+def _pdf_text(data: bytes) -> str:
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+def save_homework_file_to_bank(linked_id: str, title: str, kind_norm: str, target_classes, file_name: str,
+                               file_bytes: bytes, file_url: str, answer_list, explanations, qmeta) -> str:
+    """💡 2026-11-28 원장님: 과제를 올릴 때 붙인 파일에서 읽은 글 · 정답 · 해설을 문제 보관함에 자동으로 넣는다.
+    - 붙여 넣은 문제 · 출제 화면 자료와 이미 이어졌으면 그 자료는 건드리지 않는다.
+    - 예전에 이 방법으로 만든 보관함 자료면 새 파일 · 정답 · 해설로 고쳐 쓴다.
+    AI 학습 자료에는 싣지 않는다(학생이 푸는 과제의 정답을 AI 국최가 알게 되므로)."""
+    if db is None:
+        return ""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = homework_file_bank.file_text(file_bytes, file_name, pdf_reader=_pdf_text) if file_bytes else None
+    if linked_id:
+        ref = db.collection("questions").document(linked_id)
+        doc = ref.get()
+        if not doc.exists:
+            linked_id = ""
+        else:
+            old = doc.to_dict() or {}
+            if old.get("origin") != homework_file_bank.ORIGIN:
+                return linked_id
+            if text is None:
+                text, file_name, file_url = old.get("file_text", ""), old.get("file_name", ""), old.get("file_url", "")
+            ref.set({"content": homework_file_bank.build_content(file_name, text, answer_list, explanations),
+                     "file_text": text, "file_name": file_name, "file_url": file_url, "updated_at": now}, merge=True)
+            return linked_id
+    text = text or ""
+    if not homework_file_bank.worth_saving(file_name, text, explanations):
+        return ""
+    fields = homework_bank.link_fields({}, title, HOMEWORK_KINDS.get(kind_norm, "과제"), target_classes,
+                                       guess_class_subject(title), homework_bank.tags_from_qmeta(qmeta),
+                                       datetime.now())
+    _, ref = db.collection("questions").add({
+        **fields, "content": homework_file_bank.build_content(file_name, text, answer_list, explanations),
+        "origin": homework_file_bank.ORIGIN, "file_text": text, "file_name": file_name, "file_url": file_url,
+        "created_at": now})
+    return ref.id
+
+
 def homework_qmeta_with(old, raw: str) -> dict:
     """과제를 배포 · 고칠 때 보낸 요약 해설 · 유형을 있던 것에 얹는다(안 보내면 그대로)."""
     old_map = study_extras.parse_meta_map(old or {})
@@ -9613,6 +9656,8 @@ async def create_homework(
     twin_set: str = Form(""),
     # 💡 2026-11-22: 정답 꺼내기(extract_from_bank)가 돌려준 보관함 id. 안 보내도 정답 · 해설로 찾아 잇는다.
     bank_id: str = Form(""),
+    # 💡 2026-11-28: '0'이면 과제 파일 · 해설을 문제 보관함에 넣지 않는다(문제 공장처럼 문제가 따로 있는 곳에서 낼 때)
+    bank_save: str = Form("1"),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -9650,8 +9695,10 @@ async def create_homework(
 
     # 새 해답 파일을 안 올리면(고치는 중 굳이 다시 첨부하지 않으면) 기존 파일을 그대로 둔다
     ans_url = prev_data.get("answer_file", "")
+    file_bytes, file_name = b"", ""
     if answer_file and answer_file.filename:
-        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
+        file_bytes, file_name = await answer_file.read(), answer_file.filename
+        ans_url = await asyncio.to_thread(save_bytes, file_bytes, file_name, "homeworks", answer_file.content_type)
 
     await asyncio.to_thread(
         lambda: db.collection("homeworks").document(safe_title).set(
@@ -9689,6 +9736,15 @@ async def create_homework(
             link_homework_to_bank, bank_id, title, kind_norm, normalize_target_classes(target_classes),
             answer_list, expl_map, homework_qmeta_with(prev_data.get("qmeta"), qmeta),
             old_title, prev_data.get("bank_id", ""))
+        # 💡 2026-11-28: 과제 파일 글 · 정답 · 해설도 보관함에 (붙여 넣은 자료와 이어졌으면 그대로 둔다)
+        if str(bank_save).strip() != "0":
+            try:
+                linked = await asyncio.to_thread(
+                    save_homework_file_to_bank, linked, title, kind_norm, normalize_target_classes(target_classes),
+                    file_name, file_bytes, ans_url if file_bytes else "", answer_list, expl_map,
+                    homework_qmeta_with(prev_data.get("qmeta"), qmeta)) or linked
+            except Exception as e:
+                print("과제 파일 → 문제 보관함 저장 실패:", e)
         if linked and linked != prev_data.get("bank_id"):
             await asyncio.to_thread(
                 lambda: db.collection("homeworks").document(safe_title).set({"bank_id": linked}, merge=True))
@@ -15655,7 +15711,8 @@ class _HomeworkBridge:
             title=title, desc="문제 공장에서 만든 문제예요. [📄 문제지 보기]로 문제를 보고 OMR로 답을 내세요.",
             answer_text="", kind=kind, answers=json.dumps(answers, ensure_ascii=False),
             explanations=json.dumps(expl, ensure_ascii=False), old_title="",
-            target_classes=target_class, target_students="", deadline="", group="", answer_file=None, _=True))
+            target_classes=target_class, target_students="", deadline="", group="", answer_file=None,
+            bank_save="0", _=True))
         if not res.get("success"):
             raise RuntimeError("과제를 저장하지 못했습니다.")
         safe = sanitize_doc_id(title)
