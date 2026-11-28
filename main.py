@@ -45,6 +45,7 @@ import edit_limits   # 문항마다 2번까지만 고치기 (2026-11-10)
 import explain_video  # 해설 영상: 사람 같은 목소리 + 움직이는 화면
 import video_diagrams  # 해설 영상: 내용에 맞춘 도표 장면
 import homework_bank   # 과제 · 클리닉으로 올린 문제도 문제 보관함에 남기기 (2026-11-22)
+import homework_file_bank   # 과제에 올린 파일 글 · 정답 · 해설도 문제 보관함에 (2026-11-28)
 from PIL import Image
 
 # ─────────────────────────────────────────────────────────
@@ -9576,6 +9577,48 @@ def link_homework_to_bank(bank_id: str, title: str, kind_norm: str, target_class
     return bid
 
 
+def _pdf_text(data: bytes) -> str:
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+def save_homework_file_to_bank(linked_id: str, title: str, kind_norm: str, target_classes, file_name: str,
+                               file_bytes: bytes, file_url: str, answer_list, explanations, qmeta) -> str:
+    """💡 2026-11-28 원장님: 과제를 올릴 때 붙인 파일에서 읽은 글 · 정답 · 해설을 문제 보관함에 자동으로 넣는다.
+    - 붙여 넣은 문제 · 출제 화면 자료와 이미 이어졌으면 그 자료는 건드리지 않는다.
+    - 예전에 이 방법으로 만든 보관함 자료면 새 파일 · 정답 · 해설로 고쳐 쓴다.
+    AI 학습 자료에는 싣지 않는다(학생이 푸는 과제의 정답을 AI 국최가 알게 되므로)."""
+    if db is None:
+        return ""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = homework_file_bank.file_text(file_bytes, file_name, pdf_reader=_pdf_text) if file_bytes else None
+    if linked_id:
+        ref = db.collection("questions").document(linked_id)
+        doc = ref.get()
+        if not doc.exists:
+            linked_id = ""
+        else:
+            old = doc.to_dict() or {}
+            if old.get("origin") != homework_file_bank.ORIGIN:
+                return linked_id
+            if text is None:
+                text, file_name, file_url = old.get("file_text", ""), old.get("file_name", ""), old.get("file_url", "")
+            ref.set({"content": homework_file_bank.build_content(file_name, text, answer_list, explanations),
+                     "file_text": text, "file_name": file_name, "file_url": file_url, "updated_at": now}, merge=True)
+            return linked_id
+    text = text or ""
+    if not homework_file_bank.worth_saving(file_name, text, explanations):
+        return ""
+    fields = homework_bank.link_fields({}, title, HOMEWORK_KINDS.get(kind_norm, "과제"), target_classes,
+                                       guess_class_subject(title), homework_bank.tags_from_qmeta(qmeta),
+                                       datetime.now())
+    _, ref = db.collection("questions").add({
+        **fields, "content": homework_file_bank.build_content(file_name, text, answer_list, explanations),
+        "origin": homework_file_bank.ORIGIN, "file_text": text, "file_name": file_name, "file_url": file_url,
+        "created_at": now})
+    return ref.id
+
+
 def homework_qmeta_with(old, raw: str) -> dict:
     """과제를 배포 · 고칠 때 보낸 요약 해설 · 유형을 있던 것에 얹는다(안 보내면 그대로)."""
     old_map = study_extras.parse_meta_map(old or {})
@@ -9613,6 +9656,8 @@ async def create_homework(
     twin_set: str = Form(""),
     # 💡 2026-11-22: 정답 꺼내기(extract_from_bank)가 돌려준 보관함 id. 안 보내도 정답 · 해설로 찾아 잇는다.
     bank_id: str = Form(""),
+    # 💡 2026-11-28: '0'이면 과제 파일 · 해설을 문제 보관함에 넣지 않는다(문제 공장처럼 문제가 따로 있는 곳에서 낼 때)
+    bank_save: str = Form("1"),
     answer_file: Optional[UploadFile] = File(None),
     _: bool = Depends(verify_admin),
 ):
@@ -9650,8 +9695,10 @@ async def create_homework(
 
     # 새 해답 파일을 안 올리면(고치는 중 굳이 다시 첨부하지 않으면) 기존 파일을 그대로 둔다
     ans_url = prev_data.get("answer_file", "")
+    file_bytes, file_name = b"", ""
     if answer_file and answer_file.filename:
-        ans_url = await asyncio.to_thread(save_bytes, await answer_file.read(), answer_file.filename, "homeworks", answer_file.content_type)
+        file_bytes, file_name = await answer_file.read(), answer_file.filename
+        ans_url = await asyncio.to_thread(save_bytes, file_bytes, file_name, "homeworks", answer_file.content_type)
 
     await asyncio.to_thread(
         lambda: db.collection("homeworks").document(safe_title).set(
@@ -9689,6 +9736,15 @@ async def create_homework(
             link_homework_to_bank, bank_id, title, kind_norm, normalize_target_classes(target_classes),
             answer_list, expl_map, homework_qmeta_with(prev_data.get("qmeta"), qmeta),
             old_title, prev_data.get("bank_id", ""))
+        # 💡 2026-11-28: 과제 파일 글 · 정답 · 해설도 보관함에 (붙여 넣은 자료와 이어졌으면 그대로 둔다)
+        if str(bank_save).strip() != "0":
+            try:
+                linked = await asyncio.to_thread(
+                    save_homework_file_to_bank, linked, title, kind_norm, normalize_target_classes(target_classes),
+                    file_name, file_bytes, ans_url if file_bytes else "", answer_list, expl_map,
+                    homework_qmeta_with(prev_data.get("qmeta"), qmeta)) or linked
+            except Exception as e:
+                print("과제 파일 → 문제 보관함 저장 실패:", e)
         if linked and linked != prev_data.get("bank_id"):
             await asyncio.to_thread(
                 lambda: db.collection("homeworks").document(safe_title).set({"bank_id": linked}, merge=True))
@@ -10663,6 +10719,39 @@ QNA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif"}
 #    질문한 학생과 원장님만 본다. 원장님은 글 · 사진 · 영상 링크로 답하고,
 #    그 답을 과제 해설에도 넣어 다른 학생도 보게 할 수 있다.
 QNA_TOPICS = {"homework": "과제", "clinic": "클리닉"}
+# 💡 2026-11-28 원장님: 과제 · 클리닉 질문은 '왜 질문하는지'를 골라서 낸다(여러 개 가능).
+#    문항도 여러 개 골라 한 번에 질문할 수 있다(qnums). qnum 은 예전 화면 · 해설 넣기용으로 첫 번호를 둔다.
+QNA_REASONS = {
+    "expl": "해설을 봐도 이해가 안 돼요",
+    "why_answer": "정답이 왜 정답인지 모르겠어요",
+    "why_wrong": "내 답이 왜 틀렸는지 모르겠어요",
+    "passage": "지문(글) 내용이 이해가 안 돼요",
+    "choice": "선택지 뜻이 헷갈려요",
+    "concept": "개념 · 어휘를 모르겠어요",
+    "answer_error": "정답이 잘못된 것 같아요",
+    "etc": "기타 (직접 적을게요)",
+}
+QNA_MAX_QNUMS = 40
+
+
+def _qna_qnums(qnum="", qnums="") -> list:
+    """'3, 5,7' 같은 번호 목록 → ['3', '5', '7'] (겹침 · 0 · 이상한 글자 빼고, 작은 번호부터)."""
+    nums = set()
+    for part in re.split(r"[^0-9]+", f"{qnums or ''},{qnum or ''}"):
+        if part and 0 < int(part) <= 999:
+            nums.add(int(part))
+    return [str(n) for n in sorted(nums)][:QNA_MAX_QNUMS]
+
+
+def _qna_reasons(raw) -> list:
+    """고른 이유 열쇠만 남긴다(모르는 열쇠는 버림)."""
+    items = raw if isinstance(raw, (list, tuple)) else re.split(r"[,\s]+", str(raw or ""))
+    return [k for k in dict.fromkeys(str(x).strip() for x in items) if k in QNA_REASONS]
+
+
+def _qna_nums_label(p: dict) -> str:
+    nums = p.get("qnums") or ([p["qnum"]] if p.get("qnum") else [])
+    return ("·".join(str(n) for n in nums) + "번") if nums else ""
 
 
 def _qna_video(v) -> str:
@@ -10707,6 +10796,8 @@ def _qna_public(p: dict, pid: str) -> dict:
             "subject": p.get("subject", ""), "text": p.get("text", ""), "images": p.get("images") or [],
             "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
             "topic": p.get("topic", ""), "task_title": p.get("task_title", ""), "qnum": p.get("qnum", ""),
+            "qnums": p.get("qnums") or ([p["qnum"]] if p.get("qnum") else []),
+            "reasons": [QNA_REASONS[k] for k in _qna_reasons(p.get("reasons") or [])],
             "private": bool(p.get("private")),
             "shared_with": p.get("shared_with") or [], "shared_all": bool(p.get("shared_all")),
             "teacher_answered": any(a.get("is_admin") for a in answers),
@@ -10732,6 +10823,8 @@ async def qna_create(student_name: str = Form(""), school: str = Form(""), grade
                      # 과제 · 클리닉 질문: 무엇에 대한 질문인지와 '선생님께만' 여부
                      topic: str = Form(""), task_title: str = Form(""), qnum: str = Form(""),
                      private: str = Form(""),
+                     # 2026-11-28: 여러 문항(qnums "3,5,7")과 질문 이유(reasons "expl,why_wrong")
+                     qnums: str = Form(""), reasons: str = Form(""),
                      images: List[UploadFile] = File(None),
                      x_admin_token: Optional[str] = Header(None)):
     if db is None:
@@ -10740,24 +10833,30 @@ async def qna_create(student_name: str = Form(""), school: str = Form(""), grade
     text = (text or "").strip()[:QNA_TEXT_MAX]
     if not who["author"]:
         return {"success": False, "detail": "로그인 정보가 없습니다."}
+    topic = topic if topic in QNA_TOPICS else ""
+    reason_keys = _qna_reasons(reasons) if topic else []
+    if "etc" in reason_keys and not text:
+        return {"success": False, "detail": "'기타'를 골랐다면 무엇이 궁금한지 적어 주세요."}
     urls = await _qna_save_images(images)
-    if not text and not urls:
-        return {"success": False, "detail": "질문 내용이나 사진을 넣어주세요."}
+    if not text and not urls and not reason_keys:
+        return {"success": False, "detail": "질문 이유를 고르거나, 질문 내용 · 사진을 넣어주세요."}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ref = db.collection(QNA_COLL).document()
-    topic = topic if topic in QNA_TOPICS else ""
-    qnum = re.sub(r"[^0-9]", "", str(qnum or ""))[:3]
+    nums = _qna_qnums(qnum, qnums)
     row = {**who, "school": school, "grade": grade, "subject": (subject or "").strip()[:20],
            "text": text, "images": urls, "solved": False, "answers": [], "created_at": now,
-           "topic": topic, "task_title": (task_title or "").strip()[:80], "qnum": qnum,
+           "topic": topic, "task_title": (task_title or "").strip()[:80],
+           "qnum": nums[0] if nums else "", "qnums": nums, "reasons": reason_keys,
            "private": str(private).strip().lower() in ("1", "true", "yes", "on")}
     await asyncio.to_thread(ref.set, row)
     if not who["is_admin"]:
         about = ""
         if topic:
-            about = f"[{QNA_TOPICS[topic]}{(' ' + row['task_title']) if row['task_title'] else ''}{(' ' + qnum + '번') if qnum else ''}] "
+            nl = _qna_nums_label(row)
+            about = f"[{QNA_TOPICS[topic]}{(' ' + row['task_title']) if row['task_title'] else ''}{(' ' + nl) if nl else ''}] "
         to = "선생님께 " if row["private"] else ""
-        send_telegram_message(f"❓ [질문 게시판] {about}\n{who['author']} 학생이 {to}질문을 올렸습니다.\n{text[:80]}")
+        why = (" / 이유: " + ", ".join(QNA_REASONS[k] for k in reason_keys)) if reason_keys else ""
+        send_telegram_message(f"❓ [질문 게시판] {about}\n{who['author']} 학생이 {to}질문을 올렸습니다.{why}\n{text[:80]}")
     return {"success": True, "post": _qna_public(row, ref.id)}
 
 
@@ -10802,6 +10901,8 @@ def _qna_answer_to_homework(post: dict, text: str, video: str) -> str:
     """원장님 답을 그 과제의 문항 해설(글)과 해설 영상에 넣는다. 넣은 곳을 '과제명 n번'으로 돌려준다.
     이미 해설이 있으면 그 아래에 '질문 답변'으로 덧붙인다(지우지 않는다)."""
     title, no = str(post.get("task_title") or "").strip(), str(post.get("qnum") or "").strip()
+    if len(post.get("qnums") or []) > 1:      # 여러 문항을 한꺼번에 물은 질문의 답은 한 문항 해설에 넣지 않는다
+        return ""
     if db is None or not title or not no or (not text and not video):
         return ""
     ref = db.collection("homeworks").document(sanitize_doc_id(title))
@@ -10851,7 +10952,8 @@ def qna_share(post_id: str, req: QnaShareReq):
     ref.update({"shared_with": names, "shared_all": bool(req.all)})
     new = [n for n in names if n not in before]
     if new:
-        about = (post.get("task_title") or "") + (f" {post['qnum']}번" if post.get("qnum") else "")
+        nl = _qna_nums_label(post)
+        about = (post.get("task_title") or "") + (f" {nl}" if nl else "")
         send_push_to_names(new, "선생님 해설이 공유됐어요", (about or "질문 게시판") + " — 선생님이 해설을 보여 주셨어요.",
                            "/#prog-qna", "qna")
     return {"success": True, "shared_with": names, "shared_all": bool(req.all), "notified": len(new)}
@@ -15609,7 +15711,8 @@ class _HomeworkBridge:
             title=title, desc="문제 공장에서 만든 문제예요. [📄 문제지 보기]로 문제를 보고 OMR로 답을 내세요.",
             answer_text="", kind=kind, answers=json.dumps(answers, ensure_ascii=False),
             explanations=json.dumps(expl, ensure_ascii=False), old_title="",
-            target_classes=target_class, target_students="", deadline="", group="", answer_file=None, _=True))
+            target_classes=target_class, target_students="", deadline="", group="", answer_file=None,
+            bank_save="0", _=True))
         if not res.get("success"):
             raise RuntimeError("과제를 저장하지 못했습니다.")
         safe = sanitize_doc_id(title)
