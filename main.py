@@ -3181,8 +3181,14 @@ def board_visible_to_student(row: dict, student_name: str, info=_NO_INFO) -> boo
 
 
 def homework_visible_to_student(hw: dict, student_name: str, info=_NO_INFO) -> bool:
-    """이 과제가 이 학생에게 보이는지 — 공지와 같은 규칙.
-    💡 2026-11-08: 과제도 특정 학생에게만 낼 수 있게. target_students 가 비면 지금까지처럼 반만 본다."""
+    """이 과제가 이 학생에게 보이는지.
+    💡 2026-11-08: 과제도 특정 학생에게만 낼 수 있게. target_students 가 비면 지금까지처럼 반만 본다.
+    💡 2026-11-28 원장님: 김지유 학생 과제를 올렸는데 다른 학생들에게도 카톡이 갔다.
+       반이 함께 골라져 있으면(묶음으로 이어 올릴 때 반 선택이 남는 등) 그 반 학생 모두에게 나갔다.
+       과제는 학생을 고르면 '그 학생에게만' 간다 — 반 선택은 보지 않는다(공지는 예전 규칙 그대로)."""
+    hw = hw or {}
+    if normalize_target_students(hw.get("target_students")):
+        hw = {**hw, "target_classes": [], "target_class": ""}
     return board_visible_to_student(hw, student_name, info=info)
 
 
@@ -9696,34 +9702,9 @@ async def create_homework(
                 db.collection("homework_papers").document(safe_title).set(d.to_dict() or {})
                 src.delete()
         await asyncio.to_thread(_move_paper)
-    if is_new:
-        kind_label = HOMEWORK_KINDS.get(kind_norm, "과제")
-        due = f" 마감 {deadline_label(deadline_str)}." if deadline_str else ""
-        body = f"'{title}' {kind_label}가 올라왔어요.{due} 확인해보세요!"
-        push = True
-        if group:
-            # 💡 묶음에 과제를 잇달아 올릴 때 하나마다 알림이 울리지 않게 —
-            #    같은 묶음에 방금(30분 안에) 올린 과제가 있으면 알림을 건너뛴다.
-            siblings = await asyncio.to_thread(homework_group_siblings, group, safe_title)
-            recent = [h for h in siblings if homework_created_within(h, 30)]
-            push = not recent
-            body = (f"'{group}'에 '{title}' 과제가 더 올라왔어요.{due} 확인해보세요!" if siblings
-                    else f"'{group}' 과제가 올라왔어요.{due} 확인해보세요!")
-        if push:
-            tstudents = normalize_target_students(target_students)
-            if tstudents:
-                # 고른 학생(+ 함께 고른 반 학생)에게만 알린다
-                row = {"target_classes": normalize_target_classes(target_classes), "target_students": tstudents}
-                names = await asyncio.to_thread(board_audience_names, row)
-                await asyncio.to_thread(send_push_to_names, names, f"새 {kind_label}", body, "/#prog-classroom", "homework")
-                kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
-                               "", [], names=names)
-            else:
-                await asyncio.to_thread(
-                    send_push_to_audience, "", normalize_target_classes(target_classes), f"새 {kind_label}",
-                    body, "/#prog-classroom", "homework")
-                kakao_new_post(kind_label, group or title, deadline_label(deadline_str) if deadline_str else "",
-                               "", normalize_target_classes(target_classes))
+    # 💡 2026-11-28 원장님: 과제를 올렸다고 앱 알림 · 카톡을 자동으로 보내지 않는다.
+    #    과제를 다 올린 뒤 홈페이지(logyedu.com) [재촉 · 클리닉 카톡 → 📚 숙제 카톡]에서
+    #    과제와 학생을 골라 직접 보낸다(학생마다 안 낸 과제만 모아 한 통).
     return {"success": True, "question_count": len(answer_list),
             "explanation_count": len(parse_explanation_map(explanations)), "is_new": is_new}
 
