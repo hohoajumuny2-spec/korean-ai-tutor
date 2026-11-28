@@ -10663,6 +10663,39 @@ QNA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif"}
 #    질문한 학생과 원장님만 본다. 원장님은 글 · 사진 · 영상 링크로 답하고,
 #    그 답을 과제 해설에도 넣어 다른 학생도 보게 할 수 있다.
 QNA_TOPICS = {"homework": "과제", "clinic": "클리닉"}
+# 💡 2026-11-28 원장님: 과제 · 클리닉 질문은 '왜 질문하는지'를 골라서 낸다(여러 개 가능).
+#    문항도 여러 개 골라 한 번에 질문할 수 있다(qnums). qnum 은 예전 화면 · 해설 넣기용으로 첫 번호를 둔다.
+QNA_REASONS = {
+    "expl": "해설을 봐도 이해가 안 돼요",
+    "why_answer": "정답이 왜 정답인지 모르겠어요",
+    "why_wrong": "내 답이 왜 틀렸는지 모르겠어요",
+    "passage": "지문(글) 내용이 이해가 안 돼요",
+    "choice": "선택지 뜻이 헷갈려요",
+    "concept": "개념 · 어휘를 모르겠어요",
+    "answer_error": "정답이 잘못된 것 같아요",
+    "etc": "기타 (직접 적을게요)",
+}
+QNA_MAX_QNUMS = 40
+
+
+def _qna_qnums(qnum="", qnums="") -> list:
+    """'3, 5,7' 같은 번호 목록 → ['3', '5', '7'] (겹침 · 0 · 이상한 글자 빼고, 작은 번호부터)."""
+    nums = set()
+    for part in re.split(r"[^0-9]+", f"{qnums or ''},{qnum or ''}"):
+        if part and 0 < int(part) <= 999:
+            nums.add(int(part))
+    return [str(n) for n in sorted(nums)][:QNA_MAX_QNUMS]
+
+
+def _qna_reasons(raw) -> list:
+    """고른 이유 열쇠만 남긴다(모르는 열쇠는 버림)."""
+    items = raw if isinstance(raw, (list, tuple)) else re.split(r"[,\s]+", str(raw or ""))
+    return [k for k in dict.fromkeys(str(x).strip() for x in items) if k in QNA_REASONS]
+
+
+def _qna_nums_label(p: dict) -> str:
+    nums = p.get("qnums") or ([p["qnum"]] if p.get("qnum") else [])
+    return ("·".join(str(n) for n in nums) + "번") if nums else ""
 
 
 def _qna_video(v) -> str:
@@ -10707,6 +10740,8 @@ def _qna_public(p: dict, pid: str) -> dict:
             "subject": p.get("subject", ""), "text": p.get("text", ""), "images": p.get("images") or [],
             "solved": bool(p.get("solved")), "created_at": p.get("created_at", ""),
             "topic": p.get("topic", ""), "task_title": p.get("task_title", ""), "qnum": p.get("qnum", ""),
+            "qnums": p.get("qnums") or ([p["qnum"]] if p.get("qnum") else []),
+            "reasons": [QNA_REASONS[k] for k in _qna_reasons(p.get("reasons") or [])],
             "private": bool(p.get("private")),
             "shared_with": p.get("shared_with") or [], "shared_all": bool(p.get("shared_all")),
             "teacher_answered": any(a.get("is_admin") for a in answers),
@@ -10732,6 +10767,8 @@ async def qna_create(student_name: str = Form(""), school: str = Form(""), grade
                      # 과제 · 클리닉 질문: 무엇에 대한 질문인지와 '선생님께만' 여부
                      topic: str = Form(""), task_title: str = Form(""), qnum: str = Form(""),
                      private: str = Form(""),
+                     # 2026-11-28: 여러 문항(qnums "3,5,7")과 질문 이유(reasons "expl,why_wrong")
+                     qnums: str = Form(""), reasons: str = Form(""),
                      images: List[UploadFile] = File(None),
                      x_admin_token: Optional[str] = Header(None)):
     if db is None:
@@ -10740,24 +10777,30 @@ async def qna_create(student_name: str = Form(""), school: str = Form(""), grade
     text = (text or "").strip()[:QNA_TEXT_MAX]
     if not who["author"]:
         return {"success": False, "detail": "로그인 정보가 없습니다."}
+    topic = topic if topic in QNA_TOPICS else ""
+    reason_keys = _qna_reasons(reasons) if topic else []
+    if "etc" in reason_keys and not text:
+        return {"success": False, "detail": "'기타'를 골랐다면 무엇이 궁금한지 적어 주세요."}
     urls = await _qna_save_images(images)
-    if not text and not urls:
-        return {"success": False, "detail": "질문 내용이나 사진을 넣어주세요."}
+    if not text and not urls and not reason_keys:
+        return {"success": False, "detail": "질문 이유를 고르거나, 질문 내용 · 사진을 넣어주세요."}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ref = db.collection(QNA_COLL).document()
-    topic = topic if topic in QNA_TOPICS else ""
-    qnum = re.sub(r"[^0-9]", "", str(qnum or ""))[:3]
+    nums = _qna_qnums(qnum, qnums)
     row = {**who, "school": school, "grade": grade, "subject": (subject or "").strip()[:20],
            "text": text, "images": urls, "solved": False, "answers": [], "created_at": now,
-           "topic": topic, "task_title": (task_title or "").strip()[:80], "qnum": qnum,
+           "topic": topic, "task_title": (task_title or "").strip()[:80],
+           "qnum": nums[0] if nums else "", "qnums": nums, "reasons": reason_keys,
            "private": str(private).strip().lower() in ("1", "true", "yes", "on")}
     await asyncio.to_thread(ref.set, row)
     if not who["is_admin"]:
         about = ""
         if topic:
-            about = f"[{QNA_TOPICS[topic]}{(' ' + row['task_title']) if row['task_title'] else ''}{(' ' + qnum + '번') if qnum else ''}] "
+            nl = _qna_nums_label(row)
+            about = f"[{QNA_TOPICS[topic]}{(' ' + row['task_title']) if row['task_title'] else ''}{(' ' + nl) if nl else ''}] "
         to = "선생님께 " if row["private"] else ""
-        send_telegram_message(f"❓ [질문 게시판] {about}\n{who['author']} 학생이 {to}질문을 올렸습니다.\n{text[:80]}")
+        why = (" / 이유: " + ", ".join(QNA_REASONS[k] for k in reason_keys)) if reason_keys else ""
+        send_telegram_message(f"❓ [질문 게시판] {about}\n{who['author']} 학생이 {to}질문을 올렸습니다.{why}\n{text[:80]}")
     return {"success": True, "post": _qna_public(row, ref.id)}
 
 
@@ -10802,6 +10845,8 @@ def _qna_answer_to_homework(post: dict, text: str, video: str) -> str:
     """원장님 답을 그 과제의 문항 해설(글)과 해설 영상에 넣는다. 넣은 곳을 '과제명 n번'으로 돌려준다.
     이미 해설이 있으면 그 아래에 '질문 답변'으로 덧붙인다(지우지 않는다)."""
     title, no = str(post.get("task_title") or "").strip(), str(post.get("qnum") or "").strip()
+    if len(post.get("qnums") or []) > 1:      # 여러 문항을 한꺼번에 물은 질문의 답은 한 문항 해설에 넣지 않는다
+        return ""
     if db is None or not title or not no or (not text and not video):
         return ""
     ref = db.collection("homeworks").document(sanitize_doc_id(title))
@@ -10851,7 +10896,8 @@ def qna_share(post_id: str, req: QnaShareReq):
     ref.update({"shared_with": names, "shared_all": bool(req.all)})
     new = [n for n in names if n not in before]
     if new:
-        about = (post.get("task_title") or "") + (f" {post['qnum']}번" if post.get("qnum") else "")
+        nl = _qna_nums_label(post)
+        about = (post.get("task_title") or "") + (f" {nl}" if nl else "")
         send_push_to_names(new, "선생님 해설이 공유됐어요", (about or "질문 게시판") + " — 선생님이 해설을 보여 주셨어요.",
                            "/#prog-qna", "qna")
     return {"success": True, "shared_with": names, "shared_all": bool(req.all), "notified": len(new)}
